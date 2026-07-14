@@ -23,10 +23,11 @@ public:
     struct Events
     {
         // host side
-        std::function<void(int playerId)> onPlayerJoined;
+        std::function<void(int playerId, const char* name)> onPlayerJoined;
         std::function<void(int playerId)> onPlayerLeft;
         std::function<void(int playerId, const MsgInput&)> onInput;
         std::function<void(int playerId, int slot)> onPurchase;
+        std::function<void(int playerId, bool ready)> onReady;
         // client side
         std::function<void(int myPlayerId)> onWelcome;
         std::function<void(const MsgSnapshot&)> onSnapshot;
@@ -45,6 +46,7 @@ public:
 
     void SendInputToHost(const MsgInput& msg);
     void SendPurchaseToHost(int slot);
+    void SendReadyToHost(bool ready);
     void BroadcastSnapshot(const MsgSnapshot& snap);
 
     Mode mode() const { return m_mode; }
@@ -55,6 +57,9 @@ public:
     // Client-side live connection info: ping and Steam's route description
     // (shows whether the link is direct UDP or going through an SDR relay).
     bool clientConnectionStatus(int& pingMs, std::string& desc) const;
+    // Averaged one-way latency from the ping/pong probes (ms; < 0 = unknown).
+    float avgOneWayMs(int playerId) const;    // host: per connected player
+    float hostAvgOneWayMs() const;            // client: to the host
     uint64_t mySteamId() const { return m_mySteamId; }
     std::string myName() const { return m_myName; }
     std::string joinCode() const;           // host's shareable code (SteamID64)
@@ -63,12 +68,25 @@ public:
     void HandleStatusChanged(SteamNetConnectionStatusChangedCallback_t* info);
 
 private:
+    struct PingProbe
+    {
+        uint32_t seq = 0;
+        double sentAt = 0;
+    };
+
     struct Client
     {
         uint32_t conn = 0;
         int playerId = -1;
         bool helloed = false;
+        double nextPingAt = 0;
+        uint32_t pingSeq = 0;
+        PingProbe probes[8];
+        float avgOneWayMs = -1.0f;
     };
+
+    void SendPingOn(uint32_t conn, uint32_t& seqCounter, PingProbe* probes);
+    static void NotePong(uint32_t seq, const PingProbe* probes, float& avgOneWayMs);
 
     int AllocatePlayerId() const;
     void DropClient(uint32_t conn, const Events& ev);
@@ -83,6 +101,10 @@ private:
     uint32_t m_listenIP = 0;
     uint32_t m_pollGroup = 0;
     uint32_t m_hostConn = 0;                // client's connection to the host
+    double m_hostNextPingAt = 0;
+    uint32_t m_hostPingSeq = 0;
+    PingProbe m_hostProbes[8];
+    float m_hostAvgOneWayMs = -1.0f;
     std::vector<Client> m_clients;
     const Events* m_events = nullptr;       // valid during Poll
     std::string m_disconnectReason;

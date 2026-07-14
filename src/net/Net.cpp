@@ -1,8 +1,19 @@
 #include "net/Net.h"
 #include "Log.h"
+#include <chrono>
 #include <steam/steam_api.h>
 #include <steam/isteamnetworkingsockets.h>
 #include <steam/isteamnetworkingutils.h>
+
+namespace
+{
+double NowSeconds()
+{
+    using namespace std::chrono;
+    return duration<double>(steady_clock::now().time_since_epoch()).count();
+}
+constexpr double PingIntervalSec = 4.0 / 64.0;   // every 4 server ticks
+}
 
 namespace tankaq::net
 {
@@ -176,6 +187,38 @@ void Net::Disconnect()
     m_clientState = ClientState::Idle;
 }
 
+void Net::SendPingOn(uint32_t conn, uint32_t& seqCounter, PingProbe* probes)
+{
+    MsgPing ping;
+    ping.seq = ++seqCounter;
+    probes[ping.seq % 8] = { ping.seq, NowSeconds() };
+    SteamNetworkingSockets()->SendMessageToConnection(
+        conn, &ping, sizeof(ping), k_nSteamNetworkingSend_UnreliableNoNagle, nullptr);
+}
+
+void Net::NotePong(uint32_t seq, const PingProbe* probes, float& avgOneWayMs)
+{
+    const PingProbe& probe = probes[seq % 8];
+    if (probe.seq != seq)
+        return;   // too old, overwritten
+    float oneWay = float((NowSeconds() - probe.sentAt) * 1000.0 * 0.5);
+    avgOneWayMs = (avgOneWayMs < 0.0f) ? oneWay
+                                       : avgOneWayMs * 0.8f + oneWay * 0.2f;
+}
+
+float Net::avgOneWayMs(int playerId) const
+{
+    for (const Client& c : m_clients)
+        if (c.playerId == playerId)
+            return c.avgOneWayMs;
+    return -1.0f;
+}
+
+float Net::hostAvgOneWayMs() const
+{
+    return m_hostAvgOneWayMs;
+}
+
 bool Net::clientConnectionStatus(int& pingMs, std::string& desc) const
 {
     if (!m_steamOk || m_mode != Mode::Client || !m_hostConn
@@ -207,7 +250,7 @@ int Net::connectedClients() const
 
 int Net::AllocatePlayerId() const
 {
-    for (int i = 1; i < MaxPlayers; ++i)
+    for (int i = 1; i < MaxLobbyPlayers; ++i)   // lobby supports 4 players
         if (!m_usedPlayerIds[i])
             return i;
     return -1;
@@ -299,6 +342,15 @@ void Net::Poll(const Events& ev)
 
     if (m_mode == Mode::Host && m_pollGroup)
     {
+        // latency probes to every connected player
+        double now = NowSeconds();
+        for (Client& c : m_clients)
+            if (c.playerId >= 0 && now >= c.nextPingAt)
+            {
+                c.nextPingAt = now + PingIntervalSec;
+                SendPingOn(c.conn, c.pingSeq, c.probes);
+            }
+
         int n = s->ReceiveMessagesOnPollGroup(m_pollGroup, msgs, 32);
         for (int i = 0; i < n; ++i)
         {
@@ -311,6 +363,19 @@ void Net::Poll(const Events& ev)
             if (client && m->m_cbSize >= 1)
             {
                 MsgType t = MsgType(d[0]);
+                if (t == MsgType::Ping && m->m_cbSize >= int(sizeof(MsgPing)))
+                {
+                    MsgPong pong;
+                    pong.seq = reinterpret_cast<const MsgPing*>(d)->seq;
+                    s->SendMessageToConnection(m->m_conn, &pong, sizeof(pong),
+                                               k_nSteamNetworkingSend_UnreliableNoNagle,
+                                               nullptr);
+                }
+                else if (t == MsgType::Pong && m->m_cbSize >= int(sizeof(MsgPong)))
+                {
+                    NotePong(reinterpret_cast<const MsgPong*>(d)->seq,
+                             client->probes, client->avgOneWayMs);
+                }
                 if (t == MsgType::Hello && m->m_cbSize >= int(sizeof(MsgHello)))
                 {
                     const MsgHello* hello = reinterpret_cast<const MsgHello*>(d);
@@ -340,7 +405,7 @@ void Net::Poll(const Events& ev)
                             s->SendMessageToConnection(m->m_conn, &w, sizeof(w),
                                                        k_nSteamNetworkingSend_Reliable, nullptr);
                             if (ev.onPlayerJoined)
-                                ev.onPlayerJoined(pid);
+                                ev.onPlayerJoined(pid, hello->name);
                             Log("Net: player %d joined ('%s')", pid, hello->name);
                         }
                     }
@@ -359,12 +424,27 @@ void Net::Poll(const Events& ev)
                         ev.onPurchase(client->playerId,
                                       reinterpret_cast<const MsgPurchase*>(d)->slot);
                 }
+                else if (t == MsgType::Ready && m->m_cbSize >= int(sizeof(MsgReady))
+                         && client->playerId >= 0)
+                {
+                    if (ev.onReady)
+                        ev.onReady(client->playerId,
+                                   reinterpret_cast<const MsgReady*>(d)->ready != 0);
+                }
             }
             m->Release();
         }
     }
     else if (m_mode == Mode::Client && m_hostConn)
     {
+        // latency probes to the host
+        double now = NowSeconds();
+        if (m_clientState == ClientState::Connected && now >= m_hostNextPingAt)
+        {
+            m_hostNextPingAt = now + PingIntervalSec;
+            SendPingOn(m_hostConn, m_hostPingSeq, m_hostProbes);
+        }
+
         int n = s->ReceiveMessagesOnConnection(m_hostConn, msgs, 32);
         for (int i = 0; i < n; ++i)
         {
@@ -373,7 +453,20 @@ void Net::Poll(const Events& ev)
             if (m->m_cbSize >= 1)
             {
                 MsgType t = MsgType(d[0]);
-                if (t == MsgType::Welcome && m->m_cbSize >= int(sizeof(MsgWelcome)))
+                if (t == MsgType::Ping && m->m_cbSize >= int(sizeof(MsgPing)))
+                {
+                    MsgPong pong;
+                    pong.seq = reinterpret_cast<const MsgPing*>(d)->seq;
+                    s->SendMessageToConnection(m_hostConn, &pong, sizeof(pong),
+                                               k_nSteamNetworkingSend_UnreliableNoNagle,
+                                               nullptr);
+                }
+                else if (t == MsgType::Pong && m->m_cbSize >= int(sizeof(MsgPong)))
+                {
+                    NotePong(reinterpret_cast<const MsgPong*>(d)->seq,
+                             m_hostProbes, m_hostAvgOneWayMs);
+                }
+                else if (t == MsgType::Welcome && m->m_cbSize >= int(sizeof(MsgWelcome)))
                 {
                     m_clientState = ClientState::Connected;
                     if (ev.onWelcome)
@@ -417,6 +510,16 @@ void Net::SendPurchaseToHost(int slot)
         return;
     MsgPurchase msg;
     msg.slot = uint8_t(slot);
+    SteamNetworkingSockets()->SendMessageToConnection(
+        m_hostConn, &msg, sizeof(msg), k_nSteamNetworkingSend_Reliable, nullptr);
+}
+
+void Net::SendReadyToHost(bool ready)
+{
+    if (m_mode != Mode::Client || !m_hostConn || m_clientState != ClientState::Connected)
+        return;
+    MsgReady msg;
+    msg.ready = ready ? 1 : 0;
     SteamNetworkingSockets()->SendMessageToConnection(
         m_hostConn, &msg, sizeof(msg), k_nSteamNetworkingSend_Reliable, nullptr);
 }

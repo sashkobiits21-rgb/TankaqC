@@ -81,6 +81,13 @@ static void SpawnPoint(int id, float& x, float& z, float& yaw)
     yaw = WrapAngle(ang + XM_PI);   // face arena center
 }
 
+void LobbySpot(int id, float& x, float& z, float& yaw)
+{
+    x = (float(id) - (MaxLobbyPlayers - 1) * 0.5f) * 5.0f;
+    z = -8.0f;
+    yaw = XM_PI;                    // face the lobby camera (-Z)
+}
+
 uint32_t GameState::NextRand()
 {
     rngState ^= rngState << 13;
@@ -124,13 +131,41 @@ void GameState::RecalcStats(int id)
 void GameState::SpawnPlayer(int id)
 {
     PlayerState& p = players[id];
+    char keepName[16];
+    memcpy(keepName, p.name, sizeof(keepName));
     p = PlayerState{};
+    memcpy(p.name, keepName, sizeof(p.name));
     p.active = true;
     SpawnPoint(id, p.x, p.z, p.hullYaw);
     p.turretYaw = p.hullYaw;
     RecalcStats(id);
     p.health = MaxHealthFor(p);
     p.nextOfferTick = tick + TickRate + uint32_t(id) * (TickRate / 4);
+}
+
+void GameState::StartMatch()
+{
+    for (int id = 0; id < MaxPlayers; ++id)
+        if (players[id].active)
+            SpawnPlayer(id);   // full reset: money, upgrades, score, offers
+    for (Projectile& pr : projectiles)
+        pr.active = false;
+    phase = PhasePlaying;
+    winner = 0xFF;
+    matchEndTick = tick + MatchDurationTicks;
+}
+
+void GameState::ToLobby()
+{
+    for (int id = 0; id < MaxPlayers; ++id)
+        if (players[id].active)
+        {
+            players[id].ready = 0;
+            players[id].health = std::max(1, players[id].health);
+        }
+    for (Projectile& pr : projectiles)
+        pr.active = false;
+    phase = PhaseLobby;
 }
 
 bool GameState::AnyConsumed(int id) const
@@ -315,6 +350,59 @@ void GameState::Tick(const InputCmd* inputs)
 {
     ++tick;
 
+    // ---------------- match phases ----------------
+    if (phase == PhaseLobby)
+    {
+        int active = 0, ready = 0;
+        for (int id = 0; id < MaxPlayers; ++id)
+        {
+            PlayerState& p = players[id];
+            if (!p.active)
+                continue;
+            ++active;
+            if (p.ready) ++ready;
+            LobbySpot(id, p.x, p.z, p.hullYaw);   // parked lineup
+            p.turretYaw = p.hullYaw;
+            if (tick % StatRecalcTicks == 0)
+                RecalcStats(id);
+            p.health = MaxHealthFor(p);
+        }
+        if (active > 0 && ready == active)
+            StartMatch();
+        return;   // no movement, firing, offers or money in the lobby
+    }
+    if (phase == PhaseEnded)
+    {
+        if (tick >= endedTick + EndedReturnTicks)
+            ToLobby();
+        return;
+    }
+    if (phase == PhasePlaying && tick >= matchEndTick)
+    {
+        // most kills wins; a tie goes to overtime (first kill takes it)
+        int best = -1, bestId = 0xFF;
+        bool tie = false;
+        for (int id = 0; id < MaxPlayers; ++id)
+        {
+            if (!players[id].active)
+                continue;
+            int s = players[id].score;
+            if (s > best) { best = s; bestId = id; tie = false; }
+            else if (s == best) tie = true;
+        }
+        if (tie)
+        {
+            phase = PhaseOvertime;
+        }
+        else
+        {
+            phase = PhaseEnded;
+            winner = uint8_t(bestId);
+            endedTick = tick;
+            return;
+        }
+    }
+
     for (int id = 0; id < MaxPlayers; ++id)
     {
         PlayerState& p = players[id];
@@ -374,6 +462,44 @@ void GameState::Tick(const InputCmd* inputs)
             ++p.money;
 
         const InputCmd& in = inputs[id];
+
+        // Server-side lag compensation: a freshly received direction change is
+        // one-way-latency old, so the player has really been moving that way
+        // for min(latency, 80 ms) already. Owe that distance and drain it over
+        // ~2 ticks (a fast lerp, never a teleport); AdvanceMovement's clamps
+        // and collision then apply to the caught-up position.
+        if (lagCompEnabled && p.lagOneWayMs > 0.5f)
+        {
+            float nl2 = in.moveX * in.moveX + in.moveZ * in.moveZ;
+            float pl2 = p.lastInMoveX * p.lastInMoveX + p.lastInMoveZ * p.lastInMoveZ;
+            bool moving = nl2 > 0.25f;
+            bool wasMoving = pl2 > 0.25f;
+            bool newDirection = moving
+                && (!wasMoving
+                    || (in.moveX * p.lastInMoveX + in.moveZ * p.lastInMoveZ)
+                           / sqrtf(nl2 * pl2) < 0.7f);
+            if (newDirection)
+            {
+                float sec = std::min(p.lagOneWayMs, 80.0f) * 0.001f;
+                float inv = 1.0f / sqrtf(nl2);
+                float dist = p.stats[int(Stat::MoveSpeed)] * sec;
+                p.catchupX += in.moveX * inv * dist;
+                p.catchupZ += in.moveZ * inv * dist;
+            }
+        }
+        p.lastInMoveX = in.moveX;
+        p.lastInMoveZ = in.moveZ;
+        if (p.catchupX != 0.0f || p.catchupZ != 0.0f)
+        {
+            float k = 0.55f;   // ~2-tick drain
+            p.x += p.catchupX * k;
+            p.z += p.catchupZ * k;
+            p.catchupX *= (1.0f - k);
+            p.catchupZ *= (1.0f - k);
+            if (p.catchupX * p.catchupX + p.catchupZ * p.catchupZ < 1e-4f)
+                p.catchupX = p.catchupZ = 0.0f;
+        }
+
         AdvanceMovement(id, in);
 
         if ((in.buttons & BtnFire) && p.fireCooldown <= 0.0f)
@@ -431,6 +557,12 @@ void GameState::Tick(const InputCmd* inputs)
                     {
                         ++shooter.score;
                         shooter.money = uint16_t(std::min(999, shooter.money + 100));
+                        if (phase == PhaseOvertime)   // sudden death: first kill
+                        {
+                            phase = PhaseEnded;
+                            winner = pr.owner;
+                            endedTick = tick;
+                        }
                     }
                 }
                 if (t.health <= 0)

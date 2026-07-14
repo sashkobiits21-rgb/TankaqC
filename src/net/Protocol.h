@@ -5,7 +5,7 @@
 namespace tankaq::net
 {
 
-constexpr uint8_t ProtocolVersion = 5;   // v5: stat replication + offer conveyor
+constexpr uint8_t ProtocolVersion = 6;   // v6: lobby/match phases, names, ready
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t
@@ -16,6 +16,9 @@ enum class MsgType : uint8_t
     Input,         // client -> host, unreliable
     Snapshot,      // host -> all, unreliable
     Purchase,      // client -> host, reliable
+    Ready,         // client -> host, reliable
+    Ping,          // either direction, unreliable (latency probe)
+    Pong,          // echo of Ping
 };
 
 #pragma pack(push, 1)
@@ -55,6 +58,26 @@ struct MsgPurchase
     uint8_t slot = 0;      // offer slot index
 };
 
+struct MsgReady
+{
+    uint8_t type = uint8_t(MsgType::Ready);
+    uint8_t ready = 0;
+};
+
+// Latency probes: sent every 4 ticks (~16/s, ~10 bytes each). The receiver
+// echoes a Pong; the sender takes RTT/2 as one-way latency and keeps an EMA.
+struct MsgPing
+{
+    uint8_t type = uint8_t(MsgType::Ping);
+    uint32_t seq = 0;
+};
+
+struct MsgPong
+{
+    uint8_t type = uint8_t(MsgType::Pong);
+    uint32_t seq = 0;
+};
+
 struct OfferNet
 {
     uint8_t active = 0;
@@ -66,6 +89,8 @@ struct OfferNet
 struct PlayerNet
 {
     uint8_t active = 0;
+    uint8_t ready = 0;
+    char name[16]{};
     uint16_t health = 0;   // max health is uncapped now
     uint16_t score = 0;
     uint16_t money = 0;
@@ -87,7 +112,10 @@ struct ProjectileNet
 struct MsgSnapshot
 {
     uint8_t type = uint8_t(MsgType::Snapshot);
+    uint8_t phase = PhaseLobby;
+    uint8_t winner = 0xFF;
     uint32_t tick = 0;
+    uint32_t matchEndTick = 0;
     PlayerNet players[MaxPlayers];
     ProjectileNet projectiles[MaxProjectiles];
 };

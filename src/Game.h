@@ -7,10 +7,22 @@ namespace tankaq
 {
 
 constexpr int   MaxPlayers = 8;
+constexpr int   MaxLobbyPlayers = 4;         // join cap
 constexpr int   MaxProjectiles = 24;
 constexpr int   TickRate = 64;               // 64-tick server
 constexpr float TickDt = 1.0f / TickRate;
 constexpr int   StatRecalcTicks = 8;         // host recalcs stats every 8 ticks
+
+// ------------------------------------------------------------------- match
+enum : uint8_t
+{
+    PhaseLobby = 0,      // ready-up, tanks parked in a lineup
+    PhasePlaying,        // 5-minute kill-count match
+    PhaseOvertime,       // tied at the horn: first kill wins
+    PhaseEnded,          // winner banner, auto-return to lobby
+};
+constexpr uint32_t MatchDurationTicks = 5 * 60 * TickRate;
+constexpr uint32_t EndedReturnTicks = 6 * TickRate;
 constexpr int   SnapshotEveryTicks = 3;      // 20 Hz
 constexpr float ArenaHalf = 30.0f;
 constexpr float TankSpeed = 7.0f;            // units/s
@@ -123,6 +135,8 @@ struct PlayerState
     float muzzleFlash = 0;    // seconds of muzzle glow remaining
     uint16_t score = 0;
     uint16_t money = 0;
+    char name[16]{};                      // display name (from Hello / persona)
+    uint8_t ready = 0;                    // lobby ready flag
     float stats[StatCount]{};             // cached finals (replicated)
     Offer offers[NumOfferSlots];          // replicated to the owning client
     std::vector<uint8_t> owned;           // purchased upgrade types (host only)
@@ -130,6 +144,11 @@ struct PlayerState
     uint8_t nextOfferId = 1;
     uint32_t nextOfferTick = 0;
     uint32_t nextPendingDrainTick = 0;
+
+    // host-only lag compensation state (not replicated)
+    float lagOneWayMs = 0;                // averaged one-way latency to this player
+    float lastInMoveX = 0, lastInMoveZ = 0;
+    float catchupX = 0, catchupZ = 0;     // owed pre-travel, drained over ~2 ticks
 };
 
 inline int MaxHealthFor(const PlayerState& p)
@@ -163,6 +182,11 @@ struct GameState
     PlayerState players[MaxPlayers];
     Projectile projectiles[MaxProjectiles];
     uint32_t tick = 0;
+    uint8_t phase = PhaseLobby;
+    uint8_t winner = 0xFF;
+    uint32_t matchEndTick = 0;
+    uint32_t endedTick = 0;
+    bool lagCompEnabled = true;   // host: input catch-up on direction changes
 
     // world-space muzzle parameters, set once from the loaded model
     DirectX::XMFLOAT3 turretPivot{};
@@ -170,6 +194,10 @@ struct GameState
 
     void SpawnPlayer(int id);
     void RemovePlayer(int id);
+    // Host: fresh 5-minute match (full per-player reset, ring spawns).
+    void StartMatch();
+    // Host: back to the ready-up lineup.
+    void ToLobby();
     // Advances the full simulation one tick. `inputs` is indexed by player id.
     void Tick(const InputCmd* inputs);
     // Movement + turret only (no timers/firing): shared by the host simulation
@@ -195,5 +223,7 @@ struct GameState
 
 float WrapAngle(float a);
 float MoveTowardsAngle(float current, float target, float maxDelta);
+// Lobby lineup slot for a player id (tanks face the lobby camera).
+void LobbySpot(int id, float& x, float& z, float& yaw);
 
 } // namespace tankaq

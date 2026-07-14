@@ -42,6 +42,7 @@ struct Options
     int shadowRes = -1;
     int shadowFilter = -1;
     int aa = -1;
+    int lagComp = -1;
     bool boom = false;                                  // periodic test explosions
     bool fullscreen = false;
     bool rich = false;                                  // start with 500 credits
@@ -145,6 +146,14 @@ struct App
     float lastClickX = 0, lastClickY = 0;
     int lastClickedIcon = -1;
     int lastClickedRarity = 0;
+    float readyRect[4]{};
+    uint8_t prevPhase = PhaseLobby;
+
+    // lag compensation (toggleable): server input catch-up + client-side
+    // extrapolation of remote tanks with a 10 ms correction lerp
+    bool lagComp = true;
+    struct RemoteDisplay { float x, z, hullYaw, turretYaw; bool valid; };
+    RemoteDisplay remoteDisplay[MaxPlayers]{};
     int lastTailIcon = 0, lastTailRarity = 0;
     double shopTestBuyAt = 0, shopTestNextOffer = 0;
     int shopTestOffersForced = 0;
@@ -169,6 +178,47 @@ void ApplyResolution();
 void CopyTextToClipboard(const std::string& text);
 void OpenShop();
 void HandleShopClick(float mx, float my);
+void ToggleReady();
+
+// stb_easy_font is ASCII-only: scrub names to printable characters
+void SetPlayerName(int id, const char* raw)
+{
+    PlayerState& p = g.game.players[id];
+    int n = 0;
+    for (const char* c = raw; *c && n < 15; ++c)
+        if (*c >= 32 && *c < 127)
+            p.name[n++] = *c;
+    p.name[n] = 0;
+    if (n == 0)
+        sprintf_s(p.name, "PLAYER %d", id + 1);
+}
+
+bool WorldToScreen(const XMFLOAT3& wp, const XMFLOAT4X4& viewProj,
+                   float& sx, float& sy)
+{
+    XMVECTOR clip = XMVector4Transform(XMVectorSet(wp.x, wp.y, wp.z, 1.0f),
+                                       XMLoadFloat4x4(&viewProj));
+    float w = XMVectorGetW(clip);
+    if (w <= 0.01f)
+        return false;
+    sx = (XMVectorGetX(clip) / w * 0.5f + 0.5f) * float(g.width);
+    sy = (0.5f - XMVectorGetY(clip) / w * 0.5f) * float(g.height);
+    return true;
+}
+
+// per-player identity colors (tanks + score squares)
+static const XMFLOAT4 kPlayerTint[MaxLobbyPlayers] = {
+    { 0.85f, 1.05f, 0.85f, 0 },   // P1 green
+    { 1.15f, 0.75f, 0.72f, 0 },   // P2 red
+    { 0.72f, 0.88f, 1.20f, 0 },   // P3 blue
+    { 1.15f, 1.05f, 0.60f, 0 },   // P4 yellow
+};
+static const UiColor kPlayerUiCol[MaxLobbyPlayers] = {
+    { 0.45f, 0.80f, 0.45f, 1 },
+    { 0.85f, 0.40f, 0.38f, 1 },
+    { 0.42f, 0.60f, 0.90f, 1 },
+    { 0.88f, 0.78f, 0.32f, 1 },
+};
 
 // ------------------------------------------------------------------ helpers
 
@@ -209,6 +259,7 @@ Options ParseOptions(const std::string& cmd)
     if (!(v = GetArg(cmd, "--shadowres=")).empty()) o.shadowRes = atoi(v.c_str());
     if (!(v = GetArg(cmd, "--shadowfilter=")).empty()) o.shadowFilter = atoi(v.c_str());
     if (!(v = GetArg(cmd, "--aa=")).empty()) o.aa = atoi(v.c_str());
+    if (!(v = GetArg(cmd, "--lagcomp=")).empty()) o.lagComp = atoi(v.c_str());
     o.boom = cmd.find("--boom") != std::string::npos;
     o.fullscreen = cmd.find("--fullscreen") != std::string::npos;
     o.rich = cmd.find("--rich") != std::string::npos;
@@ -228,6 +279,9 @@ void ApplySnapshot(const net::MsgSnapshot& s)
     g.haveSnap = true;
 
     g.game.tick = s.tick;
+    g.game.phase = s.phase;
+    g.game.winner = s.winner;
+    g.game.matchEndTick = s.matchEndTick;
     for (int i = 0; i < MaxPlayers; ++i)
     {
         const net::PlayerNet& in = s.players[i];
@@ -238,6 +292,9 @@ void ApplySnapshot(const net::MsgSnapshot& s)
             continue;
         if (!wasActive)
             p = PlayerState{}, p.active = true;
+        memcpy(p.name, in.name, sizeof(p.name));
+        p.name[15] = 0;
+        p.ready = in.ready;
         p.health = in.health;
         p.score = in.score;
         p.money = in.money;
@@ -289,11 +346,16 @@ net::MsgSnapshot BuildSnapshot()
 {
     net::MsgSnapshot s;
     s.tick = g.game.tick;
+    s.phase = g.game.phase;
+    s.winner = g.game.winner;
+    s.matchEndTick = g.game.matchEndTick;
     for (int i = 0; i < MaxPlayers; ++i)
     {
         const PlayerState& p = g.game.players[i];
         net::PlayerNet& out = s.players[i];
         out.active = p.active ? 1 : 0;
+        out.ready = p.ready;
+        memcpy(out.name, p.name, sizeof(out.name));
         out.health = uint16_t(std::clamp(p.health, 0, 65535));
         out.score = p.score;
         out.money = p.money;
@@ -360,12 +422,47 @@ void GetRenderPlayer(int id, float& x, float& z, float& hullYaw, float& turretYa
         const net::PlayerNet& b = g.snapCurr.players[id];
         if (a.active && b.active)
         {
-            float t = std::clamp(float((g.time - g.snapCurrTime)
-                                       / (SnapshotEveryTicks * TickDt)), 0.0f, 1.0f);
+            float snapDt = SnapshotEveryTicks * TickDt;
+            float t = std::clamp(float((g.time - g.snapCurrTime) / snapDt),
+                                 0.0f, 1.0f);
             x = a.x + (b.x - a.x) * t;
             z = a.z + (b.z - a.z) * t;
             hullYaw = LerpAngle(a.hullYaw, b.hullYaw, t);
             turretYaw = LerpAngle(a.turretYaw, b.turretYaw, t);
+
+            // Client-side lag compensation: remote tanks are one-way-latency
+            // old, so project them forward along their snapshot velocity by
+            // min(latency, 80 ms). Corrections blend in over ~10 ms so new
+            // snapshots never teleport the tank.
+            App::RemoteDisplay& rd = g.remoteDisplay[id];
+            if (g.lagComp)
+            {
+                float oneWay = g.net.hostAvgOneWayMs();
+                float extrap = std::clamp(oneWay, 0.0f, 80.0f) * 0.001f;
+                float vx = (b.x - a.x) / snapDt;
+                float vz = (b.z - a.z) / snapDt;
+                float tx = x + vx * extrap;
+                float tz = z + vz * extrap;
+                if (!rd.valid)
+                    rd = { tx, tz, hullYaw, turretYaw, true };
+                float k = 1.0f - expf(-g.frameDt / 0.010f);
+                rd.x += (tx - rd.x) * k;
+                rd.z += (tz - rd.z) * k;
+                rd.hullYaw = LerpAngle(rd.hullYaw, hullYaw, k);
+                rd.turretYaw = LerpAngle(rd.turretYaw, turretYaw, k);
+                x = rd.x;
+                z = rd.z;
+                hullYaw = rd.hullYaw;
+                turretYaw = rd.turretYaw;
+            }
+            else
+            {
+                rd.valid = false;
+            }
+        }
+        else
+        {
+            g.remoteDisplay[id].valid = false;
         }
     }
 }
@@ -522,6 +619,21 @@ void LeaveToMenu(const std::string& why)
     g.statusLine = why;
 }
 
+void ToggleReady()
+{
+    if (g.screen != Screen::InGame || g.game.phase != PhaseLobby)
+        return;
+    PlayerState& me = g.game.players[g.myId];
+    bool want = !me.ready;
+    if (!g.online || g.isHost)
+        me.ready = want ? 1 : 0;
+    else
+    {
+        me.ready = want ? 1 : 0;   // optimistic; snapshot confirms
+        g.net.SendReadyToHost(want);
+    }
+}
+
 void StartSolo()
 {
     g.myId = 0;
@@ -529,6 +641,7 @@ void StartSolo()
     g.online = false;
     ResetNetSimState();
     g.game.SpawnPlayer(0);
+    SetPlayerName(0, "YOU");
     if (g.opt.rich || g.opt.shopTest)
         g.game.players[0].money = 500;
     g.screen = Screen::InGame;
@@ -548,6 +661,7 @@ void StartHost()
     g.online = true;
     ResetNetSimState();
     g.game.SpawnPlayer(0);
+    SetPlayerName(0, g.net.myName().c_str());
     if (g.opt.rich || g.opt.shopTest)
         g.game.players[0].money = 500;
     g.screen = Screen::InGame;
@@ -673,11 +787,7 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
         GetRenderPlayer(i, rx, rz, rHull, rTurret);
         bool dead = p.health <= 0;
         float sink = dead ? -0.35f : 0.0f;
-        XMFLOAT4 tint{ 1, 1, 1, 0 };
-        if (i == g.myId)
-            tint = { 0.85f, 1.0f, 0.85f, 0 };          // greenish self
-        else
-            tint = { 1.0f, 0.88f, 0.80f, 0 };          // warm enemies
+        XMFLOAT4 tint = kPlayerTint[i % MaxLobbyPlayers];   // per-player identity
         if (p.hitFlash > 0)
             tint = { 1.0f, 0.25f, 0.2f, 0.35f };
         if (dead)
@@ -1149,6 +1259,110 @@ void HandleShopClick(float mx, float my)
     }
 }
 
+// Score squares arranged on a circle (2pi / player count). The layout
+// degenerates nicely: 2 players = left/right, 3 = triangle, 4 = rotated
+// square; the match timer sits in the circle's center.
+void DrawScoreCircle()
+{
+    int ids[MaxLobbyPlayers];
+    int n = 0;
+    for (int i = 0; i < MaxPlayers && n < MaxLobbyPlayers; ++i)
+        if (g.game.players[i].active)
+            ids[n++] = i;
+    if (n == 0)
+        return;
+    float cx = float(g.width) * 0.5f, cy = 86.0f;
+    float radius = 60.0f;
+    char buf[32];
+
+    for (int k = 0; k < n; ++k)
+    {
+        float ang = (n == 1) ? XM_PI
+                  : (n == 2) ? (k == 0 ? XM_PI : 0.0f)
+                             : (-XM_PI * 0.5f + XM_2PI * float(k) / float(n));
+        float x = cx + cosf(ang) * radius;
+        float y = cy + sinf(ang) * radius;
+        const PlayerState& p = g.game.players[ids[k]];
+        UiColor col = kPlayerUiCol[ids[k] % MaxLobbyPlayers];
+        g.ui.Rect(x - 21, y - 21, 42, 42, { col.r * 0.55f, col.g * 0.55f,
+                                            col.b * 0.55f, 0.92f });
+        g.ui.RectOutline(x - 21, y - 21, 42, 42, 2,
+                         ids[k] == g.myId ? UiColor{ 1, 1, 1, 1 } : col);
+        sprintf_s(buf, "%u", unsigned(p.score));
+        g.ui.TextCentered(x, y - 9, 2.6f, { 1, 1, 1, 1 }, buf);
+        std::string nm(p.name);
+        if (nm.size() > 10) nm.resize(10);
+        g.ui.TextCentered(x, y + 26, 1.3f, { 1, 1, 1, 0.75f }, nm);
+    }
+
+    if (g.game.phase == PhaseOvertime)
+    {
+        float pulse = 0.6f + 0.4f * sinf(float(g.time) * 6.0f);
+        g.ui.TextCentered(cx, cy - 10, 2.8f, { 1, 0.35f, 0.3f, pulse }, "OT");
+        g.ui.TextCentered(cx, cy + 14, 1.3f, { 1, 0.6f, 0.5f, 0.9f }, "FIRST KILL WINS");
+    }
+    else if (g.game.phase == PhasePlaying)
+    {
+        uint32_t left = g.game.matchEndTick > g.game.tick
+                            ? g.game.matchEndTick - g.game.tick : 0;
+        int secs = int(left / TickRate);
+        sprintf_s(buf, "%d:%02d", secs / 60, secs % 60);
+        g.ui.TextCentered(cx, cy - 10, 2.6f,
+                          secs <= 30 ? UiColor{ 1, 0.5f, 0.4f, 1 }
+                                     : UiColor{ 1, 1, 1, 0.95f }, buf);
+    }
+}
+
+void BuildLobbyUi(FrameData& frame)
+{
+    float w = float(g.width), h = float(g.height);
+    char buf[96];
+    int active = 0, ready = 0;
+    for (int i = 0; i < MaxPlayers; ++i)
+        if (g.game.players[i].active)
+        {
+            ++active;
+            if (g.game.players[i].ready) ++ready;
+        }
+    sprintf_s(buf, "LOBBY  %d / %d PLAYERS   %d READY", active, MaxLobbyPlayers, ready);
+    g.ui.TextCentered(w * 0.5f, 84, 2.4f, { 0.9f, 1, 0.85f, 1 }, buf);
+
+    // name + ready tag floating above each tank in the lineup
+    for (int i = 0; i < MaxPlayers; ++i)
+    {
+        const PlayerState& p = g.game.players[i];
+        if (!p.active)
+            continue;
+        float lx, lz, lyaw;
+        LobbySpot(i, lx, lz, lyaw);
+        float sx, sy;
+        if (!WorldToScreen(XMFLOAT3(lx, 3.4f, lz), frame.viewProj, sx, sy))
+            continue;
+        UiColor col = kPlayerUiCol[i % MaxLobbyPlayers];
+        std::string nm(p.name);
+        if (nm.size() > 12) nm.resize(12);
+        float tw = g.ui.TextWidth(1.9f, nm) + 20;
+        g.ui.Rect(sx - tw * 0.5f, sy - 14, tw, 26, { 0, 0, 0, 0.55f });
+        g.ui.TextCentered(sx, sy - 8, 1.9f, col, nm);
+        g.ui.TextCentered(sx, sy + 18, 1.5f,
+                          p.ready ? UiColor{ 0.5f, 1, 0.5f, 1 }
+                                  : UiColor{ 1, 1, 1, 0.45f },
+                          p.ready ? "READY" : "NOT READY");
+        if (i == g.myId)
+            g.ui.TextCentered(sx, sy + 36, 1.3f, { 1, 1, 1, 0.5f }, "(you)");
+    }
+
+    // ready button
+    const PlayerState& me = g.game.players[g.myId];
+    UiButton btn{ w * 0.5f - 140, h - 128, 280, 56,
+                  me.ready ? "UNREADY" : "READY UP" };
+    g.readyRect[0] = btn.x; g.readyRect[1] = btn.y;
+    g.readyRect[2] = btn.w; g.readyRect[3] = btn.h;
+    DrawButton(g.ui, btn, btn.Contains(float(g.mouseX), float(g.mouseY)));
+    g.ui.TextCentered(w * 0.5f, h - 62, 1.4f, { 1, 1, 1, 0.5f },
+                      "R toggles ready - match starts when everyone is ready");
+}
+
 void BuildHud(FrameData& frame)
 {
     const PlayerState& me = g.game.players[g.myId];
@@ -1199,6 +1413,15 @@ void BuildHud(FrameData& frame)
         g.ui.TextCentered(w * 0.5f, 56, 1.5f, { 1, 1, 1, 0.7f }, buf);
     }
 
+    if (g.game.phase == PhaseLobby)
+    {
+        BuildLobbyUi(frame);
+        if (!g.statusLine.empty())
+            g.ui.TextCentered(w * 0.5f, float(g.height) - 30, 1.7f,
+                              { 1, 0.8f, 0.4f, 0.95f }, g.statusLine);
+        return;
+    }
+
     // health bar + credits
     float hx = 10, hy = float(g.height) - 46;
     g.ui.Rect(hx, hy, 260, 26, { 0, 0, 0, 0.55f });
@@ -1219,18 +1442,21 @@ void BuildHud(FrameData& frame)
     g.ui.Rect(hx, hy - 14, 260, 8, { 0, 0, 0, 0.45f });
     g.ui.Rect(hx + 2, hy - 12, 256 * std::clamp(rf, 0.0f, 1.0f), 4, { 0.95f, 0.9f, 0.5f, 0.9f });
 
-    // scoreboard
-    float sy = 60;
-    for (int i = 0; i < MaxPlayers; ++i)
+    // kill scores on the circle + match timer in its center
+    DrawScoreCircle();
+
+    if (g.game.phase == PhaseEnded)
     {
-        const PlayerState& p = g.game.players[i];
-        if (!p.active)
-            continue;
-        sprintf_s(buf, "%s P%d   kills %u %s", i == g.myId ? ">" : " ", i + 1,
-                  unsigned(p.score), p.health <= 0 ? "(down)" : "");
-        g.ui.Text(w - 230, sy, 1.7f, i == g.myId ? UiColor{ 0.8f, 1, 0.8f, 0.95f }
-                                                 : UiColor{ 1, 1, 1, 0.8f }, buf);
-        sy += 18;
+        const char* winName = (g.game.winner < MaxPlayers)
+                                  ? g.game.players[g.game.winner].name : "?";
+        if (g.game.winner == g.myId)
+            sprintf_s(buf, "YOU WIN");
+        else
+            sprintf_s(buf, "%s WINS", winName);
+        g.ui.TextCentered(w * 0.5f, g.height * 0.36f, 5.0f,
+                          { 1, 0.95f, 0.55f, 1 }, buf);
+        g.ui.TextCentered(w * 0.5f, g.height * 0.36f + 52, 1.7f,
+                          { 1, 1, 1, 0.7f }, "returning to lobby...");
     }
 
     if (me.health <= 0 && me.active)
@@ -1290,6 +1516,8 @@ std::vector<UiButton> MenuButtons()
                   kResolutions[g.resIndex].w, kResolutions[g.resIndex].h);
         labels.push_back(buf);
         sprintf_s(buf, "ANTI-ALIASING: %s", g.post.aaEnabled ? "ON" : "OFF");
+        labels.push_back(buf);
+        sprintf_s(buf, "LAG COMP: %s", g.lagComp ? "ON" : "OFF");
         labels.push_back(buf);
         sprintf_s(buf, "GI: %s", g.post.giEnabled ? "ON" : "OFF");
         labels.push_back(buf);
@@ -1421,6 +1649,8 @@ void HandleMenuClick()
             g.post.shadowFilter = (g.post.shadowFilter + 1) % 3;
         else if (b.label.rfind("ANTI-ALIASING:", 0) == 0)
             g.post.aaEnabled = !g.post.aaEnabled;
+        else if (b.label.rfind("LAG COMP:", 0) == 0)
+            g.lagComp = !g.lagComp;
         else if (b.label.rfind("RENDERER:", 0) == 0)
             SwitchRenderer(g.currentBackend == Backend::D3D12 ? Backend::D3D11
                                                               : Backend::D3D12);
@@ -1504,11 +1734,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (wp == VK_F5) g.post.giEnabled = !g.post.giEnabled;
         if (wp == VK_F6) g.post.aoEnabled = !g.post.aoEnabled;
         if (wp == VK_F7) g.post.shadowsEnabled = !g.post.shadowsEnabled;
-        if (wp == VK_TAB && g.screen == Screen::InGame)
+        if (wp == VK_TAB && g.screen == Screen::InGame
+            && (g.game.phase == PhasePlaying || g.game.phase == PhaseOvertime))
         {
             if (g.shopOpen) g.shopOpen = false;
             else OpenShop();
         }
+        if (wp == 'R')
+            ToggleReady();
         if (g.screen == Screen::JoinEntry)
         {
             if (wp == VK_BACK && !g.joinText.empty())
@@ -1786,6 +2019,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         g.post.shadowMapSize = g.opt.shadowRes;
     if (g.opt.shadowFilter >= 0) g.post.shadowFilter = std::clamp(g.opt.shadowFilter, 0, 2);
     if (g.opt.aa >= 0) g.post.aaEnabled = g.opt.aa != 0;
+    if (g.opt.lagComp >= 0) g.lagComp = g.opt.lagComp != 0;
 
     bool steamOk = g.net.InitSteam();
     if (!steamOk)
@@ -1800,8 +2034,25 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         StartJoin(g.opt.join);
 
     net::Net::Events ev;
-    ev.onPlayerJoined = [](int pid) { g.game.SpawnPlayer(pid); };
+    ev.onPlayerJoined = [](int pid, const char* name)
+    {
+        g.game.SpawnPlayer(pid);
+        SetPlayerName(pid, name);
+        if (g.game.phase == PhaseLobby)
+        {
+            float x, z, yaw;
+            LobbySpot(pid, x, z, yaw);
+            g.game.players[pid].x = x;
+            g.game.players[pid].z = z;
+            g.game.players[pid].hullYaw = g.game.players[pid].turretYaw = yaw;
+        }
+    };
     ev.onPlayerLeft = [](int pid) { g.game.RemovePlayer(pid); };
+    ev.onReady = [](int pid, bool ready)
+    {
+        if (g.game.phase == PhaseLobby)
+            g.game.players[pid].ready = ready ? 1 : 0;
+    };
     ev.onInput = [](int pid, const net::MsgInput& m)
     {
         if (m.seq > g.inputSeqs[pid])   // ignore late/out-of-order packets
@@ -1885,6 +2136,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             if (g.isHost)
             {
                 g.inputs[g.myId] = local;
+                g.game.lagCompEnabled = g.lagComp;
+                for (int pid = 1; pid < MaxLobbyPlayers; ++pid)
+                    g.game.players[pid].lagOneWayMs =
+                        std::max(0.0f, g.net.avgOneWayMs(pid));
                 g.prevTick = g.game;
                 g.game.Tick(g.inputs);
                 if (g.online && g.game.tick % SnapshotEveryTicks == 0)
@@ -1904,9 +2159,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                 g.net.SendInputToHost(m);
 
                 // client-side prediction: move our tank immediately with the
-                // same integration the host runs; snapshots reconcile later
+                // same integration the host runs; snapshots reconcile later.
+                // Only during play -- in the lobby the host parks everyone.
                 PlayerState& me = g.game.players[g.myId];
-                if (me.active && me.health > 0)
+                bool playing = g.game.phase == PhasePlaying
+                            || g.game.phase == PhaseOvertime;
+                if (!playing)
+                {
+                    g.pendingInputs.clear();
+                }
+                else if (me.active && me.health > 0)
                 {
                     g.pendingInputs.push_back({ g.inputSeq, local });
                     if (g.pendingInputs.size() > 120)
@@ -1928,7 +2190,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         //    the look-at target, so they always agree (no relative twist),
         //  - snap to the target when within a millimeter to kill float noise.
         XMFLOAT3 target{ 0, 0, 0 };
-        if (g.screen == Screen::InGame && g.game.players[g.myId].active)
+        bool lobbyCam = g.screen == Screen::InGame && g.game.phase == PhaseLobby;
+        if (lobbyCam)
+            target = XMFLOAT3(0, 0, -8.0f);   // lineup center
+        else if (g.screen == Screen::InGame && g.game.players[g.myId].active)
         {
             float rx, rz, rh, rt;
             GetRenderPlayer(g.myId, rx, rz, rh, rt);
@@ -1977,15 +2242,27 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             g.camYawLean = (fabsf(dy) < 0.0004f) ? tYaw : g.camYawLean + dy * kl;
             g.camPitchLean = (fabsf(dp) < 0.0004f) ? tPitch : g.camPitchLean + dp * kl;
         }
-        g.camPos = XMFLOAT3(g.camFocus.x, 19.0f, g.camFocus.z - 14.5f);
-
-        XMMATRIX view = XMMatrixLookAtRH(
-            XMVectorSet(g.camPos.x, g.camPos.y, g.camPos.z, 1),
-            XMVectorSet(g.camFocus.x, 0, g.camFocus.z + 2.0f, 1),
-            XMVectorSet(0, 1, 0, 0));
-        // apply the lean in view space (local axes)
-        view = view * XMMatrixRotationY(g.camYawLean)
-                    * XMMatrixRotationX(g.camPitchLean);
+        XMMATRIX view;
+        if (lobbyCam)
+        {
+            g.camPos = XMFLOAT3(0, 8.5f, -21.0f);
+            view = XMMatrixLookAtRH(
+                XMVectorSet(g.camPos.x, g.camPos.y, g.camPos.z, 1),
+                XMVectorSet(0, 1.0f, -8.0f, 1),
+                XMVectorSet(0, 1, 0, 0));
+        }
+        else
+        {
+            // top-down battle camera: steeper and further out
+            g.camPos = XMFLOAT3(g.camFocus.x, 27.0f, g.camFocus.z - 8.0f);
+            view = XMMatrixLookAtRH(
+                XMVectorSet(g.camPos.x, g.camPos.y, g.camPos.z, 1),
+                XMVectorSet(g.camFocus.x, 0, g.camFocus.z + 0.5f, 1),
+                XMVectorSet(0, 1, 0, 0));
+            // apply the movement lean in view space (local axes)
+            view = view * XMMatrixRotationY(g.camYawLean)
+                        * XMMatrixRotationX(g.camPitchLean);
+        }
         XMMATRIX proj = XMMatrixPerspectiveFovRH(XMConvertToRadians(46.0f),
                                                  float(g.width) / float(g.height),
                                                  0.1f, 300.0f);
@@ -1999,6 +2276,22 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         XMFLOAT3 camRight{ vm._11, vm._21, vm._31 };
         XMFLOAT3 camUp{ vm._12, vm._22, vm._32 };
 
+        // phase bookkeeping: close the shop outside play, auto-ready in tests,
+        // re-grant test money at match start
+        {
+            uint8_t ph = g.game.phase;
+            bool playing = ph == PhasePlaying || ph == PhaseOvertime;
+            if (!playing)
+                g.shopOpen = false;
+            if (g.prevPhase != PhasePlaying && ph == PhasePlaying
+                && g.isHost && (g.opt.rich || g.opt.shopTest))
+                g.game.players[g.myId].money = 500;
+            if ((g.opt.shopTest || g.opt.autoDrive) && g.screen == Screen::InGame
+                && ph == PhaseLobby && !g.game.players[g.myId].ready)
+                ToggleReady();
+            g.prevPhase = ph;
+        }
+
         // one-shot clicks: menus, or the copyable game code in the HUD
         if (g.clicked)
         {
@@ -2006,6 +2299,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             if (g.screen != Screen::InGame)
             {
                 HandleMenuClick();
+            }
+            else if (g.game.phase == PhaseLobby
+                     && g.mouseX >= g.readyRect[0]
+                     && g.mouseX <= g.readyRect[0] + g.readyRect[2]
+                     && g.mouseY >= g.readyRect[1]
+                     && g.mouseY <= g.readyRect[1] + g.readyRect[3])
+            {
+                ToggleReady();
             }
             else if (g.shopOpen && g.mouseX >= g.shopPanel[0]
                      && g.mouseX <= g.shopPanel[0] + g.shopPanel[2]
