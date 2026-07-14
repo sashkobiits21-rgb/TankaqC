@@ -94,12 +94,20 @@ extern const int UpgradePoolSize;
 constexpr int NumOfferSlots = 6;
 constexpr int OfferIntervalTicks = 5 * TickRate;
 
+// Offer lifecycle: 0 = empty, 1 = purchasable, 2 = consumed (purchased, the
+// burn animation is playing; the slot is held and the conveyor must not shift
+// until the host expires it -- this is what keeps UI animations and the array
+// in agreement).
+enum : uint8_t { OfferNone = 0, OfferActive = 1, OfferConsumed = 2 };
+constexpr uint32_t OfferBurnTicks = uint32_t(0.55f * TickRate + 0.5f);
+
 struct Offer
 {
-    uint8_t active = 0;
+    uint8_t active = OfferNone;
     uint8_t id = 0;        // rolling per-player identity for UI animation
     uint8_t type = 0;      // index into kUpgradePool
     uint16_t cost = 0;
+    uint32_t consumedTick = 0;   // host-only: when the burn finishes
 };
 
 struct PlayerState
@@ -118,8 +126,10 @@ struct PlayerState
     float stats[StatCount]{};             // cached finals (replicated)
     Offer offers[NumOfferSlots];          // replicated to the owning client
     std::vector<uint8_t> owned;           // purchased upgrade types (host only)
+    std::vector<Offer> pendingOffers;     // host: arrivals queued during burns
     uint8_t nextOfferId = 1;
     uint32_t nextOfferTick = 0;
+    uint32_t nextPendingDrainTick = 0;
 };
 
 inline int MaxHealthFor(const PlayerState& p)
@@ -169,9 +179,14 @@ struct GameState
     // additions first, then multiplications.
     void RecalcStats(int id);
     // Host-side purchase validation; returns true and applies on success.
+    // The offer is marked consumed and its slot is held until the burn
+    // animation duration elapses; only then does the conveyor compact.
     bool TryPurchase(int id, int slot);
-    // Push a fresh random offer into slot 0 (conveyor shift, tail drops).
+    // Roll a fresh random offer. Inserts at slot 0 immediately, or queues it
+    // while any burn animation holds the conveyor.
     void GenerateOffer(int id);
+    void InsertOffer(int id, const Offer& o);
+    bool AnyConsumed(int id) const;
     DirectX::XMFLOAT3 MuzzleWorld(const PlayerState& p) const;
 
     uint32_t rngState = 0x9E3779B9u;

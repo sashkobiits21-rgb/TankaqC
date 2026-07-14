@@ -127,15 +127,16 @@ struct App
 
     // upgrade shop (conveyor)
     bool shopOpen = false;
-    struct CardAnim { uint8_t id = 0; float x = 0, y = 0; int lastSlot = 0; bool active = false; };
+    struct CardAnim { uint8_t id = 0; float x = 0, y = 0; int lastSlot = 0;
+                      bool active = false; bool burned = false; };
     CardAnim cardAnims[12]{};
-    struct ShopBurnFx { float x, y, w, h; float ox, oy; double t0; int icon; };
+    struct ShopBurnFx { float x, y, w, h; float ox, oy; double t0; int icon; int rarity; };
     std::vector<ShopBurnFx> shopBurnFx;
     struct EjectFx { int icon, rarity; float x, y, vx, vy, ang, angVel; bool bounced; };
     std::vector<EjectFx> ejectFx;
     struct DebrisFx { float x, y, w, h; float vx, vy, ang, angVel; double t0; };
     std::vector<DebrisFx> debrisFx;
-    double slatsBrokenUntil = 0;
+    bool slatsBroken = false;   // restored only when the shop is reopened
     float shopPanel[4]{};                   // x, y, w, h
     struct DrawnCard { uint8_t id; int slot; float x, y; };
     DrawnCard drawnCards[NumOfferSlots]{};
@@ -143,6 +144,7 @@ struct App
     uint8_t lastClickedOfferId = 0;
     float lastClickX = 0, lastClickY = 0;
     int lastClickedIcon = -1;
+    int lastClickedRarity = 0;
     int lastTailIcon = 0, lastTailRarity = 0;
     double shopTestBuyAt = 0, shopTestNextOffer = 0;
     int shopTestOffersForced = 0;
@@ -504,6 +506,7 @@ void ResetNetSimState()
     g.shopBurnFx.clear();
     g.ejectFx.clear();
     g.debrisFx.clear();
+    g.slatsBroken = false;
     g.lastClickedOfferId = 0;
     g.shopTestBuyAt = g.shopTestNextOffer = 0;
     g.shopTestOffersForced = 0;
@@ -745,9 +748,11 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
 void OpenShop()
 {
     g.shopOpen = true;
-    // fresh entrance: existing offers slide in from off-screen again
+    // fresh entrance: existing offers slide in from off-screen again,
+    // and the broken exit hatch is whole again
     for (auto& a : g.cardAnims)
         a.active = false;
+    g.slatsBroken = false;
 }
 
 // ---- shop drawing helpers (rotated quads share the plain triangle paths) ----
@@ -824,29 +829,33 @@ void DrawShopFrame()
     float hatchTop = py + kShopHeader + kCardGap + 2 * (kCardH + kCardGap);
     float hatchBottom = py + ph - 2;
     g.ui.Rect(px + pw - 2, py + 2, 2, hatchTop - (py + 2), frameCol);  // right, upper
-    if (g.time >= g.slatsBrokenUntil)
+    if (!g.slatsBroken)
     {
+        // contiguous segments: together they form one whole border line,
+        // but they break apart into individual pieces on ejection
         float span = hatchBottom - hatchTop;
         for (int s = 0; s < kNumSlats; ++s)
-            g.ui.Rect(px + pw - 2, hatchTop + span * (s + 0.15f) / kNumSlats,
-                      2, span * 0.55f / kNumSlats, frameCol);
+            g.ui.Rect(px + pw - 2, hatchTop + span * float(s) / kNumSlats,
+                      2, span / kNumSlats, frameCol);
     }
 }
 
 void BreakSlats()
 {
+    if (g.slatsBroken)
+        return;   // already open: the card flies through the existing hole
+    g.slatsBroken = true;
     float px = g.shopPanel[0], pw = g.shopPanel[2], py = g.shopPanel[1],
           ph = g.shopPanel[3];
     float hatchTop = py + kShopHeader + kCardGap + 2 * (kCardH + kCardGap);
     float span = (py + ph - 2) - hatchTop;
-    g.slatsBrokenUntil = g.time + 2.2;
     for (int s = 0; s < kNumSlats; ++s)
     {
         App::DebrisFx d{};
         d.x = px + pw - 1;
-        d.y = hatchTop + span * (s + 0.4f) / kNumSlats;
+        d.y = hatchTop + span * (s + 0.5f) / kNumSlats;
         d.w = 3;
-        d.h = span * 0.55f / kNumSlats;
+        d.h = span / kNumSlats;
         uint32_t r = uint32_t(s * 2654435761u + uint32_t(g.time * 977.0));
         auto rnd = [&r]() { r ^= r << 13; r ^= r >> 17; r ^= r << 5;
                             return float(r & 0xFFFF) / 65535.0f; };
@@ -921,6 +930,28 @@ void BuildShop(FrameData& frame)
         offerSeen[anim - g.cardAnims] = true;
 
         const UpgradeType& def = kUpgradePool[o.type];
+
+        // consumed = purchased, burn playing while the slot is held: spawn the
+        // fx once at this card's settled position, then draw nothing normal
+        if (o.active == OfferConsumed)
+        {
+            if (!anim->burned)
+            {
+                anim->burned = true;
+                bool mine = (o.id == g.lastClickedOfferId);
+                App::ShopBurnFx fx{ anim->x, anim->y, kCardW, kCardH,
+                                    mine ? g.lastClickX : anim->x + kCardW * 0.5f,
+                                    mine ? g.lastClickY : anim->y + kCardH * 0.5f,
+                                    g.time, kUpgradePool[o.type].icon,
+                                    kUpgradePool[o.type].rarity };
+                g.shopBurnFx.push_back(fx);
+                if (mine)
+                    g.lastClickedOfferId = 0;
+            }
+            continue;
+        }
+        anim->burned = false;
+
         UiColor bg = kRarityCol[def.rarity];
         bool afford = me.money >= o.cost;
         bool hover = float(g.mouseX) >= anim->x && float(g.mouseX) <= anim->x + kCardW
@@ -949,15 +980,17 @@ void BuildShop(FrameData& frame)
         App::CardAnim& anim = g.cardAnims[a];
         if (!anim.active || offerSeen[a])
             continue;
-        // identify what the card looked like (type unknown now; remember via
-        // drawn history isn't kept -- use the burn/eject info stored on click
-        // or assume tail eject uses the last snapshot type; approximate with
-        // a neutral card when unknown)
+        if (anim.burned)
+        {
+            anim.active = false;   // burn already played; host compacted
+            continue;
+        }
         if (anim.id == g.lastClickedOfferId)
         {
+            // client fallback: consumed state never arrived (edge case)
             App::ShopBurnFx fx{ anim.x, anim.y, kCardW, kCardH,
                                 g.lastClickX, g.lastClickY, g.time,
-                                g.lastClickedIcon };
+                                g.lastClickedIcon, g.lastClickedRarity };
             g.shopBurnFx.push_back(fx);
             g.lastClickedOfferId = 0;
         }
@@ -979,12 +1012,11 @@ void BuildShop(FrameData& frame)
         anim.active = false;
     }
     // remember the tail card's look while it still exists (for ejection)
-    for (int s = 0; s < NumOfferSlots; ++s)
-        if (s == NumOfferSlots - 1 && me.offers[s].active)
-        {
-            g.lastTailIcon = kUpgradePool[me.offers[s].type].icon;
-            g.lastTailRarity = kUpgradePool[me.offers[s].type].rarity;
-        }
+    if (me.offers[NumOfferSlots - 1].active == OfferActive)
+    {
+        g.lastTailIcon = kUpgradePool[me.offers[NumOfferSlots - 1].type].icon;
+        g.lastTailRarity = kUpgradePool[me.offers[NumOfferSlots - 1].type].rarity;
+    }
 
     // ---- burn effects (purchases) ----
     for (size_t i = 0; i < g.shopBurnFx.size();)
@@ -999,7 +1031,7 @@ void BuildShop(FrameData& frame)
         float dx = std::max(fx.ox - fx.x, fx.x + fx.w - fx.ox);
         float dy = std::max(fx.oy - fx.y, fx.y + fx.h - fx.oy);
         float maxR = sqrtf(dx * dx + dy * dy) + 8.0f;
-        UiColor bg = kRarityCol[std::clamp(fx.icon >= 0 ? 2 : 0, 0, 4)];
+        UiColor bg = kRarityCol[std::clamp(fx.rarity, 0, 4)];
         UiBurnQuad q{ fx.x, fx.y, fx.w, fx.h, bg.r, bg.g, bg.b, bg.a,
                       fx.ox, fx.oy, progress, maxR };
         frame.uiBurn.push_back(q);
@@ -1099,16 +1131,20 @@ void HandleShopClick(float mx, float my)
         if (mx < c.x || mx > c.x + kCardW || my < c.y || my > c.y + kCardH)
             continue;
         const Offer& o = me.offers[c.slot];
-        if (!o.active || o.id != c.id || me.money < o.cost)
+        if (o.active != OfferActive || o.id != c.id || me.money < o.cost)
             return;
+        // Capture the card's identity BEFORE purchasing: TryPurchase compacts
+        // the offers array in place, so `o` would afterwards alias the next
+        // card that shifted into this slot (the icon-swap bug).
+        g.lastClickedOfferId = o.id;
+        g.lastClickedIcon = kUpgradePool[o.type].icon;
+        g.lastClickedRarity = kUpgradePool[o.type].rarity;
+        g.lastClickX = mx;
+        g.lastClickY = my;
         if (!g.online || g.isHost)
             g.game.TryPurchase(g.myId, c.slot);
         else
             g.net.SendPurchaseToHost(c.slot);   // optimistic; host validates
-        g.lastClickedOfferId = c.id;
-        g.lastClickX = mx;
-        g.lastClickY = my;
-        g.lastClickedIcon = kUpgradePool[o.type].icon;
         return;
     }
 }
@@ -1922,8 +1958,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                                                      : g.pendingInputs.back().cmd);
                 float screenX = -li.moveX;    // world -X = screen right
                 float screenZ = li.moveZ;
-                tYaw = screenX * 0.055f;      // ~3.2 deg lean into strafe
-                tPitch = screenZ * 0.045f;    // ~2.6 deg nose-dip forward
+                tYaw = screenX * 0.028f;      // ~1.6 deg lean into strafe
+                tPitch = -screenZ * 0.022f;   // ~1.3 deg, reversed per feel
             }
             float kl = 1.0f - expf(-float(dt) * 5.0f);
             float dy = tYaw - g.camYawLean;

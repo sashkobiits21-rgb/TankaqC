@@ -133,6 +133,23 @@ void GameState::SpawnPlayer(int id)
     p.nextOfferTick = tick + TickRate + uint32_t(id) * (TickRate / 4);
 }
 
+bool GameState::AnyConsumed(int id) const
+{
+    for (const Offer& o : players[id].offers)
+        if (o.active == OfferConsumed)
+            return true;
+    return false;
+}
+
+void GameState::InsertOffer(int id, const Offer& o)
+{
+    PlayerState& p = players[id];
+    // conveyor: shift everything one slot toward the tail; overflow drops
+    for (int s = NumOfferSlots - 1; s > 0; --s)
+        p.offers[s] = p.offers[s - 1];
+    p.offers[0] = o;
+}
+
 void GameState::GenerateOffer(int id)
 {
     PlayerState& p = players[id];
@@ -156,16 +173,20 @@ void GameState::GenerateOffer(int id)
     for (int c = 0; c < copies; ++c)
         cost *= 1.25f;
 
-    // conveyor: shift everything one slot toward the tail; overflow drops
-    for (int s = NumOfferSlots - 1; s > 0; --s)
-        p.offers[s] = p.offers[s - 1];
-    Offer& o = p.offers[0];
-    o.active = 1;
+    Offer o;
+    o.active = OfferActive;
     o.id = p.nextOfferId;
     p.nextOfferId = uint8_t(p.nextOfferId + 1);
     if (p.nextOfferId == 0) p.nextOfferId = 1;   // 0 = "none"
     o.type = uint8_t(type);
     o.cost = uint16_t(std::min(999.0f, cost));
+
+    // Never shift the conveyor while a burn holds it: queue instead. Queued
+    // offers keep their roll order and drain one by one afterwards.
+    if (AnyConsumed(id))
+        p.pendingOffers.push_back(o);
+    else
+        InsertOffer(id, o);
 }
 
 bool GameState::TryPurchase(int id, int slot)
@@ -173,7 +194,7 @@ bool GameState::TryPurchase(int id, int slot)
     if (id < 0 || id >= MaxPlayers || slot < 0 || slot >= NumOfferSlots)
         return false;
     PlayerState& p = players[id];
-    if (!p.active || !p.offers[slot].active)
+    if (!p.active || p.offers[slot].active != OfferActive)
         return false;
     const Offer& o = p.offers[slot];
     if (p.money < o.cost)
@@ -188,10 +209,10 @@ bool GameState::TryPurchase(int id, int slot)
         p.health += newMax - prevMax;    // grant new max-HP immediately
     p.health = std::min(p.health, newMax);
 
-    // consume the offer and compact the conveyor toward the front
-    for (int s = slot; s < NumOfferSlots - 1; ++s)
-        p.offers[s] = p.offers[s + 1];
-    p.offers[NumOfferSlots - 1] = Offer{};
+    // Hold the slot while the burn animation plays; the conveyor compacts
+    // only when it expires (see Tick), so the UI and array stay in agreement.
+    p.offers[slot].active = OfferConsumed;
+    p.offers[slot].consumedTick = tick + OfferBurnTicks;
     return true;
 }
 
@@ -313,6 +334,26 @@ void GameState::Tick(const InputCmd* inputs)
         {
             GenerateOffer(id);
             p.nextOfferTick = tick + OfferIntervalTicks;
+        }
+
+        // expire finished burns and compact their slots
+        for (int s = 0; s < NumOfferSlots; ++s)
+        {
+            if (p.offers[s].active == OfferConsumed && tick >= p.offers[s].consumedTick)
+            {
+                for (int t2 = s; t2 < NumOfferSlots - 1; ++t2)
+                    p.offers[t2] = p.offers[t2 + 1];
+                p.offers[NumOfferSlots - 1] = Offer{};
+                --s;   // re-check this slot (a consumed card may have shifted in)
+            }
+        }
+        // drain queued arrivals once no burn holds the conveyor (0.25s apart)
+        if (!p.pendingOffers.empty() && !AnyConsumed(id)
+            && tick >= p.nextPendingDrainTick)
+        {
+            InsertOffer(id, p.pendingOffers.front());
+            p.pendingOffers.erase(p.pendingOffers.begin());
+            p.nextPendingDrainTick = tick + TickRate / 4;
         }
 
         if (p.health <= 0)
