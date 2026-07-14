@@ -369,8 +369,8 @@ void GameState::Tick(const InputCmd* inputs)
             continue;
         }
 
-        // passive income: 2 credits per second while alive
-        if (tick % (TickRate / 2) == 0 && p.money < 999)
+        // passive income: 1 credit per second while alive
+        if (tick % TickRate == 0 && p.money < 999)
             ++p.money;
 
         const InputCmd& in = inputs[id];
@@ -426,11 +426,11 @@ void GameState::Tick(const InputCmd* inputs)
                 if (pr.owner < MaxPlayers && players[pr.owner].active)
                 {
                     PlayerState& shooter = players[pr.owner];
-                    shooter.money = uint16_t(std::min(999, shooter.money + 10));
+                    shooter.money = uint16_t(std::min(999, shooter.money + 5));
                     if (t.health <= 0)
                     {
                         ++shooter.score;
-                        shooter.money = uint16_t(std::min(999, shooter.money + 40));
+                        shooter.money = uint16_t(std::min(999, shooter.money + 100));
                     }
                 }
                 if (t.health <= 0)
