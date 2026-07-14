@@ -52,6 +52,9 @@ public:
     bool steamAvailable() const { return m_steamOk; }
     // Steam Datagram Relay availability (100 = ready); detail gets the debug text.
     int relayStatus(std::string& detail) const;
+    // Client-side live connection info: ping and Steam's route description
+    // (shows whether the link is direct UDP or going through an SDR relay).
+    bool clientConnectionStatus(int& pingMs, std::string& desc) const;
     uint64_t mySteamId() const { return m_mySteamId; }
     std::string myName() const { return m_myName; }
     std::string joinCode() const;           // host's shareable code (SteamID64)

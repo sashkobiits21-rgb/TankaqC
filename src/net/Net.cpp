@@ -176,6 +176,22 @@ void Net::Disconnect()
     m_clientState = ClientState::Idle;
 }
 
+bool Net::clientConnectionStatus(int& pingMs, std::string& desc) const
+{
+    if (!m_steamOk || m_mode != Mode::Client || !m_hostConn
+        || m_clientState != ClientState::Connected)
+        return false;
+    ISteamNetworkingSockets* s = SteamNetworkingSockets();
+    SteamNetConnectionRealTimeStatus_t rt{};
+    if (s->GetConnectionRealTimeStatus(m_hostConn, &rt, 0, nullptr) != k_EResultOK)
+        return false;
+    pingMs = rt.m_nPing;
+    SteamNetConnectionInfo_t info{};
+    if (s->GetConnectionInfo(m_hostConn, &info))
+        desc = info.m_szConnectionDescription;
+    return true;
+}
+
 std::string Net::joinCode() const
 {
     return std::to_string(m_mySteamId);

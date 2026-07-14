@@ -1157,6 +1157,16 @@ void BuildHud(FrameData& frame)
     char buf[256];
     sprintf_s(buf, "%s  |  %s  |  %.0f FPS", g.renderer->Name(), g.gpu.name.c_str(), g.fps);
     g.ui.Text(10, 10, 1.6f, { 1, 1, 1, 0.75f }, buf);
+    if (g.online && !g.isHost)
+    {
+        int ping = 0;
+        std::string route;
+        if (g.net.clientConnectionStatus(ping, route))
+        {
+            sprintf_s(buf, "PING %d ms   %s", ping, route.c_str());
+            g.ui.Text(10, 46, 1.4f, { 0.75f, 0.95f, 0.75f, 0.8f }, buf);
+        }
+    }
     sprintf_s(buf, "GI %s %s (%d rays x %d temporal = %d eff)  SSAO %s  SHADOWS %s   [F5/F6/F7]",
               g.post.giEnabled ? "ON" : "OFF", g.post.giHalfRes ? "HALF-RES" : "FULL-RES",
               g.post.giRays, g.post.temporalSamples,
