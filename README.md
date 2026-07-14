@@ -113,7 +113,9 @@ Drive the hull with WASD, aim the turret with the mouse, shoot your friends.
 - Mouse — aim the turret (world-space cursor aim)
 - Left mouse / `Space` — fire
 - `F5` / `F6` / `F7` — toggle GI / SSAO / shadows
-- `ESC` — leave to menu
+- `TAB` — upgrade shop, `R` — ready up in the lobby
+- `ESC` — pause overlay (resume / settings / leave game); the game keeps
+  running behind it — only LEAVE GAME disconnects
 - Join screen accepts typing and `Ctrl+V` paste
 
 ## Build

@@ -47,13 +47,14 @@ struct Options
     bool fullscreen = false;
     bool rich = false;                                  // start with 500 credits
     bool shopTest = false;                              // auto-open + auto-buy (testing)
+    int pauseTest = 0;           // 1 = force-pause at frame 200, 2 = + settings
 };
 
 const struct { int w, h; } kResolutions[] = {
     { 1280, 720 }, { 1600, 900 }, { 1920, 1080 }, { 2560, 1440 }
 };
 
-enum class Screen { MainMenu, JoinEntry, Connecting, InGame, Settings };
+enum class Screen { MainMenu, JoinEntry, Connecting, InGame, Settings, Paused };
 
 struct App
 {
@@ -87,6 +88,8 @@ struct App
     InputCmd inputs[MaxPlayers]{};
     net::Net net;
     Screen screen = Screen::MainMenu;
+    Screen settingsReturn = Screen::MainMenu;   // where BACK leads
+    bool sessionActive = false;  // a game session exists (pause overlays it)
     int myId = 0;
     bool isHost = false;
     bool online = false;         // false in solo
@@ -168,6 +171,16 @@ struct App
 };
 
 App g;
+
+// True while a game session exists, even when the pause/settings overlay is
+// up. The sim, camera, and VFX all key off this instead of the screen: pause
+// only overlays the running game (it can't stop in multiplayer anyway).
+bool InSession()
+{
+    return g.sessionActive
+        && (g.screen == Screen::InGame || g.screen == Screen::Paused
+            || g.screen == Screen::Settings);
+}
 
 bool CreateAssets();
 void UpdateTitle();
@@ -264,6 +277,7 @@ Options ParseOptions(const std::string& cmd)
     o.fullscreen = cmd.find("--fullscreen") != std::string::npos;
     o.rich = cmd.find("--rich") != std::string::npos;
     o.shopTest = cmd.find("--shoptest") != std::string::npos;
+    if (!(v = GetArg(cmd, "--pausetest=")).empty()) o.pauseTest = atoi(v.c_str());
     if (!(v = GetArg(cmd, "--winsize=")).empty())
         sscanf_s(v.c_str(), "%dx%d", &o.winW, &o.winH);
     return o;
@@ -564,7 +578,7 @@ void UpdateVfxFromSim()
     for (int i = 0; i < MaxProjectiles; ++i)
     {
         const Projectile& pr = g.game.projectiles[i];
-        if (g.prevProjActive[i] && !pr.active && g.screen == Screen::InGame)
+        if (g.prevProjActive[i] && !pr.active && InSession())
             SpawnExplosion(g.prevProjPos[i]);
         g.prevProjActive[i] = pr.active;
         if (pr.active)
@@ -576,7 +590,7 @@ void UpdateVfxFromSim()
     while (!g.scorches.empty() && g.time - g.scorches.front().t0 > 30.0)
         g.scorches.erase(g.scorches.begin());
 
-    if (g.opt.boom && g.screen == Screen::InGame && g.time - g.lastBoom > 2.2)
+    if (g.opt.boom && InSession() && g.time - g.lastBoom > 2.2)
     {
         g.lastBoom = g.time;
         // at the local tank: exercises scorch-skips-dynamic-objects and
@@ -613,6 +627,8 @@ void LeaveToMenu(const std::string& why)
 {
     g.net.Disconnect();
     g.screen = Screen::MainMenu;
+    g.settingsReturn = Screen::MainMenu;
+    g.sessionActive = false;
     g.online = false;
     g.isHost = false;
     ResetNetSimState();
@@ -645,6 +661,7 @@ void StartSolo()
     if (g.opt.rich || g.opt.shopTest)
         g.game.players[0].money = 500;
     g.screen = Screen::InGame;
+    g.sessionActive = true;
     g.statusLine.clear();
 }
 
@@ -665,6 +682,7 @@ void StartHost()
     if (g.opt.rich || g.opt.shopTest)
         g.game.players[0].money = 500;
     g.screen = Screen::InGame;
+    g.sessionActive = true;
     g.statusLine.clear();
 }
 
@@ -1503,6 +1521,13 @@ std::vector<UiButton> MenuButtons()
     {
         buttons.push_back({ x, y + 2.2f * (bh + gap), bw, bh, "CANCEL" });
     }
+    else if (g.screen == Screen::Paused)
+    {
+        buttons.push_back({ x, y + 0 * (bh + gap), bw, bh, "RESUME" });
+        buttons.push_back({ x, y + 1 * (bh + gap), bw, bh, "SETTINGS" });
+        buttons.push_back({ x, y + 2 * (bh + gap), bw, bh, "LEAVE GAME" });
+        buttons.push_back({ x, y + 3 * (bh + gap), bw, bh, "QUIT" });
+    }
     else if (g.screen == Screen::Settings)
     {
         char buf[64];
@@ -1553,21 +1578,36 @@ std::vector<UiButton> MenuButtons()
 void BuildMenu()
 {
     float w = float(g.width), h = float(g.height);
-    g.ui.Rect(0, 0, w, h, { 0.05f, 0.07f, 0.05f, 0.35f });
-    g.ui.TextCentered(w * 0.5f, h * 0.16f, 7.0f, { 0.85f, 0.95f, 0.7f, 1 }, "TANKAQ");
-    g.ui.TextCentered(w * 0.5f, h * 0.16f + 58, 1.8f, { 1, 1, 1, 0.6f },
-                      "multiplayer tank arena");
-
-    char buf[256];
-    sprintf_s(buf, "%s on %s", g.renderer->Name(), g.gpu.name.c_str());
-    g.ui.TextCentered(w * 0.5f, h - 54, 1.5f, { 1, 1, 1, 0.5f }, buf);
-    if (g.net.steamAvailable())
-        sprintf_s(buf, "steam: %s", g.net.myName().c_str());
+    bool overlay = InSession();   // pause/settings floating over a live game
+    g.ui.Rect(0, 0, w, h, { 0.05f, 0.07f, 0.05f, overlay ? 0.55f : 0.35f });
+    if (overlay)
+    {
+        if (g.screen == Screen::Paused)
+        {
+            g.ui.TextCentered(w * 0.5f, h * 0.16f, 5.0f, { 0.85f, 0.95f, 0.7f, 1 },
+                              "PAUSED");
+            g.ui.TextCentered(w * 0.5f, h * 0.16f + 46, 1.6f, { 1, 1, 1, 0.55f },
+                              g.online ? "the match keeps running"
+                                       : "the game keeps running");
+        }
+    }
     else
-        sprintf_s(buf, "steam: NOT AVAILABLE - start Steam to host or join");
-    g.ui.TextCentered(w * 0.5f, h - 34, 1.5f,
-                      g.net.steamAvailable() ? UiColor{ 0.7f, 0.9f, 0.7f, 0.8f }
-                                             : UiColor{ 1, 0.6f, 0.4f, 0.9f }, buf);
+    {
+        g.ui.TextCentered(w * 0.5f, h * 0.16f, 7.0f, { 0.85f, 0.95f, 0.7f, 1 }, "TANKAQ");
+        g.ui.TextCentered(w * 0.5f, h * 0.16f + 58, 1.8f, { 1, 1, 1, 0.6f },
+                          "multiplayer tank arena");
+
+        char buf[256];
+        sprintf_s(buf, "%s on %s", g.renderer->Name(), g.gpu.name.c_str());
+        g.ui.TextCentered(w * 0.5f, h - 54, 1.5f, { 1, 1, 1, 0.5f }, buf);
+        if (g.net.steamAvailable())
+            sprintf_s(buf, "steam: %s", g.net.myName().c_str());
+        else
+            sprintf_s(buf, "steam: NOT AVAILABLE - start Steam to host or join");
+        g.ui.TextCentered(w * 0.5f, h - 34, 1.5f,
+                          g.net.steamAvailable() ? UiColor{ 0.7f, 0.9f, 0.7f, 0.8f }
+                                                 : UiColor{ 1, 0.6f, 0.4f, 0.9f }, buf);
+    }
 
     if (g.screen == Screen::JoinEntry)
     {
@@ -1619,10 +1659,23 @@ void HandleMenuClick()
         if (b.label == "PLAY SOLO") StartSolo();
         else if (b.label == "HOST GAME") StartHost();
         else if (b.label == "JOIN GAME") { g.screen = Screen::JoinEntry; g.statusLine.clear(); }
-        else if (b.label == "SETTINGS") { g.screen = Screen::Settings; g.statusLine.clear(); }
+        else if (b.label == "SETTINGS")
+        {
+            // remember where we came from so BACK/ESC overlays return there
+            g.settingsReturn = g.screen;
+            g.screen = Screen::Settings;
+            g.statusLine.clear();
+        }
         else if (b.label == "QUIT") g.wantQuit = true;
+        else if (b.label == "RESUME") g.screen = Screen::InGame;
+        else if (b.label == "LEAVE GAME") LeaveToMenu(g.online ? "left the game" : "");
         else if (b.label == "CONNECT") { if (!g.joinText.empty()) StartJoin(g.joinText); }
-        else if (b.label == "BACK") { g.screen = Screen::MainMenu; g.statusLine.clear(); }
+        else if (b.label == "BACK")
+        {
+            g.screen = g.screen == Screen::Settings ? g.settingsReturn
+                                                    : Screen::MainMenu;
+            g.statusLine.clear();
+        }
         else if (b.label == "CANCEL") LeaveToMenu("join cancelled");
         else if (b.label.rfind("GI:", 0) == 0) g.post.giEnabled = !g.post.giEnabled;
         else if (b.label.rfind("GI RAYS:", 0) == 0)
@@ -1727,8 +1780,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (wp == VK_ESCAPE)
         {
             if (g.screen == Screen::InGame)
-                LeaveToMenu(g.online ? "left the game" : "");
-            else if (g.screen == Screen::JoinEntry || g.screen == Screen::Settings)
+            {
+                // pause OVERLAYS the running game; nothing is torn down
+                g.screen = Screen::Paused;
+                g.shopOpen = false;
+            }
+            else if (g.screen == Screen::Paused)
+                g.screen = Screen::InGame;
+            else if (g.screen == Screen::Settings)
+                g.screen = g.settingsReturn;
+            else if (g.screen == Screen::JoinEntry)
                 g.screen = Screen::MainMenu;
         }
         if (wp == VK_F5) g.post.giEnabled = !g.post.giEnabled;
@@ -2074,12 +2135,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     {
         g.myId = myId;
         g.screen = Screen::InGame;
+        g.sessionActive = true;
         g.statusLine.clear();
         Log("Joined as player %d", myId);
     };
     ev.onSnapshot = [](const net::MsgSnapshot& s)
     {
-        if (g.screen == Screen::InGame || g.screen == Screen::Connecting)
+        if (InSession() || g.screen == Screen::Connecting)
             ApplySnapshot(s);
     };
     ev.onDisconnected = [](const std::string& why) { LeaveToMenu("DISCONNECTED: " + why); };
@@ -2126,13 +2188,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         if (g.screen == Screen::Connecting && g.time - g.connectStart > 30.0)
             LeaveToMenu("JOIN TIMED OUT - check the code and that the host is in game");
 
-        // fixed timestep simulation
+        // fixed timestep simulation -- keeps running under the pause/settings
+        // overlay (multiplayer can't stop); an overlaid player just goes idle
         while (accumulator >= TickDt)
         {
             accumulator -= TickDt;
-            if (g.screen != Screen::InGame)
+            if (!InSession())
                 continue;
-            InputCmd local = BuildLocalInput();
+            InputCmd local;
+            if (g.screen == Screen::InGame)
+                local = BuildLocalInput();
+            else
+                local.turretYaw = g.aimYaw;   // hold last aim; no move, no fire
             if (g.isHost)
             {
                 g.inputs[g.myId] = local;
@@ -2190,16 +2257,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         //    the look-at target, so they always agree (no relative twist),
         //  - snap to the target when within a millimeter to kill float noise.
         XMFLOAT3 target{ 0, 0, 0 };
-        bool lobbyCam = g.screen == Screen::InGame && g.game.phase == PhaseLobby;
+        bool lobbyCam = InSession() && g.game.phase == PhaseLobby;
         if (lobbyCam)
             target = XMFLOAT3(0, 0, -8.0f);   // lineup center
-        else if (g.screen == Screen::InGame && g.game.players[g.myId].active)
+        else if (InSession() && g.game.players[g.myId].active)
         {
             float rx, rz, rh, rt;
             GetRenderPlayer(g.myId, rx, rz, rh, rt);
             target = XMFLOAT3(rx, 0, rz);
         }
-        if (!g.camFocusValid || g.screen != Screen::InGame)
+        if (!g.camFocusValid || !InSession())
         {
             g.camFocus = target;
             g.camFocusValid = true;
@@ -2292,6 +2359,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             g.prevPhase = ph;
         }
 
+        // pause-overlay test hook: simulate ESC (and SETTINGS) for screenshots
+        if (g.opt.pauseTest && g.frameCounter == 200 && g.screen == Screen::InGame)
+        {
+            g.screen = Screen::Paused;
+            g.shopOpen = false;
+        }
+        if (g.opt.pauseTest == 2 && g.frameCounter == 260
+            && g.screen == Screen::Paused)
+        {
+            g.settingsReturn = Screen::Paused;
+            g.screen = Screen::Settings;
+        }
+
         // one-shot clicks: menus, or the copyable game code in the HUD
         if (g.clicked)
         {
@@ -2357,9 +2437,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         BuildScene(frame, view, proj);
         g.ui.Reset(g.width, g.height);
         if (g.screen == Screen::InGame)
+        {
             BuildHud(frame);
+        }
         else
+        {
+            if (InSession())
+                BuildHud(frame);   // live game HUD stays visible under the overlay
             BuildMenu();
+        }
         frame.ui = g.ui.vertices();
         g.renderer->RenderFrame(frame);
         ++g.frameCounter;
