@@ -1,0 +1,7 @@
+build/
+bin/
+*.png
+!assets/**/*.png
+# Valve's Steamworks SDK is not redistributable
+third_party/steamworks/
+tankaq_log*.txt
