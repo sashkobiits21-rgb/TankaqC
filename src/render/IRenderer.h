@@ -20,8 +20,16 @@ struct UiVertex
     float r, g, b, a;
 };
 
+struct UiTexVertex
+{
+    float x, y;          // pixels, origin top-left
+    float u, v;          // icon atlas coordinates
+    float r, g, b, a;
+};
+
 // A rectangle being burn-dissolved (upgrade purchases). Rendered by a
 // dedicated shader that eats a pixelated hole from `origin` outward.
+// If u1 > u0 the quad samples the icon atlas (icons burn with the card).
 struct UiBurnQuad
 {
     float x, y, w, h;            // pixels
@@ -29,6 +37,7 @@ struct UiBurnQuad
     float originX, originY;      // burn origin in pixels (the click point)
     float progress;              // 0..1
     float maxRadius;             // radius at progress 1 (pixels)
+    float u0 = 0, v0 = 0, u1 = 0, v1 = 0;
 };
 
 struct RenderObject
@@ -83,6 +92,8 @@ struct FrameData
     std::vector<VfxBurstData> bursts;       // explosion smoke/fire (max 16 used)
     std::vector<VfxScorchData> scorches;    // burn decals (max 16 used)
     std::vector<UiVertex> ui;               // triangle list
+    std::vector<UiTexVertex> uiTex;         // textured triangle list (icon atlas)
+    int uiTexTexture = -1;                  // texture handle for uiTex + burn
     std::vector<UiBurnQuad> uiBurn;         // burning shop cards (max 32 used)
     bool vsync = true;
 };

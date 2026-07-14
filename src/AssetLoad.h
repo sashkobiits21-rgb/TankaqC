@@ -45,6 +45,12 @@ ImageData MakeGroundTexture(int size);
 ImageData MakeWallTexture(int size);
 ImageData MakeSolidTexture(uint8_t r, uint8_t g, uint8_t b);
 
+// Upgrade icon atlas: a horizontal strip of `count` square icons. Each icon is
+// a generated pixel-art glyph unless assets/icons/<slug>.png exists, in which
+// case that image is loaded into the slot instead (names = upgrade names,
+// lowercased, spaces -> '_').
+ImageData MakeIconAtlas(int iconSize, int count);
+
 // Full box-filtered mip chain, level 0 = source. Each level tightly packed RGBA.
 std::vector<ImageData> BuildMipChain(const ImageData& src);
 

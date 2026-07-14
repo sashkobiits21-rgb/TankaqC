@@ -122,20 +122,34 @@ struct App
     XMFLOAT3 camPos{ 0, 18, -16 };
     XMFLOAT3 camFocus{ 0, 0, 0 };
     bool camFocusValid = false;
-    float camYaw = 0;                       // chase yaw, follows travel direction
     float frameDt = 0;
     double time = 0;
 
-    // upgrade shop
+    // upgrade shop (conveyor)
     bool shopOpen = false;
-    double shopSlideStart[NumUpgrades]{};
-    float shopSlide[NumUpgrades]{};
-    struct ShopBurn { bool active; float ox, oy; double t0; };
-    ShopBurn shopBurn[NumUpgrades]{};
-    double shopRespawnAt[NumUpgrades]{};
+    struct CardAnim { uint8_t id = 0; float x = 0, y = 0; int lastSlot = 0; bool active = false; };
+    CardAnim cardAnims[12]{};
+    struct ShopBurnFx { float x, y, w, h; float ox, oy; double t0; int icon; };
+    std::vector<ShopBurnFx> shopBurnFx;
+    struct EjectFx { int icon, rarity; float x, y, vx, vy, ang, angVel; bool bounced; };
+    std::vector<EjectFx> ejectFx;
+    struct DebrisFx { float x, y, w, h; float vx, vy, ang, angVel; double t0; };
+    std::vector<DebrisFx> debrisFx;
+    double slatsBrokenUntil = 0;
     float shopPanel[4]{};                   // x, y, w, h
-    float shopCardRects[NumUpgrades][4]{};
-    double shopTestBuyAt = 0;
+    struct DrawnCard { uint8_t id; int slot; float x, y; };
+    DrawnCard drawnCards[NumOfferSlots]{};
+    int drawnCardCount = 0;
+    uint8_t lastClickedOfferId = 0;
+    float lastClickX = 0, lastClickY = 0;
+    int lastClickedIcon = -1;
+    int lastTailIcon = 0, lastTailRarity = 0;
+    double shopTestBuyAt = 0, shopTestNextOffer = 0;
+    int shopTestOffersForced = 0;
+    int texIconAtlas = -1;
+
+    // camera lean (movement game feel)
+    float camYawLean = 0, camPitchLean = 0;
     uint64_t frameCounter = 0;
     float fps = 0;
 
@@ -225,7 +239,14 @@ void ApplySnapshot(const net::MsgSnapshot& s)
         p.health = in.health;
         p.score = in.score;
         p.money = in.money;
-        memcpy(p.upgrades, in.upgrades, sizeof(p.upgrades));
+        memcpy(p.stats, in.stats, sizeof(p.stats));
+        for (int s = 0; s < NumOfferSlots; ++s)
+        {
+            p.offers[s].active = in.offers[s].active;
+            p.offers[s].id = in.offers[s].id;
+            p.offers[s].type = in.offers[s].type;
+            p.offers[s].cost = in.offers[s].cost;
+        }
         p.hitFlash = (in.flags & 1) ? 0.25f : std::max(0.0f, p.hitFlash - TickDt);
         p.muzzleFlash = (in.flags & 2) ? 0.10f : std::max(0.0f, p.muzzleFlash - TickDt);
         if (i != g.myId)
@@ -271,10 +292,17 @@ net::MsgSnapshot BuildSnapshot()
         const PlayerState& p = g.game.players[i];
         net::PlayerNet& out = s.players[i];
         out.active = p.active ? 1 : 0;
-        out.health = uint8_t(std::min(p.health, 255));
+        out.health = uint16_t(std::clamp(p.health, 0, 65535));
         out.score = p.score;
         out.money = p.money;
-        memcpy(out.upgrades, p.upgrades, sizeof(out.upgrades));
+        memcpy(out.stats, p.stats, sizeof(out.stats));
+        for (int s = 0; s < NumOfferSlots; ++s)
+        {
+            out.offers[s].active = p.offers[s].active;
+            out.offers[s].id = p.offers[s].id;
+            out.offers[s].type = p.offers[s].type;
+            out.offers[s].cost = p.offers[s].cost;
+        }
         out.ackSeq = g.inputSeqs[i];
         out.x = p.x; out.z = p.z;
         out.hullYaw = p.hullYaw;
@@ -377,18 +405,15 @@ InputCmd BuildLocalInput()
         in.turretYaw = g.game.players[g.myId].hullYaw + 0.6f * sinf(float(g.time) * 0.7f);
         return in;
     }
-    // Camera-relative WASD resolved into a world-space vector here, so the
-    // host and prediction replay integrate identical numbers even though the
-    // chase camera rotates.
+    // Screen-relative WASD resolved into a world-space vector (fixed camera
+    // orientation: screen up = +Z, screen right = -X).
     float inX = 0, inZ = 0;
     if (g.keys['W'] || g.keys[VK_UP]) inZ += 1.0f;
     if (g.keys['S'] || g.keys[VK_DOWN]) inZ -= 1.0f;
     if (g.keys['A'] || g.keys[VK_LEFT]) inX -= 1.0f;
     if (g.keys['D'] || g.keys[VK_RIGHT]) inX += 1.0f;
-    float sy = sinf(g.camYaw), cy = cosf(g.camYaw);
-    // camera ground forward = (sin, cos); screen-right = (-cos, sin)
-    in.moveX = -cy * inX + sy * inZ;
-    in.moveZ = sy * inX + cy * inZ;
+    in.moveX = -inX;
+    in.moveZ = inZ;
     float len = sqrtf(in.moveX * in.moveX + in.moveZ * in.moveZ);
     if (len > 1.0f) { in.moveX /= len; in.moveZ /= len; }
 
@@ -468,12 +493,20 @@ void ResetNetSimState()
     g.game = GameState{};
     g.game.turretPivot = g.tank.turretPivot;
     g.game.muzzleOffset = g.tank.muzzle;
+    g.game.rngState = uint32_t(GetTickCount64() | 1);
     g.prevTick = GameState{};
     g.haveSnap = g.haveTwoSnaps = false;
     g.pendingInputs.clear();
     g.inputSeq = 0;
     for (uint32_t& s : g.inputSeqs) s = 0;
     for (InputCmd& c : g.inputs) c = InputCmd{};
+    for (auto& a : g.cardAnims) a.active = false;
+    g.shopBurnFx.clear();
+    g.ejectFx.clear();
+    g.debrisFx.clear();
+    g.lastClickedOfferId = 0;
+    g.shopTestBuyAt = g.shopTestNextOffer = 0;
+    g.shopTestOffersForced = 0;
 }
 
 void LeaveToMenu(const std::string& why)
@@ -712,202 +745,370 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
 void OpenShop()
 {
     g.shopOpen = true;
-    for (int i = 0; i < NumUpgrades; ++i)
+    // fresh entrance: existing offers slide in from off-screen again
+    for (auto& a : g.cardAnims)
+        a.active = false;
+}
+
+// ---- shop drawing helpers (rotated quads share the plain triangle paths) ----
+
+void RotatedRect(float cx, float cy, float w, float h, float ang, UiColor c)
+{
+    float ca = cosf(ang), sa = sinf(ang);
+    float hx = w * 0.5f, hy = h * 0.5f;
+    float xs[4] = { -hx, hx, hx, -hx };
+    float ys[4] = { -hy, -hy, hy, hy };
+    float px[4], py[4];
+    for (int i = 0; i < 4; ++i)
     {
-        g.shopSlide[i] = 0;
-        g.shopSlideStart[i] = g.time + i * 0.05;   // staggered slide-in
+        px[i] = cx + xs[i] * ca - ys[i] * sa;
+        py[i] = cy + xs[i] * sa + ys[i] * ca;
+    }
+    g.ui.Tri(px[0], py[0], px[1], py[1], px[2], py[2], c);
+    g.ui.Tri(px[0], py[0], px[2], py[2], px[3], py[3], c);
+}
+
+void IconUv(int icon, float& u0, float& u1)
+{
+    u0 = float(icon) / float(UpgradePoolSize);
+    u1 = float(icon + 1) / float(UpgradePoolSize);
+}
+
+void AddIconQuad(FrameData& frame, int icon, float cx, float cy, float half,
+                 float alpha, float ang = 0.0f)
+{
+    float u0, u1;
+    IconUv(icon, u0, u1);
+    float ca = cosf(ang), sa = sinf(ang);
+    float xs[4] = { -half, half, half, -half };
+    float ys[4] = { -half, -half, half, half };
+    float us[4] = { u0, u1, u1, u0 };
+    float vs[4] = { 0, 0, 1, 1 };
+    UiTexVertex v[4];
+    for (int i = 0; i < 4; ++i)
+        v[i] = { cx + xs[i] * ca - ys[i] * sa, cy + xs[i] * sa + ys[i] * ca,
+                 us[i], vs[i], 1, 1, 1, alpha };
+    frame.uiTex.push_back(v[0]); frame.uiTex.push_back(v[1]); frame.uiTex.push_back(v[2]);
+    frame.uiTex.push_back(v[0]); frame.uiTex.push_back(v[2]); frame.uiTex.push_back(v[3]);
+}
+
+static const UiColor kRarityCol[5] = {
+    { 0.35f, 0.37f, 0.35f, 0.96f },   // common
+    { 0.15f, 0.40f, 0.20f, 0.96f },   // uncommon
+    { 0.14f, 0.28f, 0.55f, 0.96f },   // rare
+    { 0.40f, 0.17f, 0.52f, 0.96f },   // epic
+    { 0.62f, 0.35f, 0.10f, 0.96f },   // legendary
+};
+
+constexpr float kCardW = 150, kCardH = 96, kCardGap = 10, kShopHeader = 34;
+constexpr int kNumSlats = 4;
+
+void SlotCell(int slot, float& x, float& y)
+{
+    int col = slot % 2, row = slot / 2;
+    x = g.shopPanel[0] + kCardGap + col * (kCardW + kCardGap);
+    y = g.shopPanel[1] + kShopHeader + kCardGap + row * (kCardH + kCardGap);
+}
+
+// Panel outline where the lower-right border is a set of breakable vertical
+// slats: the conveyor's exit hatch. While broken, the slats are absent (their
+// debris is flying around instead).
+void DrawShopFrame()
+{
+    float px = g.shopPanel[0], py = g.shopPanel[1];
+    float pw = g.shopPanel[2], ph = g.shopPanel[3];
+    UiColor frameCol{ 0.5f, 0.58f, 0.42f, 1 };
+    g.ui.Rect(px, py, pw, 2, frameCol);                       // top
+    g.ui.Rect(px, py + ph - 2, pw, 2, frameCol);              // bottom
+    g.ui.Rect(px, py + 2, 2, ph - 4, frameCol);               // left
+    float hatchTop = py + kShopHeader + kCardGap + 2 * (kCardH + kCardGap);
+    float hatchBottom = py + ph - 2;
+    g.ui.Rect(px + pw - 2, py + 2, 2, hatchTop - (py + 2), frameCol);  // right, upper
+    if (g.time >= g.slatsBrokenUntil)
+    {
+        float span = hatchBottom - hatchTop;
+        for (int s = 0; s < kNumSlats; ++s)
+            g.ui.Rect(px + pw - 2, hatchTop + span * (s + 0.15f) / kNumSlats,
+                      2, span * 0.55f / kNumSlats, frameCol);
     }
 }
 
-void DrawUpgradeIcon(int slot, float cx, float cy, UiColor c)
+void BreakSlats()
 {
-    switch (slot)
+    float px = g.shopPanel[0], pw = g.shopPanel[2], py = g.shopPanel[1],
+          ph = g.shopPanel[3];
+    float hatchTop = py + kShopHeader + kCardGap + 2 * (kCardH + kCardGap);
+    float span = (py + ph - 2) - hatchTop;
+    g.slatsBrokenUntil = g.time + 2.2;
+    for (int s = 0; s < kNumSlats; ++s)
     {
-    case UpgEngine:   // double chevron
-        g.ui.Tri(cx - 16, cy - 11, cx - 16, cy + 11, cx - 2, cy, c);
-        g.ui.Tri(cx - 2, cy - 11, cx - 2, cy + 11, cx + 12, cy, c);
-        break;
-    case UpgDamage:   // 4-point star
-        g.ui.Rect(cx - 5, cy - 5, 10, 10, c);
-        g.ui.Tri(cx - 5, cy - 5, cx + 5, cy - 5, cx, cy - 15, c);
-        g.ui.Tri(cx - 5, cy + 5, cx + 5, cy + 5, cx, cy + 15, c);
-        g.ui.Tri(cx - 5, cy - 5, cx - 5, cy + 5, cx - 15, cy, c);
-        g.ui.Tri(cx + 5, cy - 5, cx + 5, cy + 5, cx + 15, cy, c);
-        break;
-    case UpgReload:   // hourglass
-        g.ui.Tri(cx - 11, cy - 13, cx + 11, cy - 13, cx, cy - 1, c);
-        g.ui.Tri(cx - 11, cy + 13, cx + 11, cy + 13, cx, cy + 1, c);
-        break;
-    case UpgHealth:   // plus
-        g.ui.Rect(cx - 4, cy - 13, 8, 26, c);
-        g.ui.Rect(cx - 13, cy - 4, 26, 8, c);
-        break;
-    case UpgVelocity: // lightning bolt
-        g.ui.Tri(cx + 7, cy - 15, cx - 9, cy + 3, cx + 1, cy + 3, c);
-        g.ui.Tri(cx - 7, cy + 15, cx + 9, cy - 3, cx - 1, cy - 3, c);
-        break;
-    case UpgArmor:    // shield
-        g.ui.Rect(cx - 11, cy - 13, 22, 16, c);
-        g.ui.Tri(cx - 11, cy + 3, cx + 11, cy + 3, cx, cy + 15, c);
-        break;
+        App::DebrisFx d{};
+        d.x = px + pw - 1;
+        d.y = hatchTop + span * (s + 0.4f) / kNumSlats;
+        d.w = 3;
+        d.h = span * 0.55f / kNumSlats;
+        uint32_t r = uint32_t(s * 2654435761u + uint32_t(g.time * 977.0));
+        auto rnd = [&r]() { r ^= r << 13; r ^= r >> 17; r ^= r << 5;
+                            return float(r & 0xFFFF) / 65535.0f; };
+        d.vx = 350.0f + 650.0f * rnd();
+        d.vy = -420.0f + 300.0f * rnd();
+        d.angVel = (rnd() - 0.5f) * 16.0f;
+        d.ang = 0;
+        d.t0 = g.time;
+        g.debrisFx.push_back(d);
     }
 }
 
 void BuildShop(FrameData& frame)
 {
-    static const UiColor rarityCol[5] = {
-        { 0.35f, 0.37f, 0.35f, 0.96f },   // common
-        { 0.15f, 0.40f, 0.20f, 0.96f },   // uncommon
-        { 0.14f, 0.28f, 0.55f, 0.96f },   // rare
-        { 0.40f, 0.17f, 0.52f, 0.96f },   // epic
-        { 0.62f, 0.35f, 0.10f, 0.96f },   // legendary
-    };
     const PlayerState& me = g.game.players[g.myId];
-    const float cardW = 150, cardH = 96, gap = 10, header = 34;
-    float panelW = gap * 3 + cardW * 2;
-    float panelH = header + gap + 3 * cardH + 2 * gap + gap;
+    float panelW = kCardGap * 3 + kCardW * 2;
+    float panelH = kShopHeader + kCardGap + 3 * kCardH + 2 * kCardGap + kCardGap;
     float px = 14;
     float py = (float(g.height) - panelH) * 0.5f;
     g.shopPanel[0] = px; g.shopPanel[1] = py;
     g.shopPanel[2] = panelW; g.shopPanel[3] = panelH;
 
     g.ui.Rect(px, py, panelW, panelH, { 0.07f, 0.09f, 0.07f, 0.85f });
-    g.ui.RectOutline(px, py, panelW, panelH, 2, { 0.5f, 0.58f, 0.42f, 1 });
+    DrawShopFrame();
     char buf[96];
     sprintf_s(buf, "UPGRADES   $ %u", unsigned(me.money));
     g.ui.Text(px + 10, py + 9, 2.2f, { 1, 0.95f, 0.6f, 1 }, buf);
 
-    int hoverIdx = -1;
-    for (int i = 0; i < NumUpgrades; ++i)
+    // empty sockets
+    for (int s = 0; s < NumOfferSlots; ++s)
     {
-        // slide-in animation (exponential ease toward the grid slot)
-        if (g.time >= g.shopSlideStart[i])
-        {
-            g.shopSlide[i] += (1.0f - g.shopSlide[i])
-                              * (1.0f - expf(-g.frameDt * 11.0f));
-            if (g.shopSlide[i] > 0.997f)
-                g.shopSlide[i] = 1.0f;
-        }
-        int col = i % 2, row = i / 2;
-        float tx = px + gap + col * (cardW + gap);
-        float ty = py + header + gap + row * (cardH + gap);
-        float x = -370.0f + (tx + 370.0f) * g.shopSlide[i];
-        g.shopCardRects[i][0] = x; g.shopCardRects[i][1] = ty;
-        g.shopCardRects[i][2] = cardW; g.shopCardRects[i][3] = cardH;
-
-        int level = me.upgrades[i];
-        bool maxed = level >= MaxUpgradeLevel;
-        UiColor bg = rarityCol[kUpgrades[i].rarity];
-
-        // burning card: the background is handed to the dissolve shader
-        if (g.shopBurn[i].active)
-        {
-            float progress = float((g.time - g.shopBurn[i].t0) / 0.55);
-            if (progress >= 1.0f)
-            {
-                g.shopBurn[i].active = false;
-                g.shopRespawnAt[i] = g.shopBurn[i].t0 + 0.75;
-            }
-            else
-            {
-                float ox = g.shopBurn[i].ox, oy = g.shopBurn[i].oy;
-                float dx = std::max(ox - tx, tx + cardW - ox);
-                float dy = std::max(oy - ty, ty + cardH - oy);
-                UiBurnQuad q{ tx, ty, cardW, cardH,
-                              bg.r, bg.g, bg.b, bg.a,
-                              ox, oy, progress, sqrtf(dx * dx + dy * dy) + 8.0f };
-                frame.uiBurn.push_back(q);
-                continue;
-            }
-        }
-        if (g.shopRespawnAt[i] > 0 && g.time >= g.shopRespawnAt[i])
-        {
-            g.shopRespawnAt[i] = 0;
-            if (!maxed)
-            {
-                g.shopSlide[i] = 0;               // next level slides back in
-                g.shopSlideStart[i] = g.time;
-            }
-        }
-        if (g.shopBurn[i].active || (g.shopRespawnAt[i] > 0 && !maxed))
-            continue;
-
-        bool hover = !g.opt.shopTest
-                   && float(g.mouseX) >= x && float(g.mouseX) <= x + cardW
-                   && float(g.mouseY) >= ty && float(g.mouseY) <= ty + cardH
-                   && g.shopSlide[i] > 0.95f;
-        if (hover)
-            hoverIdx = i;
-
-        UiColor bgDraw = bg;
-        if (hover) { bgDraw.r *= 1.35f; bgDraw.g *= 1.35f; bgDraw.b *= 1.35f; }
-        g.ui.Rect(x, ty, cardW, cardH, bgDraw);
-        g.ui.RectOutline(x, ty, cardW, cardH, 2,
-                         hover ? UiColor{ 1, 1, 0.85f, 1 }
-                               : UiColor{ 0.1f, 0.1f, 0.1f, 0.9f });
-        DrawUpgradeIcon(i, x + cardW * 0.5f, ty + 32, { 0.96f, 0.96f, 0.9f, 1 });
-        g.ui.TextCentered(x + cardW * 0.5f, ty + 56, 1.7f, { 1, 1, 1, 0.95f },
-                          kUpgrades[i].name);
-        // level pips
-        float pipsW = MaxUpgradeLevel * 14.0f - 4.0f;
-        float pipX = x + (cardW - pipsW) * 0.5f;
-        for (int lp = 0; lp < MaxUpgradeLevel; ++lp)
-            g.ui.Rect(pipX + lp * 14.0f, ty + cardH - 16, 10, 6,
-                      lp < level ? UiColor{ 1, 0.9f, 0.4f, 1 }
-                                 : UiColor{ 0, 0, 0, 0.45f });
-        if (maxed)
-            g.ui.TextCentered(x + cardW * 0.5f, ty + 76, 1.4f,
-                              { 1, 0.85f, 0.3f, 1 }, "MAX");
+        float sx, sy;
+        SlotCell(s, sx, sy);
+        g.ui.Rect(sx, sy, kCardW, kCardH, { 0, 0, 0, 0.30f });
+        g.ui.RectOutline(sx, sy, kCardW, kCardH, 1, { 1, 1, 1, 0.08f });
     }
 
-    // hover tooltip: description + cost to the right of the panel
-    if (hoverIdx >= 0)
+    // ---- conveyor: match offers to card animations by rolling id ----
+    float k = 1.0f - expf(-g.frameDt * 10.0f);
+    g.drawnCardCount = 0;
+    bool offerSeen[12]{};
+    int hoverSlot = -1;
+    float hoverX = 0, hoverY = 0;
+
+    for (int s = 0; s < NumOfferSlots; ++s)
     {
-        const UpgradeDef& def = kUpgrades[hoverIdx];
-        int level = me.upgrades[hoverIdx];
-        bool maxed = level >= MaxUpgradeLevel;
-        int cost = maxed ? 0 : UpgradeCost(hoverIdx, level);
-        float tx = px + panelW + 10;
-        float ty = g.shopCardRects[hoverIdx][1];
-        float tw = 250, th = 96;
-        g.ui.Rect(tx, ty, tw, th, { 0.05f, 0.06f, 0.05f, 0.94f });
-        g.ui.RectOutline(tx, ty, tw, th, 2, rarityCol[def.rarity]);
-        g.ui.Text(tx + 10, ty + 10, 2.0f, { 1, 1, 1, 1 }, def.name);
-        g.ui.Text(tx + 10, ty + 32, 1.6f, { 0.85f, 0.9f, 0.85f, 1 }, def.desc);
-        char tip[64];
-        if (maxed)
-            g.ui.Text(tx + 10, ty + 56, 1.8f, { 1, 0.85f, 0.3f, 1 }, "MAX LEVEL");
-        else
+        const Offer& o = me.offers[s];
+        if (!o.active)
+            continue;
+        float tx, ty;
+        SlotCell(s, tx, ty);
+
+        // find or create this offer's animation entry
+        App::CardAnim* anim = nullptr;
+        for (auto& a : g.cardAnims)
+            if (a.active && a.id == o.id) { anim = &a; break; }
+        if (!anim)
         {
-            sprintf_s(tip, "COST $ %d", cost);
-            bool afford = me.money >= cost;
-            g.ui.Text(tx + 10, ty + 56, 1.8f,
-                      afford ? UiColor{ 0.55f, 1, 0.55f, 1 }
-                             : UiColor{ 1, 0.45f, 0.4f, 1 }, tip);
+            for (auto& a : g.cardAnims)
+                if (!a.active) { anim = &a; break; }
+            if (!anim) anim = &g.cardAnims[0];
+            *anim = { o.id, -220.0f, ty, s, true };   // enter from off-screen left
         }
-        sprintf_s(tip, "LEVEL %d / %d", level, MaxUpgradeLevel);
-        g.ui.Text(tx + 10, ty + 76, 1.4f, { 1, 1, 1, 0.6f }, tip);
+        for (auto& a : g.cardAnims)
+            if (&a == anim)
+            {
+                float ex = tx - a.x, ey = ty - a.y;
+                if (ex * ex + ey * ey < 0.25f) { a.x = tx; a.y = ty; }
+                else { a.x += ex * k; a.y += ey * k; }
+                a.lastSlot = s;
+            }
+        offerSeen[anim - g.cardAnims] = true;
+
+        const UpgradeType& def = kUpgradePool[o.type];
+        UiColor bg = kRarityCol[def.rarity];
+        bool afford = me.money >= o.cost;
+        bool hover = float(g.mouseX) >= anim->x && float(g.mouseX) <= anim->x + kCardW
+                  && float(g.mouseY) >= anim->y && float(g.mouseY) <= anim->y + kCardH;
+        if (hover) { hoverSlot = s; hoverX = anim->x; hoverY = anim->y; }
+
+        UiColor bgDraw = bg;
+        if (hover) { bgDraw.r *= 1.3f; bgDraw.g *= 1.3f; bgDraw.b *= 1.3f; }
+        g.ui.Rect(anim->x, anim->y, kCardW, kCardH, bgDraw);
+        g.ui.RectOutline(anim->x, anim->y, kCardW, kCardH, 2,
+                         hover ? UiColor{ 1, 1, 0.85f, 1 }
+                               : UiColor{ 0.08f, 0.08f, 0.08f, 0.9f });
+        AddIconQuad(frame, def.icon, anim->x + kCardW * 0.5f, anim->y + 34, 20, 1.0f);
+        g.ui.TextCentered(anim->x + kCardW * 0.5f, anim->y + 62, 1.6f,
+                          { 1, 1, 1, 0.95f }, def.name);
+        if (!afford)
+            g.ui.Rect(anim->x, anim->y, kCardW, kCardH, { 0, 0, 0, 0.38f });
+
+        g.drawnCards[g.drawnCardCount++] = { o.id, s, anim->x, anim->y };
+    }
+
+    // stale animations = offers that vanished: purchased -> burn from the
+    // click point; pushed off the tail -> physical ejection through the hatch
+    for (int a = 0; a < 12; ++a)
+    {
+        App::CardAnim& anim = g.cardAnims[a];
+        if (!anim.active || offerSeen[a])
+            continue;
+        // identify what the card looked like (type unknown now; remember via
+        // drawn history isn't kept -- use the burn/eject info stored on click
+        // or assume tail eject uses the last snapshot type; approximate with
+        // a neutral card when unknown)
+        if (anim.id == g.lastClickedOfferId)
+        {
+            App::ShopBurnFx fx{ anim.x, anim.y, kCardW, kCardH,
+                                g.lastClickX, g.lastClickY, g.time,
+                                g.lastClickedIcon };
+            g.shopBurnFx.push_back(fx);
+            g.lastClickedOfferId = 0;
+        }
+        else if (anim.lastSlot == NumOfferSlots - 1)
+        {
+            App::EjectFx e{};
+            e.icon = g.lastTailIcon;
+            e.rarity = g.lastTailRarity;
+            e.x = anim.x + kCardW * 0.5f;
+            e.y = anim.y + kCardH * 0.5f;
+            e.vx = 2300.0f;
+            e.vy = -140.0f;
+            e.ang = 0;
+            e.angVel = 1.1f;
+            e.bounced = false;
+            g.ejectFx.push_back(e);
+            BreakSlats();
+        }
+        anim.active = false;
+    }
+    // remember the tail card's look while it still exists (for ejection)
+    for (int s = 0; s < NumOfferSlots; ++s)
+        if (s == NumOfferSlots - 1 && me.offers[s].active)
+        {
+            g.lastTailIcon = kUpgradePool[me.offers[s].type].icon;
+            g.lastTailRarity = kUpgradePool[me.offers[s].type].rarity;
+        }
+
+    // ---- burn effects (purchases) ----
+    for (size_t i = 0; i < g.shopBurnFx.size();)
+    {
+        App::ShopBurnFx& fx = g.shopBurnFx[i];
+        float progress = float((g.time - fx.t0) / 0.55);
+        if (progress >= 1.0f)
+        {
+            g.shopBurnFx.erase(g.shopBurnFx.begin() + i);
+            continue;
+        }
+        float dx = std::max(fx.ox - fx.x, fx.x + fx.w - fx.ox);
+        float dy = std::max(fx.oy - fx.y, fx.y + fx.h - fx.oy);
+        float maxR = sqrtf(dx * dx + dy * dy) + 8.0f;
+        UiColor bg = kRarityCol[std::clamp(fx.icon >= 0 ? 2 : 0, 0, 4)];
+        UiBurnQuad q{ fx.x, fx.y, fx.w, fx.h, bg.r, bg.g, bg.b, bg.a,
+                      fx.ox, fx.oy, progress, maxR };
+        frame.uiBurn.push_back(q);
+        if (fx.icon >= 0)
+        {
+            float u0, u1;
+            IconUv(fx.icon, u0, u1);
+            UiBurnQuad iq{ fx.x + fx.w * 0.5f - 20, fx.y + 14, 40, 40,
+                           1, 1, 1, 1, fx.ox, fx.oy, progress, maxR,
+                           u0, 0, u1, 1 };
+            frame.uiBurn.push_back(iq);
+        }
+        ++i;
+    }
+
+    // ---- ejection physics (overflow) ----
+    for (size_t i = 0; i < g.ejectFx.size();)
+    {
+        App::EjectFx& e = g.ejectFx[i];
+        e.vy += 2400.0f * g.frameDt;            // gravity
+        e.x += e.vx * g.frameDt;
+        e.y += e.vy * g.frameDt;
+        e.ang += e.angVel * g.frameDt;
+        if (!e.bounced && e.x + kCardW * 0.5f >= float(g.width))
+        {
+            e.x = float(g.width) - kCardW * 0.5f;
+            float impact = e.vx;
+            e.vx = -impact * 0.38f;             // punched back, velocity-scaled
+            e.vy -= 160.0f;                     // pop upward a little
+            e.angVel = -impact * 0.004f;        // spin from the impact
+            e.bounced = true;
+        }
+        if (e.y > float(g.height) + 220.0f)
+        {
+            g.ejectFx.erase(g.ejectFx.begin() + i);
+            continue;
+        }
+        UiColor bg = kRarityCol[e.rarity];
+        RotatedRect(e.x, e.y, kCardW + 4, kCardH + 4, e.ang,
+                    { 0.08f, 0.08f, 0.08f, 0.35f });   // shadow first
+        RotatedRect(e.x, e.y, kCardW, kCardH, e.ang, bg);
+        AddIconQuad(frame, e.icon, e.x, e.y, 22, 1.0f, e.ang);
+        ++i;
+    }
+
+    // ---- border debris (broken slats) ----
+    for (size_t i = 0; i < g.debrisFx.size();)
+    {
+        App::DebrisFx& d = g.debrisFx[i];
+        d.vy += 2000.0f * g.frameDt;
+        d.x += d.vx * g.frameDt;
+        d.y += d.vy * g.frameDt;
+        d.ang += d.angVel * g.frameDt;
+        float age = float(g.time - d.t0);
+        if (age > 1.4f || d.y > float(g.height) + 60.0f)
+        {
+            g.debrisFx.erase(g.debrisFx.begin() + i);
+            continue;
+        }
+        float alpha = 1.0f - age / 1.4f;
+        RotatedRect(d.x, d.y, d.w, d.h, d.ang, { 0.5f, 0.58f, 0.42f, alpha });
+        ++i;
+    }
+
+    // ---- hover tooltip: description + cost ----
+    if (hoverSlot >= 0 && me.offers[hoverSlot].active)
+    {
+        const Offer& o = me.offers[hoverSlot];
+        const UpgradeType& def = kUpgradePool[o.type];
+        float tx = px + panelW + 10;
+        float ty = hoverY;
+        g.ui.Rect(tx, ty, 260, 92, { 0.05f, 0.06f, 0.05f, 0.94f });
+        g.ui.RectOutline(tx, ty, 260, 92, 2, kRarityCol[def.rarity]);
+        g.ui.Text(tx + 10, ty + 10, 2.0f, { 1, 1, 1, 1 }, def.name);
+        g.ui.Text(tx + 10, ty + 32, 1.5f, { 0.85f, 0.9f, 0.85f, 1 }, def.desc);
+        char tip[64];
+        sprintf_s(tip, "COST $ %u", unsigned(o.cost));
+        bool afford = me.money >= o.cost;
+        g.ui.Text(tx + 10, ty + 56, 1.8f,
+                  afford ? UiColor{ 0.55f, 1, 0.55f, 1 }
+                         : UiColor{ 1, 0.45f, 0.4f, 1 }, tip);
+        int copies = 0;   // owned copies are host-side; show rarity instead
+        (void)copies;
+        static const char* rarityNames[5] = { "COMMON", "UNCOMMON", "RARE",
+                                              "EPIC", "LEGENDARY" };
+        g.ui.Text(tx + 10, ty + 74, 1.4f, { 1, 1, 1, 0.6f },
+                  rarityNames[def.rarity]);
     }
 }
 
 void HandleShopClick(float mx, float my)
 {
     const PlayerState& me = g.game.players[g.myId];
-    for (int i = 0; i < NumUpgrades; ++i)
+    for (int i = 0; i < g.drawnCardCount; ++i)
     {
-        const float* r = g.shopCardRects[i];
-        if (mx < r[0] || mx > r[0] + r[2] || my < r[1] || my > r[1] + r[3])
+        const App::DrawnCard& c = g.drawnCards[i];
+        if (mx < c.x || mx > c.x + kCardW || my < c.y || my > c.y + kCardH)
             continue;
-        if (g.shopBurn[i].active || g.shopSlide[i] < 0.95f)
-            return;
-        int level = me.upgrades[i];
-        if (level >= MaxUpgradeLevel || me.money < UpgradeCost(i, level))
+        const Offer& o = me.offers[c.slot];
+        if (!o.active || o.id != c.id || me.money < o.cost)
             return;
         if (!g.online || g.isHost)
-            g.game.TryPurchase(g.myId, i);
+            g.game.TryPurchase(g.myId, c.slot);
         else
-            g.net.SendPurchaseToHost(i);   // optimistic; host validates
-        g.shopBurn[i] = { true, mx, my, g.time };
+            g.net.SendPurchaseToHost(c.slot);   // optimistic; host validates
+        g.lastClickedOfferId = c.id;
+        g.lastClickX = mx;
+        g.lastClickY = my;
+        g.lastClickedIcon = kUpgradePool[o.type].icon;
         return;
     }
 }
@@ -967,7 +1168,8 @@ void BuildHud(FrameData& frame)
     g.ui.Text(hx + 276, hy + 6, 2.0f, { 1, 0.92f, 0.5f, 1 }, buf);
 
     // reload bar
-    float rf = 1.0f - me.fireCooldown / FireCooldown;
+    float rf = 1.0f - me.fireCooldown
+                      / std::max(0.01f, me.stats[int(Stat::ReloadTime)]);
     g.ui.Rect(hx, hy - 14, 260, 8, { 0, 0, 0, 0.45f });
     g.ui.Rect(hx + 2, hy - 12, 256 * std::clamp(rf, 0.0f, 1.0f), 4, { 0.95f, 0.9f, 0.5f, 0.9f });
 
@@ -1348,6 +1550,8 @@ bool CreateAssets()
     g.texWall = r->CreateTexture(wallTex.rgba.data(), wallTex.width, wallTex.height);
     ImageData white = MakeSolidTexture(255, 255, 255);
     g.texWhite = r->CreateTexture(white.rgba.data(), white.width, white.height);
+    ImageData icons = MakeIconAtlas(32, UpgradePoolSize);
+    g.texIconAtlas = r->CreateTexture(icons.rgba.data(), icons.width, icons.height);
     return g.meshHull >= 0 && g.meshTurret >= 0 && g.texPalette >= 0;
 }
 
@@ -1566,8 +1770,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     ev.onPurchase = [](int pid, int slot)
     {
         if (g.game.TryPurchase(pid, slot))
-            Log("Player %d bought upgrade %d (level %d)", pid, slot,
-                g.game.players[pid].upgrades[slot]);
+            Log("Player %d bought offer slot %d (owned %zu upgrades)", pid, slot,
+                g.game.players[pid].owned.size());
     };
     ev.onWelcome = [](int myId)
     {
@@ -1703,41 +1907,39 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             }
         }
 
-        // Chase yaw: rotate toward the direction of travel. Twitch-proofing:
-        //  - the target yaw only updates while there is real movement input,
-        //    so noise/rest can never steer it,
-        //  - reversals (>120 deg, e.g. backing up) are ignored instead of
-        //    swinging the camera around,
-        //  - shortest-arc exponential smoothing with an epsilon snap.
-        if (g.screen == Screen::InGame)
+        // Movement lean: strafing rotates the camera slightly around Y,
+        // forward/back pitches it around its local X. Twitch-proofing: the
+        // targets come only from held input (zero at rest), smoothing is
+        // dt-exponential (can't overshoot or oscillate), and values snap to
+        // the target within an epsilon so float noise never wobbles the view.
         {
-            const InputCmd& li = g.isHost ? g.inputs[g.myId]
-                                          : (g.pendingInputs.empty()
-                                                 ? InputCmd{}
-                                                 : g.pendingInputs.back().cmd);
-            float mlen2 = li.moveX * li.moveX + li.moveZ * li.moveZ;
-            if (mlen2 > 0.25f)
+            float tYaw = 0, tPitch = 0;
+            if (g.screen == Screen::InGame)
             {
-                float targetYaw = atan2f(li.moveX, li.moveZ);
-                float delta = WrapAngle(targetYaw - g.camYaw);
-                if (fabsf(delta) < XMConvertToRadians(120.0f))
-                {
-                    float ky = 1.0f - expf(-float(dt) * 3.0f);
-                    if (fabsf(delta) < 0.001f)
-                        g.camYaw = targetYaw;
-                    else
-                        g.camYaw = WrapAngle(g.camYaw + delta * ky);
-                }
+                const InputCmd& li = g.isHost ? g.inputs[g.myId]
+                                              : (g.pendingInputs.empty()
+                                                     ? InputCmd{}
+                                                     : g.pendingInputs.back().cmd);
+                float screenX = -li.moveX;    // world -X = screen right
+                float screenZ = li.moveZ;
+                tYaw = screenX * 0.055f;      // ~3.2 deg lean into strafe
+                tPitch = screenZ * 0.045f;    // ~2.6 deg nose-dip forward
             }
+            float kl = 1.0f - expf(-float(dt) * 5.0f);
+            float dy = tYaw - g.camYawLean;
+            float dp = tPitch - g.camPitchLean;
+            g.camYawLean = (fabsf(dy) < 0.0004f) ? tYaw : g.camYawLean + dy * kl;
+            g.camPitchLean = (fabsf(dp) < 0.0004f) ? tPitch : g.camPitchLean + dp * kl;
         }
-        float cySin = sinf(g.camYaw), cyCos = cosf(g.camYaw);
-        g.camPos = XMFLOAT3(g.camFocus.x - cySin * 14.5f, 19.0f,
-                            g.camFocus.z - cyCos * 14.5f);
+        g.camPos = XMFLOAT3(g.camFocus.x, 19.0f, g.camFocus.z - 14.5f);
 
         XMMATRIX view = XMMatrixLookAtRH(
             XMVectorSet(g.camPos.x, g.camPos.y, g.camPos.z, 1),
-            XMVectorSet(g.camFocus.x + cySin * 2.0f, 0, g.camFocus.z + cyCos * 2.0f, 1),
+            XMVectorSet(g.camFocus.x, 0, g.camFocus.z + 2.0f, 1),
             XMVectorSet(0, 1, 0, 0));
+        // apply the lean in view space (local axes)
+        view = view * XMMatrixRotationY(g.camYawLean)
+                    * XMMatrixRotationX(g.camPitchLean);
         XMMATRIX proj = XMMatrixPerspectiveFovRH(XMConvertToRadians(46.0f),
                                                  float(g.width) / float(g.height),
                                                  0.1f, 300.0f);
@@ -1779,16 +1981,24 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
 
         UpdateVfxFromSim();
 
-        // shop test automation: open at 1 s, buy the DAMAGE card at 2 s
-        if (g.opt.shopTest && g.screen == Screen::InGame)
+        // shop test automation: open the shop, buy one card mid-burn, then
+        // force-feed offers until the conveyor overflows and ejects the tail
+        if (g.opt.shopTest && g.screen == Screen::InGame && g.isHost)
         {
             if (!g.shopOpen && g.time > 1.0)
                 OpenShop();
-            if (g.shopTestBuyAt == 0 && g.time > 2.0)
+            if (g.shopTestBuyAt == 0 && g.time > 2.4 && g.drawnCardCount > 0)
             {
                 g.shopTestBuyAt = g.time;
-                const float* r = g.shopCardRects[UpgDamage];
-                HandleShopClick(r[0] + r[2] * 0.6f, r[1] + r[3] * 0.45f);
+                const App::DrawnCard& c = g.drawnCards[0];
+                HandleShopClick(c.x + kCardW * 0.6f, c.y + kCardH * 0.45f);
+            }
+            if (g.time > 3.0 && g.shopTestOffersForced < 7
+                && g.time > g.shopTestNextOffer)
+            {
+                g.shopTestNextOffer = g.time + 0.45;
+                ++g.shopTestOffersForced;
+                g.game.GenerateOffer(g.myId);   // host-side direct feed
             }
         }
 
@@ -1796,6 +2006,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         frame.objects.reserve(64);
         frame.camRight = camRight;
         frame.camUp = camUp;
+        frame.uiTexTexture = g.texIconAtlas;
         BuildScene(frame, view, proj);
         g.ui.Reset(g.width, g.height);
         if (g.screen == Screen::InGame)

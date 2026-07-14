@@ -7,14 +7,46 @@ using namespace DirectX;
 namespace tankaq
 {
 
-const UpgradeDef kUpgrades[NumUpgrades] = {
-    { "ENGINE",   "+12% MOVE SPEED",        30, 0 },
-    { "DAMAGE",   "+15% SHELL DAMAGE",      50, 2 },
-    { "RELOAD",   "-12% RELOAD TIME",       50, 2 },
-    { "PLATING",  "+25 MAX HEALTH",         40, 1 },
-    { "VELOCITY", "+10% SHELL SPEED",       60, 3 },
-    { "ARMOR",    "-8% DAMAGE TAKEN",       80, 4 },
+const float kBaseStats[StatCount] = {
+    TankSpeed,          // MoveSpeed
+    float(ProjectileDamage),
+    FireCooldown,       // ReloadTime
+    float(MaxHealth),
+    ProjectileSpeed,    // ProjSpeed
+    1.0f,               // DamageTaken multiplier
 };
+
+// The pool: mods may mix additive and multiplicative parts, and one upgrade
+// can touch several stats (including tradeoffs).
+#define S(x) Stat::x
+const UpgradeType kUpgradePool[] = {
+    { "ENGINE",    "+15% MOVE SPEED",                 0, 30, 0,
+      { { S(MoveSpeed), 0, 1.15f } }, 1 },
+    { "TURBO",     "+1.5 MOVE SPEED",                 1, 40, 1,
+      { { S(MoveSpeed), 1.5f, 1 } }, 1 },
+    { "AP ROUNDS", "+20% SHELL DAMAGE",               2, 55, 2,
+      { { S(Damage), 0, 1.20f } }, 1 },
+    { "HEAVY SHELLS", "+12 DAMAGE, -10% SHELL SPEED", 2, 50, 3,
+      { { S(Damage), 12, 1 }, { S(ProjSpeed), 0, 0.90f } }, 2 },
+    { "AUTOLOADER", "-15% RELOAD TIME",               2, 55, 4,
+      { { S(ReloadTime), 0, 0.85f } }, 1 },
+    { "GREASED BREECH", "-0.1s RELOAD",               0, 25, 5,
+      { { S(ReloadTime), -0.1f, 1 } }, 1 },
+    { "PLATING",   "+30 MAX HEALTH",                  1, 40, 6,
+      { { S(MaxHealth), 30, 1 } }, 1 },
+    { "COMPOSITE", "+20% MAX HP, -5% SPEED",          3, 70, 7,
+      { { S(MaxHealth), 0, 1.20f }, { S(MoveSpeed), 0, 0.95f } }, 2 },
+    { "GYRO",      "+15% SHELL SPEED",                3, 60, 8,
+      { { S(ProjSpeed), 0, 1.15f } }, 1 },
+    { "REACTIVE ARMOR", "-10% DAMAGE TAKEN",          4, 85, 9,
+      { { S(DamageTaken), 0, 0.90f } }, 1 },
+    { "OVERDRIVE", "+25% SPEED, +10% DMG TAKEN",      4, 90, 10,
+      { { S(MoveSpeed), 0, 1.25f }, { S(DamageTaken), 0, 1.10f } }, 2 },
+    { "FIELD KIT", "+15 MAX HP, +0.5 SPEED",          0, 35, 11,
+      { { S(MaxHealth), 15, 1 }, { S(MoveSpeed), 0.5f, 1 } }, 2 },
+};
+#undef S
+const int UpgradePoolSize = int(sizeof(kUpgradePool) / sizeof(kUpgradePool[0]));
 
 const Obstacle kObstacles[NumObstacles] = {
     {   0.0f,   0.0f, 3.0f, 3.0f, 2.6f },   // center block
@@ -49,6 +81,46 @@ static void SpawnPoint(int id, float& x, float& z, float& yaw)
     yaw = WrapAngle(ang + XM_PI);   // face arena center
 }
 
+uint32_t GameState::NextRand()
+{
+    rngState ^= rngState << 13;
+    rngState ^= rngState >> 17;
+    rngState ^= rngState << 5;
+    return rngState;
+}
+
+void GameState::RecalcStats(int id)
+{
+    PlayerState& p = players[id];
+    // stat -> summed amount and stat -> multiplied factor "dictionaries";
+    // flat arrays because the key space is the Stat enum itself
+    float addTotal[StatCount];
+    float mulTotal[StatCount];
+    for (int s = 0; s < StatCount; ++s)
+    {
+        addTotal[s] = 0.0f;
+        mulTotal[s] = 1.0f;
+    }
+    for (uint8_t type : p.owned)
+    {
+        const UpgradeType& u = kUpgradePool[type];
+        for (int m = 0; m < u.modCount; ++m)
+        {
+            addTotal[int(u.mods[m].stat)] += u.mods[m].amount;
+            mulTotal[int(u.mods[m].stat)] *= u.mods[m].factor;
+        }
+    }
+    // order: base + additions first, then multiplications
+    for (int s = 0; s < StatCount; ++s)
+        p.stats[s] = (kBaseStats[s] + addTotal[s]) * mulTotal[s];
+
+    // sanity floors so pathological stacks can't break the sim
+    p.stats[int(Stat::MoveSpeed)] = std::max(0.5f, p.stats[int(Stat::MoveSpeed)]);
+    p.stats[int(Stat::ReloadTime)] = std::max(0.15f, p.stats[int(Stat::ReloadTime)]);
+    p.stats[int(Stat::MaxHealth)] = std::max(10.0f, p.stats[int(Stat::MaxHealth)]);
+    p.stats[int(Stat::DamageTaken)] = std::max(0.1f, p.stats[int(Stat::DamageTaken)]);
+}
+
 void GameState::SpawnPlayer(int id)
 {
     PlayerState& p = players[id];
@@ -56,23 +128,70 @@ void GameState::SpawnPlayer(int id)
     p.active = true;
     SpawnPoint(id, p.x, p.z, p.hullYaw);
     p.turretYaw = p.hullYaw;
-    p.health = MaxHealth;
+    RecalcStats(id);
+    p.health = MaxHealthFor(p);
+    p.nextOfferTick = tick + TickRate + uint32_t(id) * (TickRate / 4);
+}
+
+void GameState::GenerateOffer(int id)
+{
+    PlayerState& p = players[id];
+    // rarity roll: 40/25/18/11/6 %
+    uint32_t r = NextRand() % 100;
+    int rarity = r < 40 ? 0 : r < 65 ? 1 : r < 83 ? 2 : r < 94 ? 3 : 4;
+    // uniform pick among pool entries of that rarity (fall back to any)
+    int candidates[32];
+    int n = 0;
+    for (int i = 0; i < UpgradePoolSize && n < 32; ++i)
+        if (kUpgradePool[i].rarity == rarity)
+            candidates[n++] = i;
+    int type = (n > 0) ? candidates[NextRand() % n]
+                       : int(NextRand() % UpgradePoolSize);
+
+    // cost grows 25% per copy of the same type already owned (no level cap)
+    int copies = 0;
+    for (uint8_t t : p.owned)
+        if (t == type) ++copies;
+    float cost = float(kUpgradePool[type].baseCost);
+    for (int c = 0; c < copies; ++c)
+        cost *= 1.25f;
+
+    // conveyor: shift everything one slot toward the tail; overflow drops
+    for (int s = NumOfferSlots - 1; s > 0; --s)
+        p.offers[s] = p.offers[s - 1];
+    Offer& o = p.offers[0];
+    o.active = 1;
+    o.id = p.nextOfferId;
+    p.nextOfferId = uint8_t(p.nextOfferId + 1);
+    if (p.nextOfferId == 0) p.nextOfferId = 1;   // 0 = "none"
+    o.type = uint8_t(type);
+    o.cost = uint16_t(std::min(999.0f, cost));
 }
 
 bool GameState::TryPurchase(int id, int slot)
 {
-    if (id < 0 || id >= MaxPlayers || slot < 0 || slot >= NumUpgrades)
+    if (id < 0 || id >= MaxPlayers || slot < 0 || slot >= NumOfferSlots)
         return false;
     PlayerState& p = players[id];
-    if (!p.active || p.upgrades[slot] >= MaxUpgradeLevel)
+    if (!p.active || !p.offers[slot].active)
         return false;
-    int cost = UpgradeCost(slot, p.upgrades[slot]);
-    if (p.money < cost)
+    const Offer& o = p.offers[slot];
+    if (p.money < o.cost)
         return false;
-    p.money = uint16_t(p.money - cost);
-    ++p.upgrades[slot];
-    if (slot == UpgHealth && p.health > 0)
-        p.health += 25;   // plating grants its health immediately
+    p.money = uint16_t(p.money - o.cost);
+    p.owned.push_back(o.type);
+
+    int prevMax = MaxHealthFor(p);
+    RecalcStats(id);
+    int newMax = MaxHealthFor(p);
+    if (p.health > 0 && newMax > prevMax)
+        p.health += newMax - prevMax;    // grant new max-HP immediately
+    p.health = std::min(p.health, newMax);
+
+    // consume the offer and compact the conveyor toward the front
+    for (int s = slot; s < NumOfferSlots - 1; ++s)
+        p.offers[s] = p.offers[s + 1];
+    p.offers[NumOfferSlots - 1] = Offer{};
     return true;
 }
 
@@ -140,7 +259,7 @@ void GameState::AdvanceMovement(int id, const InputCmd& in)
     {
         float len = sqrtf(len2);
         if (len > 1.0f) { dx /= len; dz /= len; }
-        float speed = TankSpeed * (1.0f + 0.12f * p.upgrades[UpgEngine]);
+        float speed = p.stats[int(Stat::MoveSpeed)];
         p.x += dx * speed * TickDt;
         p.z += dz * speed * TickDt;
         p.hullYaw = MoveTowardsAngle(p.hullYaw, atan2f(dx, dz),
@@ -185,6 +304,17 @@ void GameState::Tick(const InputCmd* inputs)
         p.hitFlash = std::max(0.0f, p.hitFlash - TickDt);
         p.muzzleFlash = std::max(0.0f, p.muzzleFlash - TickDt);
 
+        // stat cache refresh on the host cadence (and on purchase elsewhere)
+        if (tick % StatRecalcTicks == 0)
+            RecalcStats(id);
+
+        // conveyor: a fresh random offer every 5 seconds
+        if (tick >= p.nextOfferTick)
+        {
+            GenerateOffer(id);
+            p.nextOfferTick = tick + OfferIntervalTicks;
+        }
+
         if (p.health <= 0)
         {
             p.respawnTimer -= TickDt;
@@ -217,9 +347,9 @@ void GameState::Tick(const InputCmd* inputs)
                 pr.x = m.x; pr.y = m.y; pr.z = m.z;
                 pr.yaw = p.turretYaw;
                 pr.life = ProjectileLife;
-                pr.speed = ProjectileSpeed * (1.0f + 0.10f * p.upgrades[UpgVelocity]);
-                pr.damage = int(ProjectileDamage * (1.0f + 0.15f * p.upgrades[UpgDamage]));
-                p.fireCooldown = FireCooldown * powf(0.88f, float(p.upgrades[UpgReload]));
+                pr.speed = p.stats[int(Stat::ProjSpeed)];
+                pr.damage = int(p.stats[int(Stat::Damage)] + 0.5f);
+                p.fireCooldown = p.stats[int(Stat::ReloadTime)];
                 p.muzzleFlash = 0.12f;
                 break;
             }
@@ -248,7 +378,7 @@ void GameState::Tick(const InputCmd* inputs)
             float dx = pr.x - t.x, dz = pr.z - t.z;
             if (dx * dx + dz * dz < TankRadius * TankRadius && pr.y < 2.2f)
             {
-                int dmg = int(pr.damage * (1.0f - 0.08f * t.upgrades[UpgArmor]));
+                int dmg = int(pr.damage * t.stats[int(Stat::DamageTaken)] + 0.5f);
                 t.health -= std::max(1, dmg);
                 t.hitFlash = 0.35f;
                 pr.active = false;

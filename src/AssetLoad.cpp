@@ -1,4 +1,5 @@
 #include "AssetLoad.h"
+#include "Game.h"
 #include "Log.h"
 #include <cmath>
 #include <cstdio>
@@ -291,6 +292,137 @@ ImageData MakeSolidTexture(uint8_t r, uint8_t g, uint8_t b)
         img.rgba[i * 4 + 2] = b; img.rgba[i * 4 + 3] = 255;
     }
     return img;
+}
+
+// ------------------------------------------------------------ icon atlas
+
+namespace
+{
+struct IconCanvas
+{
+    ImageData* img;
+    int ox, size;
+    // logical 16x16 grid scaled to the icon size
+    void Px(int gx, int gy, uint32_t rgba)
+    {
+        int s = size / 16;
+        for (int y = gy * s; y < (gy + 1) * s; ++y)
+            for (int x = gx * s; x < (gx + 1) * s; ++x)
+            {
+                size_t i = (size_t(y) * img->width + ox + x) * 4;
+                img->rgba[i + 0] = uint8_t(rgba >> 24);
+                img->rgba[i + 1] = uint8_t(rgba >> 16);
+                img->rgba[i + 2] = uint8_t(rgba >> 8);
+                img->rgba[i + 3] = uint8_t(rgba);
+            }
+    }
+    void Fill(int x0, int y0, int x1, int y1, uint32_t c)
+    {
+        for (int y = y0; y <= y1; ++y)
+            for (int x = x0; x <= x1; ++x)
+                Px(x, y, c);
+    }
+};
+
+void DrawIconGlyph(IconCanvas& c, int icon)
+{
+    const uint32_t W = 0xF2F2E6FFu;   // warm white
+    const uint32_t D = 0x1E1E1EFFu;   // dark outline-ish accents
+    switch (icon)
+    {
+    case 0:  // ENGINE: double chevron
+        for (int i = 0; i < 5; ++i)
+        {
+            c.Fill(3 + i, 3 + i, 3 + i, 4 + i, W);
+            c.Fill(3 + i, 11 - i, 3 + i, 12 - i, W);
+            c.Fill(8 + i, 3 + i, 8 + i, 4 + i, W);
+            c.Fill(8 + i, 11 - i, 8 + i, 12 - i, W);
+        }
+        break;
+    case 1:  // TURBO: speed lines + wedge
+        c.Fill(2, 5, 7, 5, W); c.Fill(2, 8, 6, 8, W); c.Fill(2, 11, 7, 11, W);
+        for (int i = 0; i < 5; ++i) c.Fill(9, 4 + i, 9 + i, 4 + i, W);
+        for (int i = 0; i < 4; ++i) c.Fill(9, 12 - i, 9 + i, 12 - i, W);
+        break;
+    case 2:  // AP ROUNDS: bullet
+        c.Fill(6, 2, 9, 3, W); c.Fill(5, 4, 10, 9, W);
+        c.Fill(4, 10, 11, 13, D); c.Fill(5, 10, 10, 12, W);
+        break;
+    case 3:  // HEAVY SHELLS: fat shell
+        c.Fill(5, 2, 10, 4, W); c.Fill(4, 5, 11, 10, W);
+        c.Fill(3, 11, 12, 13, D); c.Fill(4, 11, 11, 12, W);
+        break;
+    case 4:  // AUTOLOADER: circular arrows (two arcs)
+        c.Fill(4, 3, 11, 4, W); c.Fill(3, 4, 4, 8, W);
+        c.Fill(11, 8, 12, 12, W); c.Fill(4, 11, 11, 12, W);
+        c.Fill(10, 2, 13, 5, W); c.Fill(2, 10, 5, 13, W);
+        break;
+    case 5:  // GREASED BREECH: droplet
+        c.Fill(7, 2, 8, 4, W); c.Fill(6, 5, 9, 7, W);
+        c.Fill(5, 8, 10, 12, W); c.Fill(6, 13, 9, 13, W);
+        break;
+    case 6:  // PLATING: plus
+        c.Fill(6, 2, 9, 13, W); c.Fill(2, 6, 13, 9, W);
+        break;
+    case 7:  // COMPOSITE: layered plates
+        c.Fill(2, 3, 13, 5, W); c.Fill(3, 7, 12, 9, W); c.Fill(4, 11, 11, 13, W);
+        break;
+    case 8:  // GYRO: ring + dot
+        c.Fill(5, 2, 10, 3, W); c.Fill(5, 12, 10, 13, W);
+        c.Fill(2, 5, 3, 10, W); c.Fill(12, 5, 13, 10, W);
+        c.Fill(6, 6, 9, 9, W);
+        break;
+    case 9:  // REACTIVE ARMOR: shield
+        c.Fill(3, 2, 12, 8, W);
+        for (int i = 0; i < 4; ++i) c.Fill(3 + i, 9 + i, 12 - i, 9 + i, W);
+        c.Fill(7, 13, 8, 13, W);
+        break;
+    case 10: // OVERDRIVE: flame
+        c.Fill(7, 1, 8, 3, W); c.Fill(5, 4, 9, 6, W); c.Fill(4, 7, 11, 10, W);
+        c.Fill(5, 11, 10, 13, W); c.Fill(10, 3, 11, 5, W);
+        break;
+    default: // FIELD KIT: wrench
+        c.Fill(2, 2, 5, 3, W); c.Fill(2, 5, 5, 6, W); c.Fill(4, 3, 5, 5, W);
+        for (int i = 0; i < 8; ++i) c.Fill(5 + i, 4 + i, 6 + i, 5 + i, W);
+        c.Fill(11, 10, 13, 13, W);
+        break;
+    }
+}
+} // namespace
+
+ImageData MakeIconAtlas(int iconSize, int count)
+{
+    ImageData atlas;
+    atlas.width = iconSize * count;
+    atlas.height = iconSize;
+    atlas.rgba.assign(size_t(atlas.width) * atlas.height * 4, 0);   // transparent
+
+    for (int i = 0; i < count; ++i)
+    {
+        // optional override: assets/icons/<slug>.png
+        std::string slug = kUpgradePool[i].name;
+        for (char& ch : slug)
+            ch = (ch == ' ') ? '_' : char(tolower(uint8_t(ch)));
+        std::string path = "assets/icons/" + slug + ".png";
+        int w = 0, h = 0, comp = 0;
+        if (uint8_t* pixels = stbi_load(path.c_str(), &w, &h, &comp, 4))
+        {
+            for (int y = 0; y < iconSize; ++y)
+                for (int x = 0; x < iconSize; ++x)
+                {
+                    int sx = x * w / iconSize, sy = y * h / iconSize;
+                    size_t d = (size_t(y) * atlas.width + i * iconSize + x) * 4;
+                    size_t s = (size_t(sy) * w + sx) * 4;
+                    memcpy(&atlas.rgba[d], &pixels[s], 4);
+                }
+            stbi_image_free(pixels);
+            Log("Assets: icon override %s", path.c_str());
+            continue;
+        }
+        IconCanvas canvas{ &atlas, i * iconSize, iconSize };
+        DrawIconGlyph(canvas, kUpgradePool[i].icon);
+    }
+    return atlas;
 }
 
 std::vector<ImageData> BuildMipChain(const ImageData& src)

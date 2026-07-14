@@ -84,17 +84,28 @@ Drive the hull with WASD, aim the turret with the mouse, shoot your friends.
   interpolated tank). Friends join with the **game code** (host SteamID64, relayed
   P2P — click the HUD banner to copy it) or `ip:port` on LAN. Dev AppID 480.
 
-- **Upgrade shop** (`TAB`) — six upgrades in a 2x3 panel on the left (engine, damage,
-  reload, plating, velocity, armor), each with a rarity-colored background, a vector
-  icon, level pips, and a hover tooltip showing description + cost. Cards slide in
-  staggered; purchasing burns the card away with a pixel-quantized dissolve that
-  grows from the click point with a flickering ember rim (`VSUiBurn`/`PSUiBurn`).
-  Credits come from hits (+10), kills (+40) and a passive trickle; purchases are
-  host-validated (`MsgPurchase`) and upgrade levels replicate in snapshots so
-  client-side prediction integrates the same stats as the host. The chase camera
-  yaws toward the direction of travel (reversal-guarded, exponentially smoothed),
-  and WASD is resolved against the camera into a world-space move vector before
-  being sent. `--rich` starts with 500 credits, `--shoptest` automates a purchase.
+- **Stats system** — upgrades never touch gameplay directly; each `UpgradeType`
+  carries `StatMod`s (`amount` additive, `factor` multiplicative, one upgrade may mix
+  both across several stats, tradeoffs included). Finals are rebuilt from scratch as
+  `final = (base + sum(amounts)) * product(factors)` — additions/subtractions first,
+  then multiplications/divisions — with the two accumulation maps stored as flat
+  Stat-indexed arrays. The host recalculates every 8 ticks and on every purchase;
+  the server runs at 64 tick. Final stats replicate in snapshots so client
+  prediction integrates the exact host values.
+- **Offer conveyor** (`TAB`) — players start with zero offers; a random one (rarity-
+  weighted, no cap, cost +25%/copy owned) arrives every 5 s at slot 0 of a 2x3
+  panel, pushing the rest along like a conveyor; every card's position lerps to its
+  new slot. Icons are real images from an atlas texture (generated pixel-art by
+  default, per-icon overrides via `assets/icons/<name>.png`), drawn by a textured
+  UI pass. Purchasing burns the card (pixel-dissolve from the click point, icon
+  burns with it). **Overflow ejects instead of burning**: the tail card smashes
+  through breakable slats on the panel's lower-right border (which shatter into
+  spinning, falling debris), flies right at high velocity, bounces off the screen
+  edge with a velocity-scaled impulse and spin, and tumbles off-screen. Offers are
+  host-authoritative with rolling ids (protocol v5). `--rich`, `--shoptest`.
+- **Camera lean** — strafing tilts the camera slightly around Y, forward/back
+  pitches around its local X; dt-exponential smoothing with epsilon snaps, targets
+  only from held input, so no twitching at rest or near-target.
 
 ## Controls
 

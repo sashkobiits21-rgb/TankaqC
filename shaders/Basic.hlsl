@@ -144,6 +144,35 @@ float4 PSUi(UiOut i) : SV_Target
     return i.col;
 }
 
+// ---------------- textured UI (icon atlas quads) ----------------
+struct UiTexIn
+{
+    float2 pos : POSITION;
+    float2 uv  : TEXCOORD0;
+    float4 col : COLOR0;
+};
+struct UiTexOut
+{
+    float4 sv  : SV_Position;
+    float2 uv  : TEXCOORD0;
+    float4 col : COLOR0;
+};
+
+UiTexOut VSUiTex(UiTexIn i)
+{
+    UiTexOut o;
+    o.sv = float4(i.pos.x / gScreen.x * 2.0 - 1.0,
+                  1.0 - i.pos.y / gScreen.y * 2.0, 0.0, 1.0);
+    o.uv = i.uv;
+    o.col = i.col;
+    return o;
+}
+
+float4 PSUiTex(UiTexOut i) : SV_Target
+{
+    return gAlbedo.Sample(gSampler, i.uv) * i.col;
+}
+
 // ---------------- UI burn dissolve (upgrade purchases) ----------------
 // Quads are vertex-pulled from the constant buffer. The pixel shader
 // quantizes screen position into chunky cells, offsets each cell's distance
@@ -155,6 +184,7 @@ cbuffer UiBurnCB : register(b1)
     float4 gBurnRect[32];    // x, y, w, h (pixels)
     float4 gBurnColor[32];   // rgba of the fragment being burned
     float4 gBurnParam[32];   // origin x, origin y (pixels), progress, max radius
+    float4 gBurnUv[32];      // atlas uv rect (u0,v0,u1,v1); u1<=u0 = untextured
     float4 gBurnMisc;        // count, time, cell size, unused
 };
 
@@ -162,7 +192,9 @@ struct UiBurnOut
 {
     float4 sv  : SV_Position;
     float4 col : COLOR0;
+    float2 uv  : TEXCOORD1;
     nointerpolation float4 param : TEXCOORD0;
+    nointerpolation float texFlag : TEXCOORD2;
 };
 
 UiBurnOut VSUiBurn(uint vid : SV_VertexID, uint inst : SV_InstanceID)
@@ -175,6 +207,9 @@ UiBurnOut VSUiBurn(uint vid : SV_VertexID, uint inst : SV_InstanceID)
     o.sv = float4(pos.x / gScreen.x * 2.0 - 1.0,
                   1.0 - pos.y / gScreen.y * 2.0, 0.0, 1.0);
     o.col = gBurnColor[inst];
+    float4 uvr = gBurnUv[inst];
+    o.uv = lerp(uvr.xy, uvr.zw, corners[vid]);
+    o.texFlag = (uvr.z > uvr.x) ? 1.0 : 0.0;
     o.param = gBurnParam[inst];
     return o;
 }
@@ -199,9 +234,15 @@ float4 PSUiBurn(UiBurnOut i) : SV_Target
     if (d < r)
         discard;                       // the hole
 
+    float4 baseCol = i.col;
+    if (i.texFlag > 0.5)
+        baseCol *= gAlbedo.Sample(gSampler, i.uv);
+    if (baseCol.a < 0.02)
+        discard;                       // transparent icon texels never burn
+
     float edge = cell * 4.0;
     float t = saturate((d - r) / edge);
-    float3 col = i.col.rgb;
+    float3 col = baseCol.rgb;
     if (t < 1.0)
     {
         // char band then glowing ember toward the hole, with per-cell flicker
@@ -211,5 +252,5 @@ float4 PSUiBurn(UiBurnOut i) : SV_Target
         float3 burnCol = (t < 0.35) ? emberHot : charDark;
         col = lerp(burnCol, col, smoothstep(0.35, 1.0, t));
     }
-    return float4(col, i.col.a);
+    return float4(col, baseCol.a);
 }

@@ -60,6 +60,7 @@ struct UiBurnCB
     XMFLOAT4 rect[MaxUiBurnQuads];
     XMFLOAT4 color[MaxUiBurnQuads];
     XMFLOAT4 param[MaxUiBurnQuads];
+    XMFLOAT4 uv[MaxUiBurnQuads];
     XMFLOAT4 misc;   // count, time, cell size, unused
 };
 
@@ -267,6 +268,11 @@ public:
                     D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_uiVb[i]))))
             { error = "ui vb failed"; return false; }
             m_uiVb[i]->Map(0, nullptr, reinterpret_cast<void**>(&m_uiMapped[i]));
+
+            if (FAILED(m_device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd,
+                    D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_uiTexVb[i]))))
+            { error = "ui tex vb failed"; return false; }
+            m_uiTexVb[i]->Map(0, nullptr, reinterpret_cast<void**>(&m_uiTexMapped[i]));
         }
 
         if (!CreateSizedResources(error))
@@ -707,6 +713,22 @@ public:
             m_cmd->IASetVertexBuffers(0, 1, &uivbv);
             m_cmd->DrawInstanced(UINT(frame.ui.size()), 1, 0, 0);
 
+            bool haveAtlas = frame.uiTexTexture >= 0
+                          && frame.uiTexTexture < m_textureCount;
+
+            // textured UI (icon atlas quads)
+            size_t texBytes = frame.uiTex.size() * sizeof(UiTexVertex);
+            if (!frame.uiTex.empty() && texBytes <= UiVbBytes && haveAtlas)
+            {
+                memcpy(m_uiTexMapped[fi], frame.uiTex.data(), texBytes);
+                m_cmd->SetGraphicsRootDescriptorTable(2, GpuSrv(frame.uiTexTexture));
+                m_cmd->SetPipelineState(m_psoUiTex.Get());
+                D3D12_VERTEX_BUFFER_VIEW tvbv{ m_uiTexVb[fi]->GetGPUVirtualAddress(),
+                                               UINT(texBytes), sizeof(UiTexVertex) };
+                m_cmd->IASetVertexBuffers(0, 1, &tvbv);
+                m_cmd->DrawInstanced(UINT(frame.uiTex.size()), 1, 0, 0);
+            }
+
             // burning shop cards: vertex-pulled quads, dissolve shader
             size_t burnCount = std::min<size_t>(frame.uiBurn.size(), MaxUiBurnQuads);
             if (burnCount > 0)
@@ -718,11 +740,14 @@ public:
                     bc.rect[q] = XMFLOAT4(b.x, b.y, b.w, b.h);
                     bc.color[q] = XMFLOAT4(b.r, b.g, b.b, b.a);
                     bc.param[q] = XMFLOAT4(b.originX, b.originY, b.progress, b.maxRadius);
+                    bc.uv[q] = XMFLOAT4(b.u0, b.v0, b.u1, b.v1);
                 }
                 bc.misc = XMFLOAT4(float(burnCount), frame.time, 5.0f, 0);
                 UINT64 burnCbOffset = UINT64(MaxObjectsPerFrame + 6) * CbAlign;
                 memcpy(m_cbMapped[fi] + burnCbOffset, &bc, sizeof(bc));
                 m_cmd->SetGraphicsRootConstantBufferView(1, cbBase + burnCbOffset);
+                if (haveAtlas)
+                    m_cmd->SetGraphicsRootDescriptorTable(2, GpuSrv(frame.uiTexTexture));
                 m_cmd->SetPipelineState(m_psoUiBurn.Get());
                 m_cmd->DrawInstanced(6, UINT(burnCount), 0, 0);
             }
@@ -1064,13 +1089,16 @@ private:
         ComPtr<ID3DBlob> psAA = Compile(postSrc, "Post.hlsl", "PSAA", "ps_5_0", error);
         ComPtr<ID3DBlob> vsUiBurn = Compile(src, "Basic.hlsl", "VSUiBurn", "vs_5_0", error);
         ComPtr<ID3DBlob> psUiBurn = Compile(src, "Basic.hlsl", "PSUiBurn", "ps_5_0", error);
+        ComPtr<ID3DBlob> vsUiTex = Compile(src, "Basic.hlsl", "VSUiTex", "vs_5_0", error);
+        ComPtr<ID3DBlob> psUiTex = Compile(src, "Basic.hlsl", "PSUiTex", "ps_5_0", error);
         ComPtr<ID3DBlob> vsVfx = Compile(vfxSrc, "Vfx.hlsl", "VSVfx", "vs_5_0", error);
         ComPtr<ID3DBlob> psVfx = Compile(vfxSrc, "Vfx.hlsl", "PSVfx", "ps_5_0", error);
         ComPtr<ID3DBlob> vsVfxFull = Compile(vfxSrc, "Vfx.hlsl", "VSVfxFull", "vs_5_0", error);
         ComPtr<ID3DBlob> psScorch = Compile(vfxSrc, "Vfx.hlsl", "PSScorch", "ps_5_0", error);
         if (!vsMesh || !psMesh || !vsUi || !psUi || !vsFull || !psSsao || !psBlurH
             || !psBlurV || !psSsgi || !psTemporal || !psComposite || !psAA
-            || !vsUiBurn || !psUiBurn || !vsVfx || !psVfx || !vsVfxFull || !psScorch)
+            || !vsUiBurn || !psUiBurn || !vsUiTex || !psUiTex
+            || !vsVfx || !psVfx || !vsVfxFull || !psScorch)
             return false;
 
         // Main root signature: b0, b1, table t0, table t1 (shadow),
@@ -1234,6 +1262,19 @@ private:
         burn.InputLayout = { nullptr, 0 };
         if (FAILED(m_device->CreateGraphicsPipelineState(&burn, IID_PPV_ARGS(&m_psoUiBurn))))
         { error = "ui burn PSO failed"; return false; }
+
+        // Textured UI PSO (icon atlas quads).
+        D3D12_INPUT_ELEMENT_DESC uiTexEls[] = {
+            { "POSITION", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 0,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 8,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 16, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        };
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC uiTex = ui;
+        uiTex.VS = { vsUiTex->GetBufferPointer(), vsUiTex->GetBufferSize() };
+        uiTex.PS = { psUiTex->GetBufferPointer(), psUiTex->GetBufferSize() };
+        uiTex.InputLayout = { uiTexEls, 3 };
+        if (FAILED(m_device->CreateGraphicsPipelineState(&uiTex, IID_PPV_ARGS(&m_psoUiTex))))
+        { error = "ui tex PSO failed"; return false; }
 
         // Post PSOs (fullscreen triangle, no depth, no input layout).
         auto makePost = [&](ID3DBlob* ps, DXGI_FORMAT fmt, ComPtr<ID3D12PipelineState>& out)
@@ -1420,12 +1461,14 @@ private:
     ComPtr<ID3D12RootSignature> m_rootSig, m_rootSigPost;
     ComPtr<ID3D12PipelineState> m_psoMesh, m_psoUi, m_psoShadow, m_psoSsao, m_psoAoBlurH,
                                 m_psoAoBlurV, m_psoSsgi, m_psoTemporal, m_psoComposite,
-                                m_psoScorch, m_psoVfx, m_psoAA, m_psoUiBurn;
+                                m_psoScorch, m_psoVfx, m_psoAA, m_psoUiBurn, m_psoUiTex;
     int m_shadowSize = 2048;
     ComPtr<ID3D12Resource> m_cbUpload[FramesInFlight];
     uint8_t* m_cbMapped[FramesInFlight]{};
     ComPtr<ID3D12Resource> m_uiVb[FramesInFlight];
     uint8_t* m_uiMapped[FramesInFlight]{};
+    ComPtr<ID3D12Resource> m_uiTexVb[FramesInFlight];
+    uint8_t* m_uiTexMapped[FramesInFlight]{};
     std::vector<GpuMesh> m_meshes;
     std::vector<ComPtr<ID3D12Resource>> m_textures;
     int m_textureCount = 0;

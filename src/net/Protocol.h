@@ -5,8 +5,7 @@
 namespace tankaq::net
 {
 
-constexpr uint8_t ProtocolVersion = 4;   // v4: world-space move vector, upgrades,
-                                         //     money, purchase messages
+constexpr uint8_t ProtocolVersion = 5;   // v5: stat replication + offer conveyor
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t
@@ -53,16 +52,25 @@ struct MsgInput
 struct MsgPurchase
 {
     uint8_t type = uint8_t(MsgType::Purchase);
-    uint8_t slot = 0;      // upgrade index
+    uint8_t slot = 0;      // offer slot index
+};
+
+struct OfferNet
+{
+    uint8_t active = 0;
+    uint8_t id = 0;
+    uint8_t type = 0;
+    uint16_t cost = 0;
 };
 
 struct PlayerNet
 {
     uint8_t active = 0;
-    uint8_t health = 0;
+    uint16_t health = 0;   // max health is uncapped now
     uint16_t score = 0;
     uint16_t money = 0;
-    uint8_t upgrades[NumUpgrades]{};
+    float stats[StatCount]{};          // cached finals (prediction + HUD)
+    OfferNet offers[NumOfferSlots];    // this player's upgrade conveyor
     uint32_t ackSeq = 0;   // last input sequence the host simulated for this player
     float x = 0, z = 0;
     float hullYaw = 0, turretYaw = 0;
