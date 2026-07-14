@@ -42,6 +42,15 @@ struct VfxCB
 };
 
 constexpr int VfxParticlesPerBurst = 16;
+constexpr int MaxUiBurnQuads = 32;
+
+struct UiBurnCB
+{
+    XMFLOAT4 rect[MaxUiBurnQuads];
+    XMFLOAT4 color[MaxUiBurnQuads];
+    XMFLOAT4 param[MaxUiBurnQuads];
+    XMFLOAT4 misc;   // count, time, cell size, unused
+};
 
 struct PerObjectCB
 {
@@ -543,6 +552,29 @@ public:
                     UINT stride = sizeof(UiVertex), offset = 0;
                     m_ctx->IASetVertexBuffers(0, 1, m_uiVb.GetAddressOf(), &stride, &offset);
                     m_ctx->Draw(UINT(frame.ui.size()), 0);
+
+                    // burning shop cards: vertex-pulled quads, dissolve shader
+                    size_t burnCount = std::min<size_t>(frame.uiBurn.size(), MaxUiBurnQuads);
+                    if (burnCount > 0)
+                    {
+                        UiBurnCB bc{};
+                        for (size_t q = 0; q < burnCount; ++q)
+                        {
+                            const UiBurnQuad& b = frame.uiBurn[q];
+                            bc.rect[q] = XMFLOAT4(b.x, b.y, b.w, b.h);
+                            bc.color[q] = XMFLOAT4(b.r, b.g, b.b, b.a);
+                            bc.param[q] = XMFLOAT4(b.originX, b.originY,
+                                                   b.progress, b.maxRadius);
+                        }
+                        bc.misc = XMFLOAT4(float(burnCount), frame.time, 5.0f, 0);
+                        UpdateCB(m_cbUiBurn.Get(), &bc, sizeof(bc));
+                        m_ctx->IASetInputLayout(nullptr);
+                        m_ctx->VSSetShader(m_vsUiBurn.Get(), nullptr, 0);
+                        m_ctx->PSSetShader(m_psUiBurn.Get(), nullptr, 0);
+                        m_ctx->VSSetConstantBuffers(1, 1, m_cbUiBurn.GetAddressOf());
+                        m_ctx->PSSetConstantBuffers(1, 1, m_cbUiBurn.GetAddressOf());
+                        m_ctx->DrawInstanced(6, UINT(burnCount), 0, 0);
+                    }
                     m_ctx->OMSetBlendState(nullptr, nullptr, 0xffffffff);
                 }
             }
@@ -717,13 +749,16 @@ private:
         ComPtr<ID3DBlob> psTemporal = Compile(postSrc, "Post.hlsl", "PSTemporal", "ps_5_0", error);
         ComPtr<ID3DBlob> psComposite = Compile(postSrc, "Post.hlsl", "PSComposite", "ps_5_0", error);
         ComPtr<ID3DBlob> psAA = Compile(postSrc, "Post.hlsl", "PSAA", "ps_5_0", error);
+        ComPtr<ID3DBlob> vsUiBurn = Compile(src, "Basic.hlsl", "VSUiBurn", "vs_5_0", error);
+        ComPtr<ID3DBlob> psUiBurn = Compile(src, "Basic.hlsl", "PSUiBurn", "ps_5_0", error);
         ComPtr<ID3DBlob> vsVfx = Compile(vfxSrc, "Vfx.hlsl", "VSVfx", "vs_5_0", error);
         ComPtr<ID3DBlob> psVfx = Compile(vfxSrc, "Vfx.hlsl", "PSVfx", "ps_5_0", error);
         ComPtr<ID3DBlob> vsVfxFull = Compile(vfxSrc, "Vfx.hlsl", "VSVfxFull", "vs_5_0", error);
         ComPtr<ID3DBlob> psScorch = Compile(vfxSrc, "Vfx.hlsl", "PSScorch", "ps_5_0", error);
         if (!vsMesh || !psMesh || !vsUi || !psUi || !vsFull || !psSsao || !psBlurH
             || !psBlurV || !psSsgi || !psTemporal || !psComposite
-            || !psAA || !vsVfx || !psVfx || !vsVfxFull || !psScorch)
+            || !psAA || !vsUiBurn || !psUiBurn || !vsVfx || !psVfx || !vsVfxFull
+            || !psScorch)
             return false;
 
         m_device->CreateVertexShader(vsMesh->GetBufferPointer(), vsMesh->GetBufferSize(), nullptr, &m_vsMesh);
@@ -738,6 +773,8 @@ private:
         m_device->CreatePixelShader(psTemporal->GetBufferPointer(), psTemporal->GetBufferSize(), nullptr, &m_psTemporal);
         m_device->CreatePixelShader(psComposite->GetBufferPointer(), psComposite->GetBufferSize(), nullptr, &m_psComposite);
         m_device->CreatePixelShader(psAA->GetBufferPointer(), psAA->GetBufferSize(), nullptr, &m_psAA);
+        m_device->CreateVertexShader(vsUiBurn->GetBufferPointer(), vsUiBurn->GetBufferSize(), nullptr, &m_vsUiBurn);
+        m_device->CreatePixelShader(psUiBurn->GetBufferPointer(), psUiBurn->GetBufferSize(), nullptr, &m_psUiBurn);
         m_device->CreateVertexShader(vsVfx->GetBufferPointer(), vsVfx->GetBufferSize(), nullptr, &m_vsVfx);
         m_device->CreatePixelShader(psVfx->GetBufferPointer(), psVfx->GetBufferSize(), nullptr, &m_psVfx);
         m_device->CreateVertexShader(vsVfxFull->GetBufferPointer(), vsVfxFull->GetBufferSize(), nullptr, &m_vsVfxFull);
@@ -773,6 +810,8 @@ private:
         m_device->CreateBuffer(&cbd, nullptr, &m_cbPost);
         cbd.ByteWidth = sizeof(VfxCB);
         m_device->CreateBuffer(&cbd, nullptr, &m_cbVfx);
+        cbd.ByteWidth = sizeof(UiBurnCB);
+        m_device->CreateBuffer(&cbd, nullptr, &m_cbUiBurn);
 
         if (!CreateShadowMap(error))
             return false;
@@ -871,11 +910,13 @@ private:
     XMFLOAT4X4 m_prevViewProj{};
     XMFLOAT3 m_prevCamPos{};
     uint64_t m_frameIndex = 0;
-    ComPtr<ID3D11VertexShader> m_vsMesh, m_vsUi, m_vsFull, m_vsVfx, m_vsVfxFull;
+    ComPtr<ID3D11VertexShader> m_vsMesh, m_vsUi, m_vsFull, m_vsVfx, m_vsVfxFull, m_vsUiBurn;
     ComPtr<ID3D11PixelShader> m_psMesh, m_psUi, m_psSsao, m_psAoBlurH, m_psAoBlurV,
-                              m_psSsgi, m_psTemporal, m_psComposite, m_psAA, m_psVfx, m_psScorch;
+                              m_psSsgi, m_psTemporal, m_psComposite, m_psAA, m_psVfx,
+                              m_psScorch, m_psUiBurn;
     ComPtr<ID3D11InputLayout> m_meshLayout, m_uiLayout;
-    ComPtr<ID3D11Buffer> m_cbFrame, m_cbShadowFrame, m_cbObject, m_cbPost, m_cbVfx, m_uiVb;
+    ComPtr<ID3D11Buffer> m_cbFrame, m_cbShadowFrame, m_cbObject, m_cbPost, m_cbVfx,
+                         m_cbUiBurn, m_uiVb;
     ComPtr<ID3D11RasterizerState> m_raster, m_rasterShadow, m_rasterUi;
     ComPtr<ID3D11DepthStencilState> m_depthOn, m_depthOff, m_depthRead;
     ComPtr<ID3D11BlendState> m_blendAlpha, m_blendMultiply;

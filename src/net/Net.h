@@ -26,6 +26,7 @@ public:
         std::function<void(int playerId)> onPlayerJoined;
         std::function<void(int playerId)> onPlayerLeft;
         std::function<void(int playerId, const MsgInput&)> onInput;
+        std::function<void(int playerId, int slot)> onPurchase;
         // client side
         std::function<void(int myPlayerId)> onWelcome;
         std::function<void(const MsgSnapshot&)> onSnapshot;
@@ -43,6 +44,7 @@ public:
     void Poll(const Events& ev);            // pump callbacks + messages, once per frame
 
     void SendInputToHost(const MsgInput& msg);
+    void SendPurchaseToHost(int slot);
     void BroadcastSnapshot(const MsgSnapshot& snap);
 
     Mode mode() const { return m_mode; }

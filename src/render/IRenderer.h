@@ -20,6 +20,17 @@ struct UiVertex
     float r, g, b, a;
 };
 
+// A rectangle being burn-dissolved (upgrade purchases). Rendered by a
+// dedicated shader that eats a pixelated hole from `origin` outward.
+struct UiBurnQuad
+{
+    float x, y, w, h;            // pixels
+    float r, g, b, a;            // fragment color
+    float originX, originY;      // burn origin in pixels (the click point)
+    float progress;              // 0..1
+    float maxRadius;             // radius at progress 1 (pixels)
+};
+
 struct RenderObject
 {
     int mesh = -1;
@@ -72,6 +83,7 @@ struct FrameData
     std::vector<VfxBurstData> bursts;       // explosion smoke/fire (max 16 used)
     std::vector<VfxScorchData> scorches;    // burn decals (max 16 used)
     std::vector<UiVertex> ui;               // triangle list
+    std::vector<UiBurnQuad> uiBurn;         // burning shop cards (max 32 used)
     bool vsync = true;
 };
 

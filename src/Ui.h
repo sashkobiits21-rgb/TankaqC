@@ -14,6 +14,7 @@ public:
     void Reset(int screenW, int screenH);
     void Rect(float x, float y, float w, float h, UiColor c);
     void RectOutline(float x, float y, float w, float h, float thickness, UiColor c);
+    void Tri(float x1, float y1, float x2, float y2, float x3, float y3, UiColor c);
     // stb_easy_font text; scale 1 = ~7px tall glyphs
     void Text(float x, float y, float scale, UiColor c, const std::string& text);
     void TextCentered(float cx, float y, float scale, UiColor c, const std::string& text);

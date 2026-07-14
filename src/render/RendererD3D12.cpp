@@ -53,6 +53,15 @@ struct VfxCB
 };
 
 constexpr int VfxParticlesPerBurst = 16;
+constexpr int MaxUiBurnQuads = 32;
+
+struct UiBurnCB
+{
+    XMFLOAT4 rect[MaxUiBurnQuads];
+    XMFLOAT4 color[MaxUiBurnQuads];
+    XMFLOAT4 param[MaxUiBurnQuads];
+    XMFLOAT4 misc;   // count, time, cell size, unused
+};
 
 struct PerObjectCB
 {
@@ -247,7 +256,7 @@ public:
         for (int i = 0; i < FramesInFlight; ++i)
         {
             auto hp = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
-            auto bd = BufferDesc((MaxObjectsPerFrame + 8) * CbAlign);
+            auto bd = BufferDesc((MaxObjectsPerFrame + 16) * CbAlign);
             if (FAILED(m_device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd,
                     D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_cbUpload[i]))))
             { error = "cb upload failed"; return false; }
@@ -697,6 +706,26 @@ public:
                                             UINT(uiBytes), sizeof(UiVertex) };
             m_cmd->IASetVertexBuffers(0, 1, &uivbv);
             m_cmd->DrawInstanced(UINT(frame.ui.size()), 1, 0, 0);
+
+            // burning shop cards: vertex-pulled quads, dissolve shader
+            size_t burnCount = std::min<size_t>(frame.uiBurn.size(), MaxUiBurnQuads);
+            if (burnCount > 0)
+            {
+                UiBurnCB bc{};
+                for (size_t q = 0; q < burnCount; ++q)
+                {
+                    const UiBurnQuad& b = frame.uiBurn[q];
+                    bc.rect[q] = XMFLOAT4(b.x, b.y, b.w, b.h);
+                    bc.color[q] = XMFLOAT4(b.r, b.g, b.b, b.a);
+                    bc.param[q] = XMFLOAT4(b.originX, b.originY, b.progress, b.maxRadius);
+                }
+                bc.misc = XMFLOAT4(float(burnCount), frame.time, 5.0f, 0);
+                UINT64 burnCbOffset = UINT64(MaxObjectsPerFrame + 6) * CbAlign;
+                memcpy(m_cbMapped[fi] + burnCbOffset, &bc, sizeof(bc));
+                m_cmd->SetGraphicsRootConstantBufferView(1, cbBase + burnCbOffset);
+                m_cmd->SetPipelineState(m_psoUiBurn.Get());
+                m_cmd->DrawInstanced(6, UINT(burnCount), 0, 0);
+            }
         }
 
         BarrierRaw(m_backbuffers[back].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
@@ -1033,13 +1062,15 @@ private:
         ComPtr<ID3DBlob> psTemporal = Compile(postSrc, "Post.hlsl", "PSTemporal", "ps_5_0", error);
         ComPtr<ID3DBlob> psComposite = Compile(postSrc, "Post.hlsl", "PSComposite", "ps_5_0", error);
         ComPtr<ID3DBlob> psAA = Compile(postSrc, "Post.hlsl", "PSAA", "ps_5_0", error);
+        ComPtr<ID3DBlob> vsUiBurn = Compile(src, "Basic.hlsl", "VSUiBurn", "vs_5_0", error);
+        ComPtr<ID3DBlob> psUiBurn = Compile(src, "Basic.hlsl", "PSUiBurn", "ps_5_0", error);
         ComPtr<ID3DBlob> vsVfx = Compile(vfxSrc, "Vfx.hlsl", "VSVfx", "vs_5_0", error);
         ComPtr<ID3DBlob> psVfx = Compile(vfxSrc, "Vfx.hlsl", "PSVfx", "ps_5_0", error);
         ComPtr<ID3DBlob> vsVfxFull = Compile(vfxSrc, "Vfx.hlsl", "VSVfxFull", "vs_5_0", error);
         ComPtr<ID3DBlob> psScorch = Compile(vfxSrc, "Vfx.hlsl", "PSScorch", "ps_5_0", error);
         if (!vsMesh || !psMesh || !vsUi || !psUi || !vsFull || !psSsao || !psBlurH
             || !psBlurV || !psSsgi || !psTemporal || !psComposite || !psAA
-            || !vsVfx || !psVfx || !vsVfxFull || !psScorch)
+            || !vsUiBurn || !psUiBurn || !vsVfx || !psVfx || !vsVfxFull || !psScorch)
             return false;
 
         // Main root signature: b0, b1, table t0, table t1 (shadow),
@@ -1195,6 +1226,14 @@ private:
         rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
         if (FAILED(m_device->CreateGraphicsPipelineState(&ui, IID_PPV_ARGS(&m_psoUi))))
         { error = "ui PSO failed"; return false; }
+
+        // UI burn dissolve PSO: same blend/state as UI, vertex-pulled (no layout).
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC burn = ui;
+        burn.VS = { vsUiBurn->GetBufferPointer(), vsUiBurn->GetBufferSize() };
+        burn.PS = { psUiBurn->GetBufferPointer(), psUiBurn->GetBufferSize() };
+        burn.InputLayout = { nullptr, 0 };
+        if (FAILED(m_device->CreateGraphicsPipelineState(&burn, IID_PPV_ARGS(&m_psoUiBurn))))
+        { error = "ui burn PSO failed"; return false; }
 
         // Post PSOs (fullscreen triangle, no depth, no input layout).
         auto makePost = [&](ID3DBlob* ps, DXGI_FORMAT fmt, ComPtr<ID3D12PipelineState>& out)
@@ -1381,7 +1420,7 @@ private:
     ComPtr<ID3D12RootSignature> m_rootSig, m_rootSigPost;
     ComPtr<ID3D12PipelineState> m_psoMesh, m_psoUi, m_psoShadow, m_psoSsao, m_psoAoBlurH,
                                 m_psoAoBlurV, m_psoSsgi, m_psoTemporal, m_psoComposite,
-                                m_psoScorch, m_psoVfx, m_psoAA;
+                                m_psoScorch, m_psoVfx, m_psoAA, m_psoUiBurn;
     int m_shadowSize = 2048;
     ComPtr<ID3D12Resource> m_cbUpload[FramesInFlight];
     uint8_t* m_cbMapped[FramesInFlight]{};

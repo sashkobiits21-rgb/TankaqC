@@ -7,6 +7,15 @@ using namespace DirectX;
 namespace tankaq
 {
 
+const UpgradeDef kUpgrades[NumUpgrades] = {
+    { "ENGINE",   "+12% MOVE SPEED",        30, 0 },
+    { "DAMAGE",   "+15% SHELL DAMAGE",      50, 2 },
+    { "RELOAD",   "-12% RELOAD TIME",       50, 2 },
+    { "PLATING",  "+25 MAX HEALTH",         40, 1 },
+    { "VELOCITY", "+10% SHELL SPEED",       60, 3 },
+    { "ARMOR",    "-8% DAMAGE TAKEN",       80, 4 },
+};
+
 const Obstacle kObstacles[NumObstacles] = {
     {   0.0f,   0.0f, 3.0f, 3.0f, 2.6f },   // center block
     {  14.0f,  10.0f, 4.5f, 1.2f, 2.0f },
@@ -48,6 +57,23 @@ void GameState::SpawnPlayer(int id)
     SpawnPoint(id, p.x, p.z, p.hullYaw);
     p.turretYaw = p.hullYaw;
     p.health = MaxHealth;
+}
+
+bool GameState::TryPurchase(int id, int slot)
+{
+    if (id < 0 || id >= MaxPlayers || slot < 0 || slot >= NumUpgrades)
+        return false;
+    PlayerState& p = players[id];
+    if (!p.active || p.upgrades[slot] >= MaxUpgradeLevel)
+        return false;
+    int cost = UpgradeCost(slot, p.upgrades[slot]);
+    if (p.money < cost)
+        return false;
+    p.money = uint16_t(p.money - cost);
+    ++p.upgrades[slot];
+    if (slot == UpgHealth && p.health > 0)
+        p.health += 25;   // plating grants its health immediately
+    return true;
 }
 
 void GameState::RemovePlayer(int id)
@@ -106,17 +132,17 @@ static bool PointHitsObstacle(float x, float y, float z, float radius)
 void GameState::AdvanceMovement(int id, const InputCmd& in)
 {
     PlayerState& p = players[id];
-    float dx = 0, dz = 0;
-    if (in.buttons & BtnForward) dz += 1.0f;
-    if (in.buttons & BtnBack)    dz -= 1.0f;
-    if (in.buttons & BtnRight)   dx -= 1.0f;
-    if (in.buttons & BtnLeft)    dx += 1.0f;
-    if (dx != 0.0f || dz != 0.0f)
+    // The client resolves camera-relative WASD into a world-space vector, so
+    // the host (and prediction replay) integrate the same numbers.
+    float dx = in.moveX, dz = in.moveZ;
+    float len2 = dx * dx + dz * dz;
+    if (len2 > 1e-6f)
     {
-        float len = sqrtf(dx * dx + dz * dz);
-        dx /= len; dz /= len;
-        p.x += dx * TankSpeed * TickDt;
-        p.z += dz * TankSpeed * TickDt;
+        float len = sqrtf(len2);
+        if (len > 1.0f) { dx /= len; dz /= len; }
+        float speed = TankSpeed * (1.0f + 0.12f * p.upgrades[UpgEngine]);
+        p.x += dx * speed * TickDt;
+        p.z += dz * speed * TickDt;
         p.hullYaw = MoveTowardsAngle(p.hullYaw, atan2f(dx, dz),
                                      HullFaceSpeed * TickDt);
     }
@@ -164,15 +190,17 @@ void GameState::Tick(const InputCmd* inputs)
             p.respawnTimer -= TickDt;
             if (p.respawnTimer <= 0.0f)
             {
-                uint16_t score = p.score;
                 SpawnPoint(id, p.x, p.z, p.hullYaw);
                 p.turretYaw = p.hullYaw;
-                p.health = MaxHealth;
-                p.score = score;
+                p.health = MaxHealthFor(p);   // keeps score/money/upgrades
                 p.hitFlash = 0;
             }
             continue;
         }
+
+        // passive income: 2 credits per second while alive
+        if (tick % (TickRate / 2) == 0 && p.money < 999)
+            ++p.money;
 
         const InputCmd& in = inputs[id];
         AdvanceMovement(id, in);
@@ -189,7 +217,9 @@ void GameState::Tick(const InputCmd* inputs)
                 pr.x = m.x; pr.y = m.y; pr.z = m.z;
                 pr.yaw = p.turretYaw;
                 pr.life = ProjectileLife;
-                p.fireCooldown = FireCooldown;
+                pr.speed = ProjectileSpeed * (1.0f + 0.10f * p.upgrades[UpgVelocity]);
+                pr.damage = int(ProjectileDamage * (1.0f + 0.15f * p.upgrades[UpgDamage]));
+                p.fireCooldown = FireCooldown * powf(0.88f, float(p.upgrades[UpgReload]));
                 p.muzzleFlash = 0.12f;
                 break;
             }
@@ -201,8 +231,8 @@ void GameState::Tick(const InputCmd* inputs)
         if (!pr.active)
             continue;
         pr.life -= TickDt;
-        pr.x += sinf(pr.yaw) * ProjectileSpeed * TickDt;
-        pr.z += cosf(pr.yaw) * ProjectileSpeed * TickDt;
+        pr.x += sinf(pr.yaw) * pr.speed * TickDt;
+        pr.z += cosf(pr.yaw) * pr.speed * TickDt;
         if (pr.life <= 0.0f
             || fabsf(pr.x) > ArenaHalf || fabsf(pr.z) > ArenaHalf
             || PointHitsObstacle(pr.x, pr.y, pr.z, ProjectileRadius))
@@ -218,15 +248,24 @@ void GameState::Tick(const InputCmd* inputs)
             float dx = pr.x - t.x, dz = pr.z - t.z;
             if (dx * dx + dz * dz < TankRadius * TankRadius && pr.y < 2.2f)
             {
-                t.health -= ProjectileDamage;
+                int dmg = int(pr.damage * (1.0f - 0.08f * t.upgrades[UpgArmor]));
+                t.health -= std::max(1, dmg);
                 t.hitFlash = 0.35f;
                 pr.active = false;
+                if (pr.owner < MaxPlayers && players[pr.owner].active)
+                {
+                    PlayerState& shooter = players[pr.owner];
+                    shooter.money = uint16_t(std::min(999, shooter.money + 10));
+                    if (t.health <= 0)
+                    {
+                        ++shooter.score;
+                        shooter.money = uint16_t(std::min(999, shooter.money + 40));
+                    }
+                }
                 if (t.health <= 0)
                 {
                     t.health = 0;
                     t.respawnTimer = RespawnTime;
-                    if (pr.owner < MaxPlayers && players[pr.owner].active)
-                        ++players[pr.owner].score;
                 }
                 break;
             }

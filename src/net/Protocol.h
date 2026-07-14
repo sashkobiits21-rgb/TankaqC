@@ -5,8 +5,8 @@
 namespace tankaq::net
 {
 
-constexpr uint8_t ProtocolVersion = 3;   // v3: input sequence numbers + acks
-                                         //     (client-side prediction)
+constexpr uint8_t ProtocolVersion = 4;   // v4: world-space move vector, upgrades,
+                                         //     money, purchase messages
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t
@@ -16,6 +16,7 @@ enum class MsgType : uint8_t
     Reject,        // host -> client, reliable
     Input,         // client -> host, unreliable
     Snapshot,      // host -> all, unreliable
+    Purchase,      // client -> host, reliable
 };
 
 #pragma pack(push, 1)
@@ -44,7 +45,15 @@ struct MsgInput
     uint8_t type = uint8_t(MsgType::Input);
     uint8_t buttons = 0;
     uint32_t seq = 0;      // client input sequence number, echoed back as ack
+    float moveX = 0;       // world-space move direction (camera-relative WASD
+    float moveZ = 0;       //  resolved on the client)
     float turretYaw = 0;
+};
+
+struct MsgPurchase
+{
+    uint8_t type = uint8_t(MsgType::Purchase);
+    uint8_t slot = 0;      // upgrade index
 };
 
 struct PlayerNet
@@ -52,6 +61,8 @@ struct PlayerNet
     uint8_t active = 0;
     uint8_t health = 0;
     uint16_t score = 0;
+    uint16_t money = 0;
+    uint8_t upgrades[NumUpgrades]{};
     uint32_t ackSeq = 0;   // last input sequence the host simulated for this player
     float x = 0, z = 0;
     float hullYaw = 0, turretYaw = 0;

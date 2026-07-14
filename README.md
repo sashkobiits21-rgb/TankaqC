@@ -84,6 +84,18 @@ Drive the hull with WASD, aim the turret with the mouse, shoot your friends.
   interpolated tank). Friends join with the **game code** (host SteamID64, relayed
   P2P — click the HUD banner to copy it) or `ip:port` on LAN. Dev AppID 480.
 
+- **Upgrade shop** (`TAB`) — six upgrades in a 2x3 panel on the left (engine, damage,
+  reload, plating, velocity, armor), each with a rarity-colored background, a vector
+  icon, level pips, and a hover tooltip showing description + cost. Cards slide in
+  staggered; purchasing burns the card away with a pixel-quantized dissolve that
+  grows from the click point with a flickering ember rim (`VSUiBurn`/`PSUiBurn`).
+  Credits come from hits (+10), kills (+40) and a passive trickle; purchases are
+  host-validated (`MsgPurchase`) and upgrade levels replicate in snapshots so
+  client-side prediction integrates the same stats as the host. The chase camera
+  yaws toward the direction of travel (reversal-guarded, exponentially smoothed),
+  and WASD is resolved against the camera into a world-space move vector before
+  being sent. `--rich` starts with 500 credits, `--shoptest` automates a purchase.
+
 ## Controls
 
 - `W A S D` / arrows — move up / down / left / right (screen-relative)

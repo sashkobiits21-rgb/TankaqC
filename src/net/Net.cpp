@@ -336,6 +336,13 @@ void Net::Poll(const Events& ev)
                         ev.onInput(client->playerId,
                                    *reinterpret_cast<const MsgInput*>(d));
                 }
+                else if (t == MsgType::Purchase && m->m_cbSize >= int(sizeof(MsgPurchase))
+                         && client->playerId >= 0)
+                {
+                    if (ev.onPurchase)
+                        ev.onPurchase(client->playerId,
+                                      reinterpret_cast<const MsgPurchase*>(d)->slot);
+                }
             }
             m->Release();
         }
@@ -386,6 +393,16 @@ void Net::SendInputToHost(const MsgInput& msg)
         return;
     SteamNetworkingSockets()->SendMessageToConnection(
         m_hostConn, &msg, sizeof(msg), k_nSteamNetworkingSend_Unreliable, nullptr);
+}
+
+void Net::SendPurchaseToHost(int slot)
+{
+    if (m_mode != Mode::Client || !m_hostConn || m_clientState != ClientState::Connected)
+        return;
+    MsgPurchase msg;
+    msg.slot = uint8_t(slot);
+    SteamNetworkingSockets()->SendMessageToConnection(
+        m_hostConn, &msg, sizeof(msg), k_nSteamNetworkingSend_Reliable, nullptr);
 }
 
 void Net::BroadcastSnapshot(const MsgSnapshot& snap)

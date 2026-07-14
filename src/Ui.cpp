@@ -23,6 +23,13 @@ void UiBuilder::Rect(float x, float y, float w, float h, UiColor c)
     m_verts.push_back(a); m_verts.push_back(e); m_verts.push_back(d);
 }
 
+void UiBuilder::Tri(float x1, float y1, float x2, float y2, float x3, float y3, UiColor c)
+{
+    m_verts.push_back({ x1, y1, c.r, c.g, c.b, c.a });
+    m_verts.push_back({ x2, y2, c.r, c.g, c.b, c.a });
+    m_verts.push_back({ x3, y3, c.r, c.g, c.b, c.a });
+}
+
 void UiBuilder::RectOutline(float x, float y, float w, float h, float t, UiColor c)
 {
     Rect(x, y, w, t, c);

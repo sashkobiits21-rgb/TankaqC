@@ -143,3 +143,73 @@ float4 PSUi(UiOut i) : SV_Target
 {
     return i.col;
 }
+
+// ---------------- UI burn dissolve (upgrade purchases) ----------------
+// Quads are vertex-pulled from the constant buffer. The pixel shader
+// quantizes screen position into chunky cells, offsets each cell's distance
+// from the burn origin with a hash, and discards cells inside the growing
+// radius -- a pixelated hole eats the card from the click point, rimmed by
+// a flickering ember edge over charred pixels.
+cbuffer UiBurnCB : register(b1)
+{
+    float4 gBurnRect[32];    // x, y, w, h (pixels)
+    float4 gBurnColor[32];   // rgba of the fragment being burned
+    float4 gBurnParam[32];   // origin x, origin y (pixels), progress, max radius
+    float4 gBurnMisc;        // count, time, cell size, unused
+};
+
+struct UiBurnOut
+{
+    float4 sv  : SV_Position;
+    float4 col : COLOR0;
+    nointerpolation float4 param : TEXCOORD0;
+};
+
+UiBurnOut VSUiBurn(uint vid : SV_VertexID, uint inst : SV_InstanceID)
+{
+    const float2 corners[6] = { float2(0, 0), float2(1, 0), float2(0, 1),
+                                float2(0, 1), float2(1, 0), float2(1, 1) };
+    float4 rect = gBurnRect[inst];
+    float2 pos = rect.xy + corners[vid] * rect.zw;
+    UiBurnOut o;
+    o.sv = float4(pos.x / gScreen.x * 2.0 - 1.0,
+                  1.0 - pos.y / gScreen.y * 2.0, 0.0, 1.0);
+    o.col = gBurnColor[inst];
+    o.param = gBurnParam[inst];
+    return o;
+}
+
+float BurnHash(float2 p)
+{
+    return frac(sin(dot(p, float2(12.9898, 78.233))) * 43758.5453);
+}
+
+float4 PSUiBurn(UiBurnOut i) : SV_Target
+{
+    float cell = max(2.0, gBurnMisc.z);
+    float2 cellPos = (floor(i.sv.xy / cell) + 0.5) * cell;
+    float2 origin = i.param.xy;
+    float progress = i.param.z;
+    float maxR = i.param.w;
+
+    float h = BurnHash(cellPos);
+    float d = length(cellPos - origin) + (h - 0.5) * cell * 3.0;
+    float r = progress * maxR;
+
+    if (d < r)
+        discard;                       // the hole
+
+    float edge = cell * 4.0;
+    float t = saturate((d - r) / edge);
+    float3 col = i.col.rgb;
+    if (t < 1.0)
+    {
+        // char band then glowing ember toward the hole, with per-cell flicker
+        float flicker = BurnHash(cellPos + floor(gBurnMisc.y * 24.0));
+        float3 emberHot = float3(2.2, 0.9, 0.18) * (0.75 + 0.5 * flicker);
+        float3 charDark = float3(0.05, 0.035, 0.03);
+        float3 burnCol = (t < 0.35) ? emberHot : charDark;
+        col = lerp(burnCol, col, smoothstep(0.35, 1.0, t));
+    }
+    return float4(col, i.col.a);
+}

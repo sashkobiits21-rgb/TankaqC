@@ -35,9 +35,38 @@ enum : uint8_t
 
 struct InputCmd
 {
-    uint8_t buttons = 0;
+    uint8_t buttons = 0;      // fire bit; WASD bits kept for debugging
+    float moveX = 0;          // desired world-space move direction (camera-
+    float moveZ = 0;          //  relative WASD is resolved on the client)
     float turretYaw = 0.0f;   // desired absolute (world) turret yaw
 };
+
+// ---------------------------------------------------------------- upgrades
+constexpr int NumUpgrades = 6;
+constexpr int MaxUpgradeLevel = 5;
+enum : int
+{
+    UpgEngine = 0,     // +12% speed per level
+    UpgDamage,         // +15% damage per level
+    UpgReload,         // -12% cooldown per level
+    UpgHealth,         // +25 max health per level
+    UpgVelocity,       // +10% projectile speed per level
+    UpgArmor,          // -8% damage taken per level
+};
+
+struct UpgradeDef
+{
+    const char* name;
+    const char* desc;
+    int baseCost;      // cost scales: baseCost * (level + 1)
+    int rarity;        // 0 common, 1 uncommon, 2 rare, 3 epic, 4 legendary
+};
+extern const UpgradeDef kUpgrades[NumUpgrades];
+
+inline int UpgradeCost(int slot, int level)
+{
+    return kUpgrades[slot].baseCost * (level + 1);
+}
 
 struct PlayerState
 {
@@ -51,7 +80,14 @@ struct PlayerState
     float hitFlash = 0;       // seconds of red flash remaining
     float muzzleFlash = 0;    // seconds of muzzle glow remaining
     uint16_t score = 0;
+    uint16_t money = 0;
+    uint8_t upgrades[NumUpgrades]{};
 };
+
+inline int MaxHealthFor(const PlayerState& p)
+{
+    return MaxHealth + 25 * p.upgrades[UpgHealth];
+}
 
 struct Projectile
 {
@@ -60,6 +96,8 @@ struct Projectile
     float x = 0, y = 0, z = 0;
     float yaw = 0;
     float life = 0;
+    float speed = ProjectileSpeed;   // host-side, baked from owner upgrades
+    int damage = ProjectileDamage;
 };
 
 struct Obstacle
@@ -89,6 +127,8 @@ struct GameState
     // Movement + turret only (no timers/firing): shared by the host simulation
     // and client-side prediction so both integrate identically.
     void AdvanceMovement(int id, const InputCmd& in);
+    // Host-side purchase validation; returns true and applies on success.
+    bool TryPurchase(int id, int slot);
     DirectX::XMFLOAT3 MuzzleWorld(const PlayerState& p) const;
 };
 

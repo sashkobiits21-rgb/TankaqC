@@ -44,6 +44,8 @@ struct Options
     int aa = -1;
     bool boom = false;                                  // periodic test explosions
     bool fullscreen = false;
+    bool rich = false;                                  // start with 500 credits
+    bool shopTest = false;                              // auto-open + auto-buy (testing)
 };
 
 const struct { int w, h; } kResolutions[] = {
@@ -120,7 +122,20 @@ struct App
     XMFLOAT3 camPos{ 0, 18, -16 };
     XMFLOAT3 camFocus{ 0, 0, 0 };
     bool camFocusValid = false;
+    float camYaw = 0;                       // chase yaw, follows travel direction
+    float frameDt = 0;
     double time = 0;
+
+    // upgrade shop
+    bool shopOpen = false;
+    double shopSlideStart[NumUpgrades]{};
+    float shopSlide[NumUpgrades]{};
+    struct ShopBurn { bool active; float ox, oy; double t0; };
+    ShopBurn shopBurn[NumUpgrades]{};
+    double shopRespawnAt[NumUpgrades]{};
+    float shopPanel[4]{};                   // x, y, w, h
+    float shopCardRects[NumUpgrades][4]{};
+    double shopTestBuyAt = 0;
     uint64_t frameCounter = 0;
     float fps = 0;
 
@@ -136,6 +151,8 @@ void SwitchRenderer(Backend want);
 void ApplyDisplayMode();
 void ApplyResolution();
 void CopyTextToClipboard(const std::string& text);
+void OpenShop();
+void HandleShopClick(float mx, float my);
 
 // ------------------------------------------------------------------ helpers
 
@@ -178,6 +195,8 @@ Options ParseOptions(const std::string& cmd)
     if (!(v = GetArg(cmd, "--aa=")).empty()) o.aa = atoi(v.c_str());
     o.boom = cmd.find("--boom") != std::string::npos;
     o.fullscreen = cmd.find("--fullscreen") != std::string::npos;
+    o.rich = cmd.find("--rich") != std::string::npos;
+    o.shopTest = cmd.find("--shoptest") != std::string::npos;
     if (!(v = GetArg(cmd, "--winsize=")).empty())
         sscanf_s(v.c_str(), "%dx%d", &o.winW, &o.winH);
     return o;
@@ -205,6 +224,8 @@ void ApplySnapshot(const net::MsgSnapshot& s)
             p = PlayerState{}, p.active = true;
         p.health = in.health;
         p.score = in.score;
+        p.money = in.money;
+        memcpy(p.upgrades, in.upgrades, sizeof(p.upgrades));
         p.hitFlash = (in.flags & 1) ? 0.25f : std::max(0.0f, p.hitFlash - TickDt);
         p.muzzleFlash = (in.flags & 2) ? 0.10f : std::max(0.0f, p.muzzleFlash - TickDt);
         if (i != g.myId)
@@ -250,8 +271,10 @@ net::MsgSnapshot BuildSnapshot()
         const PlayerState& p = g.game.players[i];
         net::PlayerNet& out = s.players[i];
         out.active = p.active ? 1 : 0;
-        out.health = uint8_t(p.health);
+        out.health = uint8_t(std::min(p.health, 255));
         out.score = p.score;
+        out.money = p.money;
+        memcpy(out.upgrades, p.upgrades, sizeof(out.upgrades));
         out.ackSeq = g.inputSeqs[i];
         out.x = p.x; out.z = p.z;
         out.hullYaw = p.hullYaw;
@@ -345,19 +368,38 @@ InputCmd BuildLocalInput()
     InputCmd in;
     if (g.opt.autoDrive)
     {
-        in.buttons |= BtnForward;
-        in.buttons |= (fmod(g.time, 6.0) < 3.0) ? BtnLeft : BtnRight;
+        float ang = float(g.time) * 0.45f;
+        in.moveX = sinf(ang);
+        in.moveZ = cosf(ang);
         uint32_t t = g.game.tick;
         if (t % 75 < 2)
             in.buttons |= BtnFire;
         in.turretYaw = g.game.players[g.myId].hullYaw + 0.6f * sinf(float(g.time) * 0.7f);
         return in;
     }
-    if (g.keys['W'] || g.keys[VK_UP]) in.buttons |= BtnForward;
-    if (g.keys['S'] || g.keys[VK_DOWN]) in.buttons |= BtnBack;
-    if (g.keys['A'] || g.keys[VK_LEFT]) in.buttons |= BtnLeft;
-    if (g.keys['D'] || g.keys[VK_RIGHT]) in.buttons |= BtnRight;
-    if (g.mouseDown || g.keys[VK_SPACE]) in.buttons |= BtnFire;
+    // Camera-relative WASD resolved into a world-space vector here, so the
+    // host and prediction replay integrate identical numbers even though the
+    // chase camera rotates.
+    float inX = 0, inZ = 0;
+    if (g.keys['W'] || g.keys[VK_UP]) inZ += 1.0f;
+    if (g.keys['S'] || g.keys[VK_DOWN]) inZ -= 1.0f;
+    if (g.keys['A'] || g.keys[VK_LEFT]) inX -= 1.0f;
+    if (g.keys['D'] || g.keys[VK_RIGHT]) inX += 1.0f;
+    float sy = sinf(g.camYaw), cy = cosf(g.camYaw);
+    // camera ground forward = (sin, cos); screen-right = (-cos, sin)
+    in.moveX = -cy * inX + sy * inZ;
+    in.moveZ = sy * inX + cy * inZ;
+    float len = sqrtf(in.moveX * in.moveX + in.moveZ * in.moveZ);
+    if (len > 1.0f) { in.moveX /= len; in.moveZ /= len; }
+
+    bool fire = g.mouseDown || g.keys[VK_SPACE];
+    // don't fire while clicking inside the open shop panel
+    if (g.shopOpen && g.mouseX >= g.shopPanel[0]
+        && g.mouseX <= g.shopPanel[0] + g.shopPanel[2]
+        && g.mouseY >= g.shopPanel[1]
+        && g.mouseY <= g.shopPanel[1] + g.shopPanel[3])
+        fire = false;
+    if (fire) in.buttons |= BtnFire;
     in.turretYaw = g.aimYaw;
     return in;
 }
@@ -451,6 +493,8 @@ void StartSolo()
     g.online = false;
     ResetNetSimState();
     g.game.SpawnPlayer(0);
+    if (g.opt.rich || g.opt.shopTest)
+        g.game.players[0].money = 500;
     g.screen = Screen::InGame;
     g.statusLine.clear();
 }
@@ -468,6 +512,8 @@ void StartHost()
     g.online = true;
     ResetNetSimState();
     g.game.SpawnPlayer(0);
+    if (g.opt.rich || g.opt.shopTest)
+        g.game.players[0].money = 500;
     g.screen = Screen::InGame;
     g.statusLine.clear();
 }
@@ -663,7 +709,210 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
     }
 }
 
-void BuildHud()
+void OpenShop()
+{
+    g.shopOpen = true;
+    for (int i = 0; i < NumUpgrades; ++i)
+    {
+        g.shopSlide[i] = 0;
+        g.shopSlideStart[i] = g.time + i * 0.05;   // staggered slide-in
+    }
+}
+
+void DrawUpgradeIcon(int slot, float cx, float cy, UiColor c)
+{
+    switch (slot)
+    {
+    case UpgEngine:   // double chevron
+        g.ui.Tri(cx - 16, cy - 11, cx - 16, cy + 11, cx - 2, cy, c);
+        g.ui.Tri(cx - 2, cy - 11, cx - 2, cy + 11, cx + 12, cy, c);
+        break;
+    case UpgDamage:   // 4-point star
+        g.ui.Rect(cx - 5, cy - 5, 10, 10, c);
+        g.ui.Tri(cx - 5, cy - 5, cx + 5, cy - 5, cx, cy - 15, c);
+        g.ui.Tri(cx - 5, cy + 5, cx + 5, cy + 5, cx, cy + 15, c);
+        g.ui.Tri(cx - 5, cy - 5, cx - 5, cy + 5, cx - 15, cy, c);
+        g.ui.Tri(cx + 5, cy - 5, cx + 5, cy + 5, cx + 15, cy, c);
+        break;
+    case UpgReload:   // hourglass
+        g.ui.Tri(cx - 11, cy - 13, cx + 11, cy - 13, cx, cy - 1, c);
+        g.ui.Tri(cx - 11, cy + 13, cx + 11, cy + 13, cx, cy + 1, c);
+        break;
+    case UpgHealth:   // plus
+        g.ui.Rect(cx - 4, cy - 13, 8, 26, c);
+        g.ui.Rect(cx - 13, cy - 4, 26, 8, c);
+        break;
+    case UpgVelocity: // lightning bolt
+        g.ui.Tri(cx + 7, cy - 15, cx - 9, cy + 3, cx + 1, cy + 3, c);
+        g.ui.Tri(cx - 7, cy + 15, cx + 9, cy - 3, cx - 1, cy - 3, c);
+        break;
+    case UpgArmor:    // shield
+        g.ui.Rect(cx - 11, cy - 13, 22, 16, c);
+        g.ui.Tri(cx - 11, cy + 3, cx + 11, cy + 3, cx, cy + 15, c);
+        break;
+    }
+}
+
+void BuildShop(FrameData& frame)
+{
+    static const UiColor rarityCol[5] = {
+        { 0.35f, 0.37f, 0.35f, 0.96f },   // common
+        { 0.15f, 0.40f, 0.20f, 0.96f },   // uncommon
+        { 0.14f, 0.28f, 0.55f, 0.96f },   // rare
+        { 0.40f, 0.17f, 0.52f, 0.96f },   // epic
+        { 0.62f, 0.35f, 0.10f, 0.96f },   // legendary
+    };
+    const PlayerState& me = g.game.players[g.myId];
+    const float cardW = 150, cardH = 96, gap = 10, header = 34;
+    float panelW = gap * 3 + cardW * 2;
+    float panelH = header + gap + 3 * cardH + 2 * gap + gap;
+    float px = 14;
+    float py = (float(g.height) - panelH) * 0.5f;
+    g.shopPanel[0] = px; g.shopPanel[1] = py;
+    g.shopPanel[2] = panelW; g.shopPanel[3] = panelH;
+
+    g.ui.Rect(px, py, panelW, panelH, { 0.07f, 0.09f, 0.07f, 0.85f });
+    g.ui.RectOutline(px, py, panelW, panelH, 2, { 0.5f, 0.58f, 0.42f, 1 });
+    char buf[96];
+    sprintf_s(buf, "UPGRADES   $ %u", unsigned(me.money));
+    g.ui.Text(px + 10, py + 9, 2.2f, { 1, 0.95f, 0.6f, 1 }, buf);
+
+    int hoverIdx = -1;
+    for (int i = 0; i < NumUpgrades; ++i)
+    {
+        // slide-in animation (exponential ease toward the grid slot)
+        if (g.time >= g.shopSlideStart[i])
+        {
+            g.shopSlide[i] += (1.0f - g.shopSlide[i])
+                              * (1.0f - expf(-g.frameDt * 11.0f));
+            if (g.shopSlide[i] > 0.997f)
+                g.shopSlide[i] = 1.0f;
+        }
+        int col = i % 2, row = i / 2;
+        float tx = px + gap + col * (cardW + gap);
+        float ty = py + header + gap + row * (cardH + gap);
+        float x = -370.0f + (tx + 370.0f) * g.shopSlide[i];
+        g.shopCardRects[i][0] = x; g.shopCardRects[i][1] = ty;
+        g.shopCardRects[i][2] = cardW; g.shopCardRects[i][3] = cardH;
+
+        int level = me.upgrades[i];
+        bool maxed = level >= MaxUpgradeLevel;
+        UiColor bg = rarityCol[kUpgrades[i].rarity];
+
+        // burning card: the background is handed to the dissolve shader
+        if (g.shopBurn[i].active)
+        {
+            float progress = float((g.time - g.shopBurn[i].t0) / 0.55);
+            if (progress >= 1.0f)
+            {
+                g.shopBurn[i].active = false;
+                g.shopRespawnAt[i] = g.shopBurn[i].t0 + 0.75;
+            }
+            else
+            {
+                float ox = g.shopBurn[i].ox, oy = g.shopBurn[i].oy;
+                float dx = std::max(ox - tx, tx + cardW - ox);
+                float dy = std::max(oy - ty, ty + cardH - oy);
+                UiBurnQuad q{ tx, ty, cardW, cardH,
+                              bg.r, bg.g, bg.b, bg.a,
+                              ox, oy, progress, sqrtf(dx * dx + dy * dy) + 8.0f };
+                frame.uiBurn.push_back(q);
+                continue;
+            }
+        }
+        if (g.shopRespawnAt[i] > 0 && g.time >= g.shopRespawnAt[i])
+        {
+            g.shopRespawnAt[i] = 0;
+            if (!maxed)
+            {
+                g.shopSlide[i] = 0;               // next level slides back in
+                g.shopSlideStart[i] = g.time;
+            }
+        }
+        if (g.shopBurn[i].active || (g.shopRespawnAt[i] > 0 && !maxed))
+            continue;
+
+        bool hover = !g.opt.shopTest
+                   && float(g.mouseX) >= x && float(g.mouseX) <= x + cardW
+                   && float(g.mouseY) >= ty && float(g.mouseY) <= ty + cardH
+                   && g.shopSlide[i] > 0.95f;
+        if (hover)
+            hoverIdx = i;
+
+        UiColor bgDraw = bg;
+        if (hover) { bgDraw.r *= 1.35f; bgDraw.g *= 1.35f; bgDraw.b *= 1.35f; }
+        g.ui.Rect(x, ty, cardW, cardH, bgDraw);
+        g.ui.RectOutline(x, ty, cardW, cardH, 2,
+                         hover ? UiColor{ 1, 1, 0.85f, 1 }
+                               : UiColor{ 0.1f, 0.1f, 0.1f, 0.9f });
+        DrawUpgradeIcon(i, x + cardW * 0.5f, ty + 32, { 0.96f, 0.96f, 0.9f, 1 });
+        g.ui.TextCentered(x + cardW * 0.5f, ty + 56, 1.7f, { 1, 1, 1, 0.95f },
+                          kUpgrades[i].name);
+        // level pips
+        float pipsW = MaxUpgradeLevel * 14.0f - 4.0f;
+        float pipX = x + (cardW - pipsW) * 0.5f;
+        for (int lp = 0; lp < MaxUpgradeLevel; ++lp)
+            g.ui.Rect(pipX + lp * 14.0f, ty + cardH - 16, 10, 6,
+                      lp < level ? UiColor{ 1, 0.9f, 0.4f, 1 }
+                                 : UiColor{ 0, 0, 0, 0.45f });
+        if (maxed)
+            g.ui.TextCentered(x + cardW * 0.5f, ty + 76, 1.4f,
+                              { 1, 0.85f, 0.3f, 1 }, "MAX");
+    }
+
+    // hover tooltip: description + cost to the right of the panel
+    if (hoverIdx >= 0)
+    {
+        const UpgradeDef& def = kUpgrades[hoverIdx];
+        int level = me.upgrades[hoverIdx];
+        bool maxed = level >= MaxUpgradeLevel;
+        int cost = maxed ? 0 : UpgradeCost(hoverIdx, level);
+        float tx = px + panelW + 10;
+        float ty = g.shopCardRects[hoverIdx][1];
+        float tw = 250, th = 96;
+        g.ui.Rect(tx, ty, tw, th, { 0.05f, 0.06f, 0.05f, 0.94f });
+        g.ui.RectOutline(tx, ty, tw, th, 2, rarityCol[def.rarity]);
+        g.ui.Text(tx + 10, ty + 10, 2.0f, { 1, 1, 1, 1 }, def.name);
+        g.ui.Text(tx + 10, ty + 32, 1.6f, { 0.85f, 0.9f, 0.85f, 1 }, def.desc);
+        char tip[64];
+        if (maxed)
+            g.ui.Text(tx + 10, ty + 56, 1.8f, { 1, 0.85f, 0.3f, 1 }, "MAX LEVEL");
+        else
+        {
+            sprintf_s(tip, "COST $ %d", cost);
+            bool afford = me.money >= cost;
+            g.ui.Text(tx + 10, ty + 56, 1.8f,
+                      afford ? UiColor{ 0.55f, 1, 0.55f, 1 }
+                             : UiColor{ 1, 0.45f, 0.4f, 1 }, tip);
+        }
+        sprintf_s(tip, "LEVEL %d / %d", level, MaxUpgradeLevel);
+        g.ui.Text(tx + 10, ty + 76, 1.4f, { 1, 1, 1, 0.6f }, tip);
+    }
+}
+
+void HandleShopClick(float mx, float my)
+{
+    const PlayerState& me = g.game.players[g.myId];
+    for (int i = 0; i < NumUpgrades; ++i)
+    {
+        const float* r = g.shopCardRects[i];
+        if (mx < r[0] || mx > r[0] + r[2] || my < r[1] || my > r[1] + r[3])
+            continue;
+        if (g.shopBurn[i].active || g.shopSlide[i] < 0.95f)
+            return;
+        int level = me.upgrades[i];
+        if (level >= MaxUpgradeLevel || me.money < UpgradeCost(i, level))
+            return;
+        if (!g.online || g.isHost)
+            g.game.TryPurchase(g.myId, i);
+        else
+            g.net.SendPurchaseToHost(i);   // optimistic; host validates
+        g.shopBurn[i] = { true, mx, my, g.time };
+        return;
+    }
+}
+
+void BuildHud(FrameData& frame)
 {
     const PlayerState& me = g.game.players[g.myId];
     float w = float(g.width);
@@ -703,16 +952,19 @@ void BuildHud()
         g.ui.TextCentered(w * 0.5f, 56, 1.5f, { 1, 1, 1, 0.7f }, buf);
     }
 
-    // health bar
+    // health bar + credits
     float hx = 10, hy = float(g.height) - 46;
     g.ui.Rect(hx, hy, 260, 26, { 0, 0, 0, 0.55f });
-    float frac = float(me.health) / MaxHealth;
+    float frac = float(me.health) / float(MaxHealthFor(me));
     g.ui.Rect(hx + 3, hy + 3, 254 * std::max(0.0f, frac), 20,
               frac > 0.5f ? UiColor{ 0.3f, 0.8f, 0.25f, 0.95f }
               : frac > 0.25f ? UiColor{ 0.9f, 0.75f, 0.2f, 0.95f }
                              : UiColor{ 0.9f, 0.2f, 0.15f, 0.95f });
     sprintf_s(buf, "HP %d", me.health);
     g.ui.Text(hx + 8, hy + 6, 2.0f, { 0, 0, 0, 0.9f }, buf);
+    sprintf_s(buf, "$ %u", unsigned(me.money));
+    g.ui.Rect(hx + 268, hy, 90, 26, { 0, 0, 0, 0.55f });
+    g.ui.Text(hx + 276, hy + 6, 2.0f, { 1, 0.92f, 0.5f, 1 }, buf);
 
     // reload bar
     float rf = 1.0f - me.fireCooldown / FireCooldown;
@@ -744,10 +996,13 @@ void BuildHud()
     g.ui.Rect(float(g.mouseX) - 1, float(g.mouseY) - 9, 2, 18, { 1, 1, 1, 0.8f });
 
     g.ui.Text(10, float(g.height) - 74, 1.4f, { 1, 1, 1, 0.45f },
-              "WASD drive   mouse aim   LMB/space fire   ESC menu");
+              "WASD drive   mouse aim   LMB/space fire   TAB shop   ESC menu");
     if (!g.statusLine.empty())
         g.ui.TextCentered(w * 0.5f, float(g.height) - 30, 1.7f, { 1, 0.8f, 0.4f, 0.95f },
                           g.statusLine);
+
+    if (g.shopOpen)
+        BuildShop(frame);
 }
 
 std::vector<UiButton> MenuButtons()
@@ -1001,6 +1256,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (wp == VK_F5) g.post.giEnabled = !g.post.giEnabled;
         if (wp == VK_F6) g.post.aoEnabled = !g.post.aoEnabled;
         if (wp == VK_F7) g.post.shadowsEnabled = !g.post.shadowsEnabled;
+        if (wp == VK_TAB && g.screen == Screen::InGame)
+        {
+            if (g.shopOpen) g.shopOpen = false;
+            else OpenShop();
+        }
         if (g.screen == Screen::JoinEntry)
         {
             if (wp == VK_BACK && !g.joinText.empty())
@@ -1297,9 +1557,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         if (m.seq > g.inputSeqs[pid])   // ignore late/out-of-order packets
         {
             g.inputs[pid].buttons = m.buttons;
+            g.inputs[pid].moveX = m.moveX;
+            g.inputs[pid].moveZ = m.moveZ;
             g.inputs[pid].turretYaw = m.turretYaw;
             g.inputSeqs[pid] = m.seq;
         }
+    };
+    ev.onPurchase = [](int pid, int slot)
+    {
+        if (g.game.TryPurchase(pid, slot))
+            Log("Player %d bought upgrade %d (level %d)", pid, slot,
+                g.game.players[pid].upgrades[slot]);
     };
     ev.onWelcome = [](int myId)
     {
@@ -1340,6 +1608,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         prev = now;
         dt = std::min(dt, 0.25);
         g.time += dt;
+        g.frameDt = float(dt);
         accumulator += dt;
         fpsTimer += dt;
         ++fpsFrames;
@@ -1378,6 +1647,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             {
                 net::MsgInput m;
                 m.buttons = local.buttons;
+                m.moveX = local.moveX;
+                m.moveZ = local.moveZ;
                 m.turretYaw = local.turretYaw;
                 m.seq = ++g.inputSeq;
                 g.net.SendInputToHost(m);
@@ -1387,12 +1658,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                 PlayerState& me = g.game.players[g.myId];
                 if (me.active && me.health > 0)
                 {
-                    InputCmd cmd{ local.buttons, local.turretYaw };
-                    g.pendingInputs.push_back({ g.inputSeq, cmd });
+                    g.pendingInputs.push_back({ g.inputSeq, local });
                     if (g.pendingInputs.size() > 120)
                         g.pendingInputs.erase(g.pendingInputs.begin());
                     g.predPrev = me;
-                    g.game.AdvanceMovement(g.myId, cmd);
+                    g.game.AdvanceMovement(g.myId, local);
                     g.predCurr = me;
                 }
             }
@@ -1432,11 +1702,41 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                 g.camFocus.z += ez * k;
             }
         }
-        g.camPos = XMFLOAT3(g.camFocus.x, 19.0f, g.camFocus.z - 14.5f);
+
+        // Chase yaw: rotate toward the direction of travel. Twitch-proofing:
+        //  - the target yaw only updates while there is real movement input,
+        //    so noise/rest can never steer it,
+        //  - reversals (>120 deg, e.g. backing up) are ignored instead of
+        //    swinging the camera around,
+        //  - shortest-arc exponential smoothing with an epsilon snap.
+        if (g.screen == Screen::InGame)
+        {
+            const InputCmd& li = g.isHost ? g.inputs[g.myId]
+                                          : (g.pendingInputs.empty()
+                                                 ? InputCmd{}
+                                                 : g.pendingInputs.back().cmd);
+            float mlen2 = li.moveX * li.moveX + li.moveZ * li.moveZ;
+            if (mlen2 > 0.25f)
+            {
+                float targetYaw = atan2f(li.moveX, li.moveZ);
+                float delta = WrapAngle(targetYaw - g.camYaw);
+                if (fabsf(delta) < XMConvertToRadians(120.0f))
+                {
+                    float ky = 1.0f - expf(-float(dt) * 3.0f);
+                    if (fabsf(delta) < 0.001f)
+                        g.camYaw = targetYaw;
+                    else
+                        g.camYaw = WrapAngle(g.camYaw + delta * ky);
+                }
+            }
+        }
+        float cySin = sinf(g.camYaw), cyCos = cosf(g.camYaw);
+        g.camPos = XMFLOAT3(g.camFocus.x - cySin * 14.5f, 19.0f,
+                            g.camFocus.z - cyCos * 14.5f);
 
         XMMATRIX view = XMMatrixLookAtRH(
             XMVectorSet(g.camPos.x, g.camPos.y, g.camPos.z, 1),
-            XMVectorSet(g.camFocus.x, 0, g.camFocus.z + 2.0f, 1),
+            XMVectorSet(g.camFocus.x + cySin * 2.0f, 0, g.camFocus.z + cyCos * 2.0f, 1),
             XMVectorSet(0, 1, 0, 0));
         XMMATRIX proj = XMMatrixPerspectiveFovRH(XMConvertToRadians(46.0f),
                                                  float(g.width) / float(g.height),
@@ -1459,6 +1759,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             {
                 HandleMenuClick();
             }
+            else if (g.shopOpen && g.mouseX >= g.shopPanel[0]
+                     && g.mouseX <= g.shopPanel[0] + g.shopPanel[2]
+                     && g.mouseY >= g.shopPanel[1]
+                     && g.mouseY <= g.shopPanel[1] + g.shopPanel[3])
+            {
+                HandleShopClick(float(g.mouseX), float(g.mouseY));
+            }
             else if (g.isHost && g.online
                      && g.mouseX >= g.codeRect[0]
                      && g.mouseX <= g.codeRect[0] + g.codeRect[2]
@@ -1472,6 +1779,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
 
         UpdateVfxFromSim();
 
+        // shop test automation: open at 1 s, buy the DAMAGE card at 2 s
+        if (g.opt.shopTest && g.screen == Screen::InGame)
+        {
+            if (!g.shopOpen && g.time > 1.0)
+                OpenShop();
+            if (g.shopTestBuyAt == 0 && g.time > 2.0)
+            {
+                g.shopTestBuyAt = g.time;
+                const float* r = g.shopCardRects[UpgDamage];
+                HandleShopClick(r[0] + r[2] * 0.6f, r[1] + r[3] * 0.45f);
+            }
+        }
+
         FrameData frame;
         frame.objects.reserve(64);
         frame.camRight = camRight;
@@ -1479,7 +1799,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         BuildScene(frame, view, proj);
         g.ui.Reset(g.width, g.height);
         if (g.screen == Screen::InGame)
-            BuildHud();
+            BuildHud(frame);
         else
             BuildMenu();
         frame.ui = g.ui.vertices();
