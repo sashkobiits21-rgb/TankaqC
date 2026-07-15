@@ -1067,31 +1067,17 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
                 frame.objects.push_back(ro);
             }
 
-            // muzzle flash + hitscan tracer toward the target
+            // launcher muzzle flash (the rocket itself is a real projectile
+            // in the shared pool, drawn by the normal rocket path)
             if (s.muzzleFlash > 0 && s.state != SoldierDying)
             {
                 float gx = sx + sinf(syaw) * 0.7f;
                 float gz = sz + cosf(syaw) * 0.7f;
-                float fs = 0.25f + 2.2f * s.muzzleFlash;
+                float fs = 0.3f + 2.6f * s.muzzleFlash;
                 frame.objects.push_back({ g.meshFlash, g.texWhite,
                     Store(XMMatrixScaling(fs, fs, fs)
                           * XMMatrixTranslation(gx, SoldierGunY, gz)),
                     { 1.0f, 0.85f, 0.3f, 1.0f }, true });
-                if (s.targetId < MaxPlayers && g.game.players[s.targetId].active)
-                {
-                    const PlayerState& t = g.game.players[s.targetId];
-                    float dx = t.x - gx, dz = t.z - gz;
-                    float len = std::max(0.0f, sqrtf(dx * dx + dz * dz) - 1.2f);
-                    if (len > 0.5f)
-                    {
-                        XMMATRIX tm = XMMatrixScaling(0.05f, 0.05f, len)
-                                    * XMMatrixRotationY(atan2f(dx, dz))
-                                    * XMMatrixTranslation(gx + dx * 0.5f, 0.95f,
-                                                          gz + dz * 0.5f);
-                        frame.objects.push_back({ g.meshTracer, g.texWhite,
-                            Store(tm), { 1.0f, 0.9f, 0.45f, 0.85f }, true });
-                    }
-                }
             }
         }
     }
@@ -1630,14 +1616,6 @@ bool CreateAssets()
     g.texFlatNRA = r->CreateTexture(flatNRA.rgba.data(), flatNRA.width, flatNRA.height);
     ImageData icons = MakeIconAtlas(32, UpgradeCount);
     g.texIconAtlas = r->CreateTexture(icons.rgba.data(), icons.width, icons.height);
-
-    // tracer: a unit cube stretched into a thin beam per soldier shot
-    {
-        MeshData tracer = MakeBox(0.5f, 0.5f, 0.5f, 1.0f);
-        ComputeTangents(tracer);
-        g.meshTracer = r->CreateMesh(tracer.verts.data(), tracer.verts.size(),
-                                     tracer.indices.data(), tracer.indices.size());
-    }
 
     // The soldier rig is GAMEPLAY now (summons), not just the --rigtest demo:
     // always load it, resolve the clips the summon needs BY NAME (loud on
@@ -2613,8 +2591,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                 bool muzzle = s.active && s.muzzleFlash > 0;
                 if (muzzle && !g.soldierPrevMuzzle[i])
                     snd::Play(snd::Sfx::Shoot,
-                              SndDistVol(s.x, s.z, 0.30f),
-                              1.55f * SndJitter(0.10f));
+                              SndDistVol(s.x, s.z, 0.34f),
+                              1.25f * SndJitter(0.10f));
                 g.soldierPrevMuzzle[i] = muzzle;
             }
 

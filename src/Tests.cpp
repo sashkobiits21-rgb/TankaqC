@@ -170,7 +170,7 @@ int RunClassTest()
         check(countMine() == 1, "SoldierMax 1 respected across the cooldown");
         SoldierState* s0 = nullptr;
         for (SoldierState& s : g2.soldiers) if (s.active) s0 = &s;
-        check(s0 && fabsf(s0->health - 40.0f) < 1e-3f,
+        check(s0 && fabsf(s0->health - 30.0f) < 1e-3f,
               "soldier health baked from the owner's stats");
         check(s0 && fabsf(s0->x) <= ArenaHalf && fabsf(s0->z) <= ArenaHalf,
               "soldier stayed inside the arena");
@@ -191,7 +191,7 @@ int RunClassTest()
             // recycled by a REPLACEMENT within a tick: gone means either an
             // empty slot or a fresh full-health soldier occupying it
             bool despawned = !s0->active
-                          || (s0->state != SoldierDying && s0->health >= 39.0f);
+                          || (s0->state != SoldierDying && s0->health >= 29.0f);
             check(despawned, "dead soldier despawned (slot freed or recycled)");
             for (int t = 0; t < TickRate * 11; ++t) g2.Tick(idle);
             check(countMine() == 1, "replacement arrives after the cooldown");

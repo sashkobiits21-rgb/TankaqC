@@ -122,7 +122,6 @@ struct App
     Animator soldierAnim[MaxSoldiers];
     uint8_t soldierAnimState[MaxSoldiers]{};   // last state fed to the animator
     bool soldierPrevMuzzle[MaxSoldiers]{};
-    int meshTracer = -1;                       // unit box, stretched per shot
 
     // game
     GameState game;

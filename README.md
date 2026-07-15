@@ -128,12 +128,12 @@ Drive the hull with WASD, aim the turret with the mouse, shoot your friends.
 - **Soldier summons** — the SOLDIER class spawns host-authoritative infantry
   (protocol v12): cover-point AI scores obstacle-face spots by line-of-sight
   blockage against every enemy, advances obstacle-to-obstacle via reachable
-  stepping stones (paths tested against body-inflated boxes), PEEKS out to a
-  sight-line point for one hitscan shot and tucks back, and kites (runs +
-  shoots) when no full cover exists. Deaths, bounties and kill credit flow
-  through the same ApplyDamage as rockets. Clients drive the skinned
-  animation (duck / run + gun-up torso / death), torso aim constraint and
-  tracers locally from replicated state -- fire-and-forget, no corrections.
+  stepping stones (paths tested against body-inflated boxes), PEEKS out wide
+  to a sight-line point, fires one REAL ROCKET (shared projectile pool: full
+  travel time, smoke, kill credit to the summoner) and tucks back, and kites
+  (runs + shoots) when no full cover exists. Clients drive the skinned
+  animation (duck / run + gun-up torso / death) and torso aim constraint
+  locally from replicated state -- fire-and-forget, no corrections.
   `--soldiertest` grants the class solo against a parked dummy.
 - **Skinned meshes / rigs** — glTF/GLB skins + animations (Blender exports drop
   in): up to 64 bones, 4 influences, multi-part characters with material

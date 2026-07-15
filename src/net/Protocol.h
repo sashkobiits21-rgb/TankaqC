@@ -15,8 +15,10 @@ namespace tankaq::net
 // bouncy families), and upgrades replicate by pool index, so mixed-version
 // peers must be rejected.
 // v12: soldier summons -- SoldierNet array in snapshots. Clients drive the
-// animation/tracers locally from this state (fire-and-forget visuals).
-constexpr uint8_t ProtocolVersion = 12;
+// animation locally from this state (fire-and-forget visuals).
+// v13: soldiers fire pool rockets, base SoldierHealth 30 -- kBaseStats is
+// part of the derived-stats contract, so mixed versions must not pair.
+constexpr uint8_t ProtocolVersion = 13;
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t

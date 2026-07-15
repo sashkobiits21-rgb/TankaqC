@@ -254,7 +254,8 @@ extern const Obstacle kObstacles[NumObstacles];
 constexpr int   MaxSoldiers = 12;          // across all players
 constexpr float SoldierRadius = 0.55f;
 constexpr float SoldierFireRange = 15.0f;
-constexpr float SoldierGunY = 1.05f;       // muzzle height for tracers
+constexpr float SoldierGunY = 1.05f;       // launcher muzzle height
+constexpr float SoldierRocketSpeed = 13.0f;
 constexpr float SoldierDeathTime = 1.1f;   // Death clip before despawn
 constexpr float SoldierCoverPause = 1.5f;  // ducked seconds between peeks
 

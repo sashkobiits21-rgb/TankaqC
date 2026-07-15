@@ -22,7 +22,7 @@ const float kBaseStats[StatCount] = {
     1.2f,               // BoostRegenDelay: pause after boosting
     4.0f,               // SoldierSpeed
     10.0f,              // SoldierDamage
-    40.0f,              // SoldierHealth
+    30.0f,              // SoldierHealth: two-ish soldier rockets, one tank shell
     1.0f,               // SoldierFireRate: shots/s
     1.0f,               // SoldierMax: one soldier out at a time
     10.0f,              // SoldierCooldown: 10 s between spawns
@@ -665,8 +665,8 @@ void GameState::ApplyDamage(int shooterId, int victimId, int rawDamage,
 // Candidate hiding spots: points floated off every obstacle face (three per
 // face). A spot is COVER from an enemy when the spot->enemy segment crosses
 // an obstacle -- i.e. the wall eats the line of sight.
-struct CoverSpot { float x, z; };
-constexpr int MaxCoverSpots = 128;
+struct CoverSpot { float x, z; bool wide; };
+constexpr int MaxCoverSpots = 160;
 static int GatherCoverSpots(CoverSpot* out, int cap)
 {
     int n = 0;
@@ -677,19 +677,30 @@ static int GatherCoverSpots(CoverSpot* out, int cap)
         float zs[3] = { o.cz - o.hz * 0.6f, o.cz, o.cz + o.hz * 0.6f };
         for (int i = 0; i < 3 && n + 4 <= cap; ++i)
         {
-            out[n++] = { xs[i], o.cz - o.hz - off };
-            out[n++] = { xs[i], o.cz + o.hz + off };
-            out[n++] = { o.cx - o.hx - off, zs[i] };
-            out[n++] = { o.cx + o.hx + off, zs[i] };
+            out[n++] = { xs[i], o.cz - o.hz - off, false };
+            out[n++] = { xs[i], o.cz + o.hz + off, false };
+            out[n++] = { o.cx - o.hx - off, zs[i], false };
+            out[n++] = { o.cx + o.hx + off, zs[i], false };
         }
         // corners: angle cover AND the natural detour waypoints -- a spot
         // pinned to a face is often only reachable by rounding a corner first
         if (n + 4 <= cap)
         {
-            out[n++] = { o.cx - o.hx - off, o.cz - o.hz - off };
-            out[n++] = { o.cx + o.hx + off, o.cz - o.hz - off };
-            out[n++] = { o.cx - o.hx - off, o.cz + o.hz + off };
-            out[n++] = { o.cx + o.hx + off, o.cz + o.hz + off };
+            out[n++] = { o.cx - o.hx - off, o.cz - o.hz - off, false };
+            out[n++] = { o.cx + o.hx + off, o.cz - o.hz - off, false };
+            out[n++] = { o.cx - o.hx - off, o.cz + o.hz + off, false };
+            out[n++] = { o.cx + o.hx + off, o.cz + o.hz + off, false };
+        }
+        // WIDE corners: a body length further out. Peek points and stepping
+        // stones only, never hiding spots -- standing wide of the wall is
+        // exactly the exposed, punishable moment of the peek.
+        const float wide = off + 1.3f;
+        if (n + 4 <= cap)
+        {
+            out[n++] = { o.cx - o.hx - wide, o.cz - o.hz - wide, true };
+            out[n++] = { o.cx + o.hx + wide, o.cz - o.hz - wide, true };
+            out[n++] = { o.cx - o.hx - wide, o.cz + o.hz + wide, true };
+            out[n++] = { o.cx + o.hx + wide, o.cz + o.hz + wide, true };
         }
     }
     return n;
@@ -784,8 +795,8 @@ static bool PickCover(const GameState& gs, SoldierState& s,
     for (int i = 0; i < n; ++i)
     {
         const CoverSpot& c = spots[i];
-        if (!usable(c))
-            continue;
+        if (c.wide || !usable(c))
+            continue;   // wide spots are for peeking, never for hiding
         int blocked;
         float nearestEnemy;
         coverInfo(c, blocked, nearestEnemy);
@@ -880,9 +891,10 @@ static bool FindPeek(const GameState& gs, SoldierState& s, int targetId)
         float ex = t.x - c.x, ez = t.z - c.z;
         if (ex * ex + ez * ez > SoldierFireRange * SoldierFireRange * 0.81f)
             continue;                       // must end up in gun range
-        // sight line tested with margin: a line grazing a corner by an inch
-        // is not a real peek (the shot check would stay blocked en route)
-        if (SegmentBlockedByObstacles(c.x, c.z, t.x, t.z, 0.35f))
+        // sight line tested with a WIDE margin: the peek point must be
+        // properly out in the open (a grazing corner line is not a peek,
+        // and a soldier hugging the wall is too hard to punish)
+        if (SegmentBlockedByObstacles(c.x, c.z, t.x, t.z, 0.8f))
             continue;
         if (SegmentBlockedByObstacles(s.x, s.z, c.x, c.z, walk))
             continue;                       // must be a straight run
@@ -912,8 +924,9 @@ static bool FindPeek(const GameState& gs, SoldierState& s, int targetId)
 }
 
 // Fire at the current target if the reload is ready, it is in range, and
-// line of sight is clear. Hitscan: damage lands immediately; the muzzle
-// flash + facing replicate so clients draw the tracer themselves.
+// line of sight is clear. Soldiers shoot REAL ROCKETS from the shared
+// projectile pool: full travel time, obstacle detonation, smoke, and kill
+// credit through the same path as tank shells (owner = the summoner).
 static void SoldierTryFire(GameState& gs, SoldierState& s)
 {
     if (s.fireCooldown > 0.0f || s.targetId >= MaxPlayers)
@@ -924,12 +937,32 @@ static void SoldierTryFire(GameState& gs, SoldierState& s)
     float dx = t.x - s.x, dz = t.z - s.z;
     if (dx * dx + dz * dz > SoldierFireRange * SoldierFireRange)
         return;
-    if (SegmentBlockedByObstacles(s.x, s.z, t.x, t.z))
+    // clearance for the ROCKET, not a zero-width ray: a sight line grazing
+    // a corner by less than the projectile radius means the rocket clips
+    // the box and detonates on the corner instead of reaching the target
+    if (SegmentBlockedByObstacles(s.x, s.z, t.x, t.z, ProjectileRadius + 0.1f))
         return;
-    gs.ApplyDamage(s.owner, s.targetId, int(s.damage + 0.5f), 2);
-    s.fireCooldown = 1.0f / std::max(0.1f, s.fireRate);
-    s.muzzleFlash = 0.1f;
-    s.yaw = atan2f(dx, dz);   // square up to the shot
+    for (Projectile& pr : gs.projectiles)
+    {
+        if (pr.active)
+            continue;
+        float yaw = atan2f(dx, dz);
+        pr = Projectile{};
+        pr.active = true;
+        pr.owner = s.owner;
+        pr.x = s.x + sinf(yaw) * 0.8f;   // off the shoulder launcher
+        pr.y = SoldierGunY;
+        pr.z = s.z + cosf(yaw) * 0.8f;
+        pr.yaw = yaw;
+        pr.life = ProjectileLife;
+        pr.speed = SoldierRocketSpeed;
+        pr.damage = int(s.damage + 0.5f);
+        pr.bounces = 0;
+        s.fireCooldown = 1.0f / std::max(0.1f, s.fireRate);
+        s.muzzleFlash = 0.12f;
+        s.yaw = yaw;   // square up to the shot
+        break;
+    }
 }
 
 void GameState::TickSoldier(SoldierState& s)
@@ -1009,7 +1042,7 @@ void GameState::TickSoldier(SoldierState& s)
                 if (s.fireCooldown <= 0.0f && FindPeek(*this, s, nearest))
                 {
                     s.state = SoldierPeek;
-                    s.stateTimer = 3.0f;   // give up the peek eventually
+                    s.stateTimer = 3.5f;   // give up the peek eventually
                 }
                 else if (PickCover(*this, s, enemies, ne))
                 {
