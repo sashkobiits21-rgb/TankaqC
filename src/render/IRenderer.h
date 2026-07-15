@@ -12,6 +12,8 @@ struct Vertex
     float px, py, pz;
     float nx, ny, nz;
     float u, v;
+    // tangent (xyz) + bitangent handedness (w); filled by ComputeTangents
+    float tx = 1, ty = 0, tz = 0, tw = 1;
 };
 
 struct UiVertex
@@ -50,6 +52,8 @@ struct RenderObject
     // rocket squish/spring deformation (vertex shader); dist < 0 disables
     float deformDist = -1.0f;               // distance traveled from the muzzle
     float deformAge = 0.0f;                 // seconds since fired
+    // NRA map (normal rgb + roughness a); -1 = FrameData::defaultNormalTex
+    int texNormal = -1;
 };
 
 struct PostSettings
@@ -98,6 +102,7 @@ struct FrameData
     std::vector<UiTexVertex> uiTex;         // textured triangle list (icon atlas)
     int uiTexTexture = -1;                  // texture handle for uiTex + burn
     std::vector<UiBurnQuad> uiBurn;         // burning shop cards (max 32 used)
+    int defaultNormalTex = -1;              // flat NRA for objects without one
     bool vsync = true;
 };
 

@@ -146,6 +146,8 @@ TankModel LoadTankModel(const std::string& glbPath, const std::string& metaPath)
         Log("Assets: missing %s", metaPath.c_str());
     }
 
+    ComputeTangents(model.hull);
+    ComputeTangents(model.turret);
     model.valid = !model.hull.verts.empty() && !model.turret.verts.empty()
                   && model.palette.width > 0;
     Log("Assets: tank hull %zu verts / %zu tris, turret %zu verts / %zu tris, palette %dx%d%s",
@@ -179,6 +181,7 @@ MeshData MakeBox(float hx, float hy, float hz, float uvScale)
     AddQuad(m, { -hx,-hy,-hz }, { -hx, hy,-hz }, { -hx, hy, hz }, { -hx,-hy, hz }, { -1,0,0 }, 0, 0, sz * 2, sy * 2); // -X
     AddQuad(m, { -hx, hy, hz }, { -hx, hy,-hz }, {  hx, hy,-hz }, {  hx, hy, hz }, { 0,1,0 },  0, 0, sx * 2, sz * 2); // +Y
     AddQuad(m, { -hx,-hy,-hz }, { -hx,-hy, hz }, {  hx,-hy, hz }, {  hx,-hy,-hz }, { 0,-1,0 }, 0, 0, sx * 2, sz * 2); // -Y
+    ComputeTangents(m);
     return m;
 }
 
@@ -188,6 +191,7 @@ MeshData MakeGroundPlane(float halfSize, float uvTiles)
     AddQuad(m, { -halfSize, 0,  halfSize }, { -halfSize, 0, -halfSize },
                {  halfSize, 0, -halfSize }, {  halfSize, 0,  halfSize },
                { 0, 1, 0 }, 0, 0, uvTiles, uvTiles);
+    ComputeTangents(m);
     return m;
 }
 
@@ -216,7 +220,111 @@ MeshData MakeSphere(float radius, int slices, int stacks)
             uint32_t b = a + stride;
             m.indices.insert(m.indices.end(), { a, a + 1, b, b, a + 1, b + 1 });
         }
+    ComputeTangents(m);
     return m;
+}
+
+void ComputeTangents(MeshData& m)
+{
+    std::vector<XMFLOAT3> accT(m.verts.size(), { 0, 0, 0 });
+    std::vector<XMFLOAT3> accB(m.verts.size(), { 0, 0, 0 });
+    for (size_t i = 0; i + 2 < m.indices.size(); i += 3)
+    {
+        const Vertex& v0 = m.verts[m.indices[i]];
+        const Vertex& v1 = m.verts[m.indices[i + 1]];
+        const Vertex& v2 = m.verts[m.indices[i + 2]];
+        float e1x = v1.px - v0.px, e1y = v1.py - v0.py, e1z = v1.pz - v0.pz;
+        float e2x = v2.px - v0.px, e2y = v2.py - v0.py, e2z = v2.pz - v0.pz;
+        float du1 = v1.u - v0.u, dv1 = v1.v - v0.v;
+        float du2 = v2.u - v0.u, dv2 = v2.v - v0.v;
+        float det = du1 * dv2 - du2 * dv1;
+        if (fabsf(det) < 1e-9f)
+            continue;   // degenerate UVs (palette models): fallback below
+        float r = 1.0f / det;
+        XMFLOAT3 t{ (e1x * dv2 - e2x * dv1) * r,
+                    (e1y * dv2 - e2y * dv1) * r,
+                    (e1z * dv2 - e2z * dv1) * r };
+        XMFLOAT3 b{ (e2x * du1 - e1x * du2) * r,
+                    (e2y * du1 - e1y * du2) * r,
+                    (e2z * du1 - e1z * du2) * r };
+        for (int c = 0; c < 3; ++c)
+        {
+            uint32_t idx = m.indices[i + c];
+            accT[idx].x += t.x; accT[idx].y += t.y; accT[idx].z += t.z;
+            accB[idx].x += b.x; accB[idx].y += b.y; accB[idx].z += b.z;
+        }
+    }
+    for (size_t i = 0; i < m.verts.size(); ++i)
+    {
+        Vertex& v = m.verts[i];
+        float nx = v.nx, ny = v.ny, nz = v.nz;
+        float tx = accT[i].x, ty = accT[i].y, tz = accT[i].z;
+        if (tx * tx + ty * ty + tz * tz < 1e-10f)
+        {
+            // no UV gradient: any perpendicular will do
+            if (fabsf(ny) < 0.9f) { tx = ny * 0 - nz * 1; ty = 0; tz = nx; } // n x up-ish
+            else { tx = 1; ty = 0; tz = 0; }
+        }
+        // Gram-Schmidt against the normal
+        float d = tx * nx + ty * ny + tz * nz;
+        tx -= nx * d; ty -= ny * d; tz -= nz * d;
+        float len = sqrtf(tx * tx + ty * ty + tz * tz);
+        if (len < 1e-6f) { tx = 1; ty = 0; tz = 0; len = 1; }
+        v.tx = tx / len; v.ty = ty / len; v.tz = tz / len;
+        // handedness: does the accumulated bitangent agree with n x t?
+        float cx = ny * v.tz - nz * v.ty;
+        float cy = nz * v.tx - nx * v.tz;
+        float cz = nx * v.ty - ny * v.tx;
+        float hb = cx * accB[i].x + cy * accB[i].y + cz * accB[i].z;
+        v.tw = (hb < 0.0f) ? -1.0f : 1.0f;
+    }
+}
+
+ImageData MakeFlatNRA(float roughness)
+{
+    ImageData img;
+    img.width = img.height = 4;
+    img.rgba.resize(4 * 4 * 4);
+    uint8_t r = uint8_t(std::clamp(roughness, 0.0f, 1.0f) * 255.0f);
+    for (int i = 0; i < 16; ++i)
+    {
+        img.rgba[i * 4 + 0] = 128;
+        img.rgba[i * 4 + 1] = 128;
+        img.rgba[i * 4 + 2] = 255;
+        img.rgba[i * 4 + 3] = r;
+    }
+    return img;
+}
+
+ImageData MakeNormalRoughFromTexture(const ImageData& src, float strength,
+                                     float roughMin, float roughMax)
+{
+    ImageData img;
+    img.width = src.width;
+    img.height = src.height;
+    img.rgba.resize(size_t(img.width) * img.height * 4);
+    auto lum = [&](int x, int y)
+    {
+        x = (x + src.width) % src.width;
+        y = (y + src.height) % src.height;
+        const uint8_t* p = &src.rgba[(size_t(y) * src.width + x) * 4];
+        return (p[0] * 0.299f + p[1] * 0.587f + p[2] * 0.114f) / 255.0f;
+    };
+    for (int y = 0; y < img.height; ++y)
+        for (int x = 0; x < img.width; ++x)
+        {
+            float dx = lum(x + 1, y) - lum(x - 1, y);
+            float dy = lum(x, y + 1) - lum(x, y - 1);
+            float nx = -dx * strength, ny = -dy * strength, nz = 1.0f;
+            float il = 1.0f / sqrtf(nx * nx + ny * ny + nz * nz);
+            uint8_t* o = &img.rgba[(size_t(y) * img.width + x) * 4];
+            o[0] = uint8_t((nx * il * 0.5f + 0.5f) * 255.0f);
+            o[1] = uint8_t((ny * il * 0.5f + 0.5f) * 255.0f);
+            o[2] = uint8_t((nz * il * 0.5f + 0.5f) * 255.0f);
+            float rough = roughMax + (roughMin - roughMax) * lum(x, y);
+            o[3] = uint8_t(std::clamp(rough, 0.0f, 1.0f) * 255.0f);
+        }
+    return img;
 }
 
 // Little rocket, local +Z forward, centered: z spans [-0.5, +0.5].
@@ -341,6 +449,7 @@ MeshData MakeRocket()
         edge(1, 2, ca, sa, 0);
         edge(2, 3, ca * 0.4f, sa * 0.4f, 0.9f);
     }
+    ComputeTangents(m);
     return m;
 }
 

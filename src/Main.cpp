@@ -88,6 +88,8 @@ struct App
     std::vector<int> meshObstacles;
     std::vector<int> meshWalls;
     int texPalette = -1, texGround = -1, texWall = -1, texWhite = -1;
+    // NRA material maps (normal rgb + roughness a)
+    int texFlatNRA = -1, texWallNRA = -1, texGroundNRA = -1;
 
     // game
     GameState game;
@@ -1012,13 +1014,20 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
     for (const auto& s : g.scorches)
         frame.scorches.push_back({ s.pos, float(g.time - s.t0) });
 
-    // ground + obstacles + boundary walls
-    frame.objects.push_back({ g.meshGround, g.texGround, Store(XMMatrixIdentity()), { 1,1,1,0 } });
+    // ground + obstacles + boundary walls (with NRA material maps)
+    {
+        RenderObject ro{ g.meshGround, g.texGround, Store(XMMatrixIdentity()),
+                         { 1,1,1,0 } };
+        ro.texNormal = g.texGroundNRA;
+        frame.objects.push_back(ro);
+    }
     for (size_t i = 0; i < g.meshObstacles.size(); ++i)
     {
         const Obstacle& o = kObstacles[i];
-        frame.objects.push_back({ g.meshObstacles[i], g.texWall,
-            Store(XMMatrixTranslation(o.cx, o.height * 0.5f, o.cz)), { 1,1,1,0 } });
+        RenderObject ro{ g.meshObstacles[i], g.texWall,
+            Store(XMMatrixTranslation(o.cx, o.height * 0.5f, o.cz)), { 1,1,1,0 } };
+        ro.texNormal = g.texWallNRA;
+        frame.objects.push_back(ro);
     }
     for (size_t i = 0; i < g.meshWalls.size(); ++i)
     {
@@ -1027,7 +1036,9 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
                    : (i == 1) ? XMMatrixTranslation(0, 0.6f, -h)
                    : (i == 2) ? XMMatrixTranslation(h, 0.6f, 0)
                               : XMMatrixTranslation(-h, 0.6f, 0);
-        frame.objects.push_back({ g.meshWalls[i], g.texWall, Store(m), { 1,1,1,0 } });
+        RenderObject ro{ g.meshWalls[i], g.texWall, Store(m), { 1,1,1,0 } };
+        ro.texNormal = g.texWallNRA;
+        frame.objects.push_back(ro);
     }
 
     // tanks (positions/angles interpolated for render smoothness)
@@ -2264,10 +2275,21 @@ bool CreateAssets()
     g.texPalette = r->CreateTexture(palette.rgba.data(), palette.width, palette.height);
     ImageData groundTex = MakeGroundTexture(256);
     g.texGround = r->CreateTexture(groundTex.rgba.data(), groundTex.width, groundTex.height);
-    ImageData wallTex = MakeWallTexture(128);
+    ImageData wallTex = MakeWallTexture(256);   // higher res: the normal map
+                                                // needs mortar-line detail
     g.texWall = r->CreateTexture(wallTex.rgba.data(), wallTex.width, wallTex.height);
     ImageData white = MakeSolidTexture(255, 255, 255);
     g.texWhite = r->CreateTexture(white.rgba.data(), white.width, white.height);
+
+    // NRA maps: brick walls get a strong emboss (mortar lines recessed,
+    // rough; brick faces smoother), the ground a subtle grain, everything
+    // else a flat semi-rough default.
+    ImageData wallNRA = MakeNormalRoughFromTexture(wallTex, 2.6f, 0.62f, 0.95f);
+    g.texWallNRA = r->CreateTexture(wallNRA.rgba.data(), wallNRA.width, wallNRA.height);
+    ImageData groundNRA = MakeNormalRoughFromTexture(groundTex, 0.9f, 0.78f, 0.96f);
+    g.texGroundNRA = r->CreateTexture(groundNRA.rgba.data(), groundNRA.width, groundNRA.height);
+    ImageData flatNRA = MakeFlatNRA(0.55f);
+    g.texFlatNRA = r->CreateTexture(flatNRA.rgba.data(), flatNRA.width, flatNRA.height);
     ImageData icons = MakeIconAtlas(32, UpgradePoolSize);
     g.texIconAtlas = r->CreateTexture(icons.rgba.data(), icons.width, icons.height);
     return g.meshHull >= 0 && g.meshTurret >= 0 && g.texPalette >= 0;
@@ -3003,6 +3025,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         frame.camRight = camRight;
         frame.camUp = camUp;
         frame.uiTexTexture = g.texIconAtlas;
+        frame.defaultNormalTex = g.texFlatNRA;
         BuildScene(frame, view, proj);
         g.ui.Reset(g.width, g.height);
         if (g.screen == Screen::InGame)

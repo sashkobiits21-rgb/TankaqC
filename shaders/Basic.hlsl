@@ -19,6 +19,7 @@ cbuffer PerObject : register(b1)
 
 Texture2D    gAlbedo  : register(t0);
 Texture2D    gShadowMap : register(t1);
+Texture2D    gNra     : register(t2);   // normal rgb (tangent space) + roughness a
 SamplerState gSampler : register(s0);
 SamplerComparisonState gShadowSampler : register(s1);
 
@@ -30,6 +31,7 @@ struct VsIn
     float3 pos : POSITION;
     float3 nrm : NORMAL;
     float2 uv  : TEXCOORD0;
+    float4 tan : TANGENT;    // xyz tangent, w bitangent handedness
 };
 struct VsOut
 {
@@ -37,6 +39,7 @@ struct VsOut
     float3 wpos : TEXCOORD1;
     float3 wnrm : TEXCOORD2;
     float2 uv   : TEXCOORD0;
+    float4 wtan : TEXCOORD3; // world tangent + handedness
 };
 
 VsOut VSMesh(VsIn i)
@@ -96,6 +99,7 @@ VsOut VSMesh(VsIn i)
     o.wpos = wp.xyz;
     o.sv = mul(gViewProj, wp);
     o.wnrm = mul((float3x3)gWorld, n);
+    o.wtan = float4(mul((float3x3)gWorld, i.tan.xyz), i.tan.w);
     o.uv = i.uv;
     return o;
 }
@@ -145,15 +149,41 @@ float SampleShadow(float3 wpos, float ndl)
 
 PsOut PSMesh(VsOut i)
 {
-    float3 n = normalize(i.wnrm);
+    float3 ng = normalize(i.wnrm);           // geometric normal
     float3 albedo = gAlbedo.Sample(gSampler, i.uv).rgb * gTint.rgb;
+
+    // NRA material map: tangent-space normal in rgb, roughness in a
+    float4 nra = gNra.Sample(gSampler, i.uv);
+    float rough = max(nra.a, 0.045);
+    float3 tn = nra.rgb * 2.0 - 1.0;
+    float3 T = i.wtan.xyz - ng * dot(ng, i.wtan.xyz);   // re-orthogonalize
+    float tl = length(T);
+    float3 n = ng;
+    if (tl > 1e-4)
+    {
+        T /= tl;
+        float3 B = cross(ng, T) * i.wtan.w;
+        n = normalize(tn.x * T + tn.y * B + tn.z * ng);
+    }
 
     float3 sun = gSunDirAmbient.xyz;
     float ndl = saturate(dot(n, sun));
     float shadow = SampleShadow(i.wpos, ndl);
     float3 v = normalize(gCamPosFog.xyz - i.wpos);
     float3 h = normalize(sun + v);
-    float spec = pow(saturate(dot(n, h)), 32.0) * 0.25 * ndl * shadow;
+
+    // Cook-Torrance GGX, dielectric F0 = 0.04
+    float a = rough * rough;
+    float a2 = a * a;
+    float ndh = saturate(dot(n, h));
+    float ndv = max(dot(n, v), 1e-4);
+    float denom = ndh * ndh * (a2 - 1.0) + 1.0;
+    float D = a2 / max(3.14159 * denom * denom, 1e-5);
+    float k = a * 0.5;
+    float G = (ndl / (ndl * (1.0 - k) + k + 1e-5))
+            * (ndv / (ndv * (1.0 - k) + k + 1e-5));
+    float F = 0.04 + 0.96 * pow(1.0 - saturate(dot(h, v)), 5.0);
+    float spec = D * G * F / max(4.0 * ndv * ndl, 1e-3) * ndl * shadow;
 
     // Hemisphere ambient: cool sky light from above, warm ground bounce below.
     float hemi = n.y * 0.5 + 0.5;
@@ -168,6 +198,7 @@ PsOut PSMesh(VsOut i)
 
     PsOut o;
     o.color = float4(lit, 1.0);
+    // MAPPED normal into the G-buffer: SSGI and SSAO react to the bumps too.
     // normal alpha = static flag: 1 for world geometry, 0 for tanks/projectiles
     o.normal = float4(n * 0.5 + 0.5, gMisc.x > 0.5 ? 0.0 : 1.0);
     o.albedo = float4(albedo, gTint.a);

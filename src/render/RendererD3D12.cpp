@@ -539,6 +539,7 @@ public:
             m_cmd->SetGraphicsRootConstantBufferView(0, cbBase + shadowCbOffset);
             m_cmd->SetGraphicsRootDescriptorTable(2, GpuSrv(0));
             m_cmd->SetGraphicsRootDescriptorTable(3, GpuSrv(ShadowSrvSlot));
+            m_cmd->SetGraphicsRootDescriptorTable(4, GpuSrv(0));   // unused (no PS)
             m_cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             m_cmd->SetPipelineState(m_psoShadow.Get());
             for (const auto& d : drawables)
@@ -598,6 +599,11 @@ public:
             int texIdx = (d.obj->texture >= 0 && d.obj->texture < m_textureCount)
                              ? d.obj->texture : 0;
             m_cmd->SetGraphicsRootDescriptorTable(2, GpuSrv(texIdx));
+            int nraIdx = d.obj->texNormal >= 0 ? d.obj->texNormal
+                                               : frame.defaultNormalTex;
+            if (nraIdx < 0 || nraIdx >= m_textureCount)
+                nraIdx = texIdx;
+            m_cmd->SetGraphicsRootDescriptorTable(4, GpuSrv(nraIdx));
             const GpuMesh& mesh = m_meshes[d.obj->mesh];
             m_cmd->IASetVertexBuffers(0, 1, &mesh.vbv);
             m_cmd->IASetIndexBuffer(&mesh.ibv);
@@ -1127,8 +1133,10 @@ private:
             range.BaseShaderRegister = 0;
             D3D12_DESCRIPTOR_RANGE rangeShadow = range;
             rangeShadow.BaseShaderRegister = 1;
+            D3D12_DESCRIPTOR_RANGE rangeNra = range;
+            rangeNra.BaseShaderRegister = 2;
 
-            D3D12_ROOT_PARAMETER params[4]{};
+            D3D12_ROOT_PARAMETER params[5]{};
             params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
             params[0].Descriptor.ShaderRegister = 0;
             params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
@@ -1143,6 +1151,10 @@ private:
             params[3].DescriptorTable.NumDescriptorRanges = 1;
             params[3].DescriptorTable.pDescriptorRanges = &rangeShadow;
             params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+            params[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+            params[4].DescriptorTable.NumDescriptorRanges = 1;
+            params[4].DescriptorTable.pDescriptorRanges = &rangeNra;
+            params[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
             D3D12_STATIC_SAMPLER_DESC smps[2]{};
             smps[0].Filter = D3D12_FILTER_ANISOTROPIC;
@@ -1159,7 +1171,7 @@ private:
             smps[1].ShaderRegister = 1;
 
             D3D12_ROOT_SIGNATURE_DESC rsd{};
-            rsd.NumParameters = 4;
+            rsd.NumParameters = 5;
             rsd.pParameters = params;
             rsd.NumStaticSamplers = 2;
             rsd.pStaticSamplers = smps;
@@ -1206,9 +1218,10 @@ private:
         }
 
         D3D12_INPUT_ELEMENT_DESC meshEls[] = {
-            { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-            { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-            { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 0,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "TANGENT",  0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         };
         D3D12_INPUT_ELEMENT_DESC uiEls[] = {
             { "POSITION", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
@@ -1229,7 +1242,7 @@ private:
         pso.DepthStencilState.DepthEnable = TRUE;
         pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
         pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-        pso.InputLayout = { meshEls, 3 };
+        pso.InputLayout = { meshEls, 4 };
         pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
         pso.NumRenderTargets = 3;
         pso.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;

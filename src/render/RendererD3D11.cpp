@@ -372,6 +372,12 @@ public:
                 (obj.texture >= 0 && obj.texture < int(m_textures.size()))
                     ? m_textures[obj.texture].Get() : nullptr;
             m_ctx->PSSetShaderResources(0, 1, &srv);
+            int nraIdx = obj.texNormal >= 0 ? obj.texNormal
+                                            : frame.defaultNormalTex;
+            ID3D11ShaderResourceView* nra =
+                (nraIdx >= 0 && nraIdx < int(m_textures.size()))
+                    ? m_textures[nraIdx].Get() : nullptr;
+            m_ctx->PSSetShaderResources(2, 1, &nra);
             m_ctx->DrawIndexed(mesh.indexCount, 0, 0);
         }
 
@@ -830,11 +836,12 @@ private:
         m_device->CreatePixelShader(psScorch->GetBufferPointer(), psScorch->GetBufferSize(), nullptr, &m_psScorch);
 
         D3D11_INPUT_ELEMENT_DESC meshEls[] = {
-            { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,  D3D11_INPUT_PER_VERTEX_DATA, 0 },
-            { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-            { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 0,  D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 24, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "TANGENT",  0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 32, D3D11_INPUT_PER_VERTEX_DATA, 0 },
         };
-        if (FAILED(m_device->CreateInputLayout(meshEls, 3, vsMesh->GetBufferPointer(),
+        if (FAILED(m_device->CreateInputLayout(meshEls, 4, vsMesh->GetBufferPointer(),
                                                vsMesh->GetBufferSize(), &m_meshLayout)))
         { error = "mesh input layout failed"; return false; }
 

@@ -52,6 +52,19 @@ ImageData MakeSolidTexture(uint8_t r, uint8_t g, uint8_t b);
 // lowercased, spaces -> '_').
 ImageData MakeIconAtlas(int iconSize, int count);
 
+// Per-vertex tangents from UV derivatives (Lengyel accumulation +
+// Gram-Schmidt + handedness). Degenerate UV triangles (palette-mapped
+// models) fall back to an arbitrary perpendicular -- harmless with flat maps.
+void ComputeTangents(MeshData& m);
+
+// NRA material maps: normal in rgb (tangent space, +Z out), roughness in a.
+ImageData MakeFlatNRA(float roughness);
+// Derive an NRA map from a color texture: height = luminance, normal = Sobel
+// of the height (scaled by `strength`), roughness = lerp(roughMax, roughMin,
+// luminance) so dark crevices are rough and bright faces smoother.
+ImageData MakeNormalRoughFromTexture(const ImageData& src, float strength,
+                                     float roughMin, float roughMax);
+
 // Full box-filtered mip chain, level 0 = source. Each level tightly packed RGBA.
 std::vector<ImageData> BuildMipChain(const ImageData& src);
 
