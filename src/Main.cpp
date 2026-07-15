@@ -988,7 +988,7 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
         // rockets render 1.35x their sim size for readability; the deform
         // shader works in local units, so distance is mapped back through
         // the scale (the "pipe" grows with the rocket)
-        const float kRocketScale = 1.35f;
+        const float kRocketScale = 2.0f;
         XMMATRIX m = XMMatrixScaling(kRocketScale, kRocketScale, kRocketScale)
                    * XMMatrixRotationY(pr.yaw)
                    * XMMatrixTranslation(px, py, pz);

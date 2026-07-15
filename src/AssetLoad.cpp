@@ -225,25 +225,31 @@ MeshData MakeSphere(float radius, int slices, int stacks)
 MeshData MakeRocket()
 {
     MeshData m;
-    constexpr int kSides = 12;
-    // key profile points: (z, radius)
-    const float key[][2] = {
-        { -0.50f, 0.055f },   // exhaust lip
-        { -0.44f, 0.060f },
+    constexpr int kSides = 24;
+    // key profile points: (z, radius) -- nozzle, tail step, boat-tail, body,
+    // then an elliptical ogive nose sampled into the key list
+    std::vector<std::array<float, 2>> key = {
+        { -0.50f, 0.050f },   // exhaust lip
+        { -0.46f, 0.058f },
         { -0.44f, 0.095f },   // tail step
-        { -0.32f, 0.130f },   // taper into body
-        {  0.14f, 0.130f },   // body end
-        {  0.50f, 0.0f },     // nose tip
+        { -0.30f, 0.130f },   // boat-tail into body
+        {  0.10f, 0.130f },   // body end
     };
-    constexpr int kKeys = int(sizeof(key) / sizeof(key[0]));
-    // Subdivide long segments (max ring gap ~0.075): the squish/spring vertex
+    for (int i = 1; i <= 8; ++i)
+    {
+        float t = float(i) / 8.0f;
+        key.push_back({ 0.10f + 0.40f * t,
+                        0.130f * sqrtf(std::max(0.0f, 1.0f - t * t)) });
+    }
+    const int kKeys = int(key.size());
+    // Subdivide long segments (max ring gap ~0.04): the squish/spring vertex
     // deformation needs intermediate rings to bend at the exit plane --
     // without them the traveling bulge quantizes into visible pops.
     std::vector<std::array<float, 2>> prof;
     for (int k = 0; k < kKeys - 1; ++k)
     {
         float dz = key[k + 1][0] - key[k][0];
-        int steps = std::max(1, int(ceilf(fabsf(dz) / 0.075f)));
+        int steps = std::max(1, int(ceilf(fabsf(dz) / 0.04f)));
         for (int s = 0; s < steps; ++s)
         {
             float t = float(s) / steps;
@@ -289,24 +295,51 @@ MeshData MakeRocket()
         m.indices.insert(m.indices.end(),
                          { center, uint32_t(s), uint32_t(s + 1) });
 
-    // 4 thin fins at 45-degree offsets, double-sided
+    // 4 fins at 45-degree offsets, with real thickness (thin swept prisms)
     for (int f = 0; f < 4; ++f)
     {
         float a = XM_2PI * (f + 0.5f) / 4.0f;
         float ca = cosf(a), sa = sinf(a);
-        // fin quad corners in (radial, z): swept back
+        float tx = -sa, ty = ca;            // fin tangent (thickness axis)
+        const float th = 0.011f;            // half thickness
+        // fin corners in (radial, z): swept back
         const float rz[4][2] = {
             { 0.10f, -0.30f }, { 0.24f, -0.48f },
             { 0.24f, -0.36f }, { 0.10f, -0.14f },
         };
-        float nx = -sa, ny = ca;   // face normal = tangent direction
         uint32_t base = uint32_t(m.verts.size());
-        for (int c = 0; c < 4; ++c)
-            m.verts.push_back({ ca * rz[c][0], sa * rz[c][0], rz[c][1],
-                                nx, ny, 0, 0.5f, rz[c][1] + 0.5f });
+        for (int side = 0; side < 2; ++side)
+        {
+            float s = side == 0 ? 1.0f : -1.0f;
+            for (int c = 0; c < 4; ++c)
+                m.verts.push_back({ ca * rz[c][0] + tx * th * s,
+                                    sa * rz[c][0] + ty * th * s,
+                                    rz[c][1],
+                                    tx * s, ty * s, 0,
+                                    0.5f, rz[c][1] + 0.5f });
+        }
+        // faces: +side, -side (reversed winding), outer swept edge, top edge
+        uint32_t A = base, B = base + 4;
         m.indices.insert(m.indices.end(),
-                         { base, base + 1, base + 2, base, base + 2, base + 3,
-                           base, base + 2, base + 1, base, base + 3, base + 2 });
+            { A, A + 1, A + 2,  A, A + 2, A + 3,          // +side
+              B, B + 2, B + 1,  B, B + 3, B + 2 });       // -side
+        // outer edge (corners 1-2) and trailing edge (corners 2-3)
+        auto edge = [&](uint32_t c0, uint32_t c1, float ex, float ey, float ez)
+        {
+            uint32_t e = uint32_t(m.verts.size());
+            const Vertex& v0 = m.verts[A + c0];
+            const Vertex& v1 = m.verts[A + c1];
+            const Vertex& v2 = m.verts[B + c1];
+            const Vertex& v3 = m.verts[B + c0];
+            for (const Vertex* v : { &v0, &v1, &v2, &v3 })
+                m.verts.push_back({ v->px, v->py, v->pz, ex, ey, ez,
+                                    v->u, v->v });
+            m.indices.insert(m.indices.end(),
+                             { e, e + 1, e + 2, e, e + 2, e + 3 });
+        };
+        // outer edge normal ~ radial; trailing edge ~ -z
+        edge(1, 2, ca, sa, 0);
+        edge(2, 3, ca * 0.4f, sa * 0.4f, 0.9f);
     }
     return m;
 }
