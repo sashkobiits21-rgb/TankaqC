@@ -412,7 +412,12 @@ void ApplySnapshot(const net::MsgSnapshot& s)
         {
             g.predErrX = g.predErrZ = g.predErrYaw = 0.0f;
         }
-        g.predPrev = g.predCurr = me;
+        // CRITICAL: do NOT touch predPrev/predCurr here. Collapsing the pair
+        // froze the interpolated render for the rest of the tick interval and
+        // jumped it by the un-rendered remainder -- a hitch on EVERY snapshot
+        // (20/s), even with a perfect prediction match. The pair evolves only
+        // in the prediction tick; with the error offset above, the handoff at
+        // the next tick boundary is seamless: me_new + offset == old target.
     }
 
     for (int i = 0; i < MaxProjectiles; ++i)
@@ -2530,11 +2535,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                 PlayerState& me = g.game.players[g.myId];
                 bool playing = g.game.phase == PhasePlaying
                             || g.game.phase == PhaseOvertime;
-                if (!playing)
+                if (!playing || !me.active || me.health <= 0)
                 {
+                    // not predicting (lobby/dead): the render pair follows
+                    // the snapshot state directly -- reconciliation no longer
+                    // maintains it (see ApplySnapshot)
                     g.pendingInputs.clear();
+                    g.predPrev = g.predCurr = me;
                 }
-                else if (me.active && me.health > 0)
+                else
                 {
                     g.pendingInputs.push_back({ g.inputSeq, local });
                     if (g.pendingInputs.size() > 256)   // ~4 s of unacked input
