@@ -32,6 +32,10 @@ public:
         std::function<void(int myPlayerId)> onWelcome;
         std::function<void(const MsgSnapshot&)> onSnapshot;
         std::function<void(const std::string& reason)> onDisconnected;
+        // owned-upgrade replication (stats are derived locally from these)
+        std::function<void(int playerId, uint8_t upgradeType)> onUpgrade;
+        std::function<void()> onOwnedReset;
+        std::function<void(int playerId, const uint8_t* types, int count)> onOwnedSync;
     };
 
     bool InitSteam();                       // true if the Steam API came up
@@ -64,6 +68,11 @@ public:
     void SendPurchaseToHost(int slot);
     void SendReadyToHost(bool ready);
     void BroadcastSnapshot(const MsgSnapshot& snap);
+    // host: owned-upgrade replication (all reliable)
+    void BroadcastUpgrade(int playerId, uint8_t upgradeType);
+    void BroadcastOwnedReset();
+    void SendOwnedSyncTo(int toPlayerId, int aboutPlayerId,
+                         const uint8_t* types, size_t count);
 
     Mode mode() const { return m_mode; }
     ClientState clientState() const { return m_clientState; }

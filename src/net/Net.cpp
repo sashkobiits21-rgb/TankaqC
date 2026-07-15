@@ -658,6 +658,24 @@ void Net::Poll(const Events& ev)
                     if (ev.onSnapshot)
                         ev.onSnapshot(*reinterpret_cast<const MsgSnapshot*>(d));
                 }
+                else if (t == MsgType::Upgrade && m->m_cbSize >= int(sizeof(MsgUpgrade)))
+                {
+                    const MsgUpgrade* u = reinterpret_cast<const MsgUpgrade*>(d);
+                    if (ev.onUpgrade)
+                        ev.onUpgrade(u->playerId, u->upgradeType);
+                }
+                else if (t == MsgType::OwnedReset && m->m_cbSize >= 1)
+                {
+                    if (ev.onOwnedReset)
+                        ev.onOwnedReset();
+                }
+                else if (t == MsgType::OwnedSync && m->m_cbSize >= 4)
+                {
+                    const MsgOwnedSync* o = reinterpret_cast<const MsgOwnedSync*>(d);
+                    int count = std::min<int>(o->count, kMaxOwnedSync);
+                    if (m->m_cbSize >= 4 + count && ev.onOwnedSync)
+                        ev.onOwnedSync(o->playerId, o->types, count);
+                }
             }
             m->Release();
         }
@@ -687,6 +705,52 @@ void Net::SendPurchaseToHost(int slot)
     msg.slot = uint8_t(slot);
     SteamNetworkingSockets()->SendMessageToConnection(
         m_hostConn, &msg, sizeof(msg), k_nSteamNetworkingSend_Reliable, nullptr);
+}
+
+void Net::BroadcastUpgrade(int playerId, uint8_t upgradeType)
+{
+    if (m_mode != Mode::Host)
+        return;
+    MsgUpgrade msg;
+    msg.playerId = uint8_t(playerId);
+    msg.upgradeType = upgradeType;
+    ISteamNetworkingSockets* s = SteamNetworkingSockets();
+    for (const Client& c : m_clients)
+        if (c.playerId >= 0)
+            s->SendMessageToConnection(c.conn, &msg, sizeof(msg),
+                                       k_nSteamNetworkingSend_Reliable, nullptr);
+}
+
+void Net::BroadcastOwnedReset()
+{
+    if (m_mode != Mode::Host)
+        return;
+    MsgOwnedReset msg;
+    ISteamNetworkingSockets* s = SteamNetworkingSockets();
+    for (const Client& c : m_clients)
+        if (c.playerId >= 0)
+            s->SendMessageToConnection(c.conn, &msg, sizeof(msg),
+                                       k_nSteamNetworkingSend_Reliable, nullptr);
+}
+
+void Net::SendOwnedSyncTo(int toPlayerId, int aboutPlayerId,
+                          const uint8_t* types, size_t count)
+{
+    if (m_mode != Mode::Host)
+        return;
+    MsgOwnedSync msg;
+    msg.playerId = uint8_t(aboutPlayerId);
+    msg.count = uint16_t(std::min<size_t>(count, kMaxOwnedSync));
+    memcpy(msg.types, types, msg.count);
+    int bytes = 4 + int(msg.count);   // header + used entries only
+    ISteamNetworkingSockets* s = SteamNetworkingSockets();
+    for (const Client& c : m_clients)
+        if (c.playerId == toPlayerId)
+        {
+            s->SendMessageToConnection(c.conn, &msg, uint32_t(bytes),
+                                       k_nSteamNetworkingSend_Reliable, nullptr);
+            return;
+        }
 }
 
 void Net::SendReadyToHost(bool ready)

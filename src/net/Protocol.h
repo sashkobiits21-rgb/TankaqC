@@ -5,7 +5,11 @@
 namespace tankaq::net
 {
 
-constexpr uint8_t ProtocolVersion = 8;   // v8: Bounces stat (stats[] resized)
+// v9: stats leave the wire entirely. Upgrades (the source of truth) replicate
+// as reliable events; every peer derives stats locally with the identical
+// deterministic RecalcStats (additions first, then multiplications). Adding
+// stats no longer changes the protocol.
+constexpr uint8_t ProtocolVersion = 9;
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t
@@ -19,6 +23,9 @@ enum class MsgType : uint8_t
     Ready,         // client -> host, reliable
     Ping,          // either direction, unreliable (latency probe)
     Pong,          // echo of Ping
+    Upgrade,       // host -> all, reliable: a purchase was applied
+    OwnedReset,    // host -> all, reliable: match start wiped all upgrades
+    OwnedSync,     // host -> one client, reliable: full owned list (late join)
 };
 
 #pragma pack(push, 1)
@@ -78,6 +85,31 @@ struct MsgPong
     uint32_t seq = 0;
 };
 
+// A validated purchase, broadcast so every peer appends to that player's
+// owned list and re-derives stats locally (add first, multiply last).
+struct MsgUpgrade
+{
+    uint8_t type = uint8_t(MsgType::Upgrade);
+    uint8_t playerId = 0;
+    uint8_t upgradeType = 0;
+};
+
+struct MsgOwnedReset
+{
+    uint8_t type = uint8_t(MsgType::OwnedReset);
+};
+
+// Full owned list for one player (late-join sync). Sent truncated to the
+// actual count; kMaxOwnedSync bounds the message.
+constexpr int kMaxOwnedSync = 512;
+struct MsgOwnedSync
+{
+    uint8_t type = uint8_t(MsgType::OwnedSync);
+    uint8_t playerId = 0;
+    uint16_t count = 0;
+    uint8_t types[kMaxOwnedSync]{};
+};
+
 struct OfferNet
 {
     uint8_t active = 0;
@@ -94,7 +126,8 @@ struct PlayerNet
     uint16_t health = 0;   // max health is uncapped now
     uint16_t score = 0;
     uint16_t money = 0;
-    float stats[StatCount]{};          // cached finals (prediction + HUD)
+    // stats are NOT replicated: peers derive them from the owned-upgrade
+    // events (MsgUpgrade / OwnedReset / OwnedSync) via local RecalcStats
     OfferNet offers[NumOfferSlots];    // this player's upgrade conveyor
     uint32_t ackSeq = 0;   // last input sequence the host simulated for this player
     float x = 0, z = 0;

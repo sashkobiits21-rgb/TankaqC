@@ -420,14 +420,21 @@ void ApplySnapshot(const net::MsgSnapshot& s)
         if (!p.active)
             continue;
         if (!wasActive)
-            p = PlayerState{}, p.active = true;
+        {
+            // preserve the owned list: an OwnedSync (reliable) may have
+            // arrived before this first snapshot marked the player active
+            std::vector<uint8_t> keepOwned = std::move(p.owned);
+            p = PlayerState{};
+            p.active = true;
+            p.owned = std::move(keepOwned);
+            g.game.RecalcStats(i);   // derive stats locally (add, then mul)
+        }
         memcpy(p.name, in.name, sizeof(p.name));
         p.name[15] = 0;
         p.ready = in.ready;
         p.health = in.health;
         p.score = in.score;
         p.money = in.money;
-        memcpy(p.stats, in.stats, sizeof(p.stats));
         for (int s = 0; s < NumOfferSlots; ++s)
         {
             p.offers[s].active = in.offers[s].active;
@@ -545,7 +552,6 @@ net::MsgSnapshot BuildSnapshot()
         out.health = uint16_t(std::clamp(p.health, 0, 65535));
         out.score = p.score;
         out.money = p.money;
-        memcpy(out.stats, p.stats, sizeof(out.stats));
         for (int s = 0; s < NumOfferSlots; ++s)
         {
             out.offers[s].active = p.offers[s].active;
@@ -1540,6 +1546,22 @@ void BuildShop(FrameData& frame)
     }
 }
 
+// Host: validate a purchase, then replicate the upgrade EVENT (not the
+// resulting stats) -- every peer appends to that player's owned list and
+// re-derives stats with the identical RecalcStats: additions first, then
+// multiplications, always.
+bool HostPurchase(int pid, int slot)
+{
+    uint8_t type = g.game.players[pid].offers[slot].type;
+    if (!g.game.TryPurchase(pid, slot))
+        return false;
+    Log("Purchase: player %d type %d (owned %zu) -> broadcast", pid, int(type),
+        g.game.players[pid].owned.size());
+    if (g.online)
+        g.net.BroadcastUpgrade(pid, type);
+    return true;
+}
+
 void HandleShopClick(float mx, float my)
 {
     const PlayerState& me = g.game.players[g.myId];
@@ -1561,7 +1583,7 @@ void HandleShopClick(float mx, float my)
         g.lastClickX = mx;
         g.lastClickY = my;
         if (!g.online || g.isHost)
-            g.game.TryPurchase(g.myId, c.slot);
+            HostPurchase(g.myId, c.slot);
         else
             g.net.SendPurchaseToHost(c.slot);   // optimistic; host validates
         return;
@@ -2542,6 +2564,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     {
         g.game.SpawnPlayer(pid);
         SetPlayerName(pid, name);
+        // late-join sync: ship every player's owned-upgrade list so the new
+        // client can derive all stats locally
+        for (int i = 0; i < MaxPlayers; ++i)
+        {
+            const PlayerState& pl = g.game.players[i];
+            if (pl.active && !pl.owned.empty())
+                g.net.SendOwnedSyncTo(pid, i, pl.owned.data(), pl.owned.size());
+        }
         if (g.game.phase == PhaseLobby || g.game.phase == PhaseGathering)
         {
             float x, z, yaw;
@@ -2580,9 +2610,39 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     };
     ev.onPurchase = [](int pid, int slot)
     {
-        if (g.game.TryPurchase(pid, slot))
+        if (HostPurchase(pid, slot))
             Log("Player %d bought offer slot %d (owned %zu upgrades)", pid, slot,
                 g.game.players[pid].owned.size());
+    };
+    ev.onUpgrade = [](int pid, uint8_t type)
+    {
+        if (g.isHost)
+            return;
+        g.game.players[pid].owned.push_back(type);
+        g.game.RecalcStats(pid);   // additions first, multiplications last
+        Log("Upgrade event: player %d bought type %d (owned %zu, speed %.2f)",
+            pid, int(type), g.game.players[pid].owned.size(),
+            g.game.players[pid].stats[int(Stat::MoveSpeed)]);
+    };
+    ev.onOwnedReset = []()
+    {
+        if (g.isHost)
+            return;
+        for (int i = 0; i < MaxPlayers; ++i)
+        {
+            g.game.players[i].owned.clear();
+            g.game.RecalcStats(i);
+        }
+        Log("OwnedReset event: all upgrade lists cleared");
+    };
+    ev.onOwnedSync = [](int pid, const uint8_t* types, int count)
+    {
+        if (g.isHost)
+            return;
+        g.game.players[pid].owned.assign(types, types + count);
+        g.game.RecalcStats(pid);
+        Log("OwnedSync event: player %d has %d upgrades (speed %.2f)",
+            pid, count, g.game.players[pid].stats[int(Stat::MoveSpeed)]);
     };
     ev.onWelcome = [](int myId)
     {
@@ -2915,9 +2975,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             bool playing = ph == PhasePlaying || ph == PhaseOvertime;
             if (!playing)
                 g.shopOpen = false;
-            if (g.prevPhase != PhasePlaying && ph == PhasePlaying
-                && g.isHost && (g.opt.rich || g.opt.shopTest))
-                g.game.players[g.myId].money = 500;
+            if (g.prevPhase != PhasePlaying && ph == PhasePlaying && g.isHost)
+            {
+                // match start wiped everyone's upgrades (StartMatch); tell
+                // clients BEFORE any purchase events (same reliable channel,
+                // so ordering is guaranteed)
+                if (g.online)
+                    g.net.BroadcastOwnedReset();
+                if (g.opt.rich || g.opt.shopTest)
+                    g.game.players[g.myId].money = 500;
+            }
             if ((g.opt.shopTest || g.opt.autoDrive) && g.screen == Screen::InGame
                 && ph == PhaseLobby && !g.game.players[g.myId].ready)
                 ToggleReady();
@@ -3005,9 +3072,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         {
             if (!g.shopOpen && g.time > 1.0)
                 OpenShop();
+            // two buys: an early one (tests the late-join OwnedSync path when
+            // a client connects afterwards) and one at 14 s (tests the live
+            // MsgUpgrade broadcast to already-connected clients)
             if (g.shopTestBuyAt == 0 && g.time > 2.4 && g.drawnCardCount > 0)
             {
                 g.shopTestBuyAt = g.time;
+                const App::DrawnCard& c = g.drawnCards[0];
+                HandleShopClick(c.x + kCardW * 0.6f, c.y + kCardH * 0.45f);
+            }
+            else if (g.shopTestBuyAt > 0 && g.shopTestBuyAt < 10.0
+                     && g.time > 14.0 && g.drawnCardCount > 0)
+            {
+                g.shopTestBuyAt = g.time;   // > 10: second buy consumed
                 const App::DrawnCard& c = g.drawnCards[0];
                 HandleShopClick(c.x + kCardW * 0.6f, c.y + kCardH * 0.45f);
             }
