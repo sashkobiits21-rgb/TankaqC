@@ -644,19 +644,19 @@ void UpdateVfxFromSim()
         if (g.prevProjActive[i] && !pr.active && InSession())
         {
             SpawnExplosion(g.prevProjPos[i]);
-            // RADAR detonation: amount and spread of smoke scale with the
-            // ring radius -- a wide array pops a wide crown of bursts
+            // RADAR detonation: one REAL explosion per circle in the tree,
+            // each at its packed position (the root reuses the base boom)
             if (g.prevProjRadar[i] > 0.0f)
             {
-                float rr = g.prevProjRadar[i];
-                int extra = 2 + int(rr * 1.4f);
-                for (int b = 0; b < extra; ++b)
-                {
-                    float a = XM_2PI * float(b) / float(extra);
-                    SpawnExplosion({ g.prevProjPos[i].x + sinf(a) * rr * 0.55f,
-                                     0.8f,
-                                     g.prevProjPos[i].z + cosf(a) * rr * 0.55f });
-                }
+                float ox[MaxRadarNodes], oz[MaxRadarNodes], rad[MaxRadarNodes];
+                int dep[MaxRadarNodes];
+                int nn = RadarTreeLayout(g.prevProjRadar[i],
+                                         g.prevProjRings[i],
+                                         g.prevProjYaw[i],
+                                         ox, oz, rad, dep, MaxRadarNodes);
+                for (int k = 1; k < nn; ++k)
+                    SpawnExplosion({ g.prevProjPos[i].x + ox[k], 0.8f,
+                                     g.prevProjPos[i].z + oz[k] });
             }
             // authority: the veiled server twin died, so our locally rendered
             // provisional dies with it (the explosion above is the boom)
@@ -666,7 +666,14 @@ void UpdateVfxFromSim()
                 g.projVeiledBy[i] = -1;
             }
         }
-        g.prevProjRadar[i] = pr.active ? pr.radarRange : 0.0f;
+        if (pr.active)
+        {
+            g.prevProjRadar[i] = pr.radarRange;
+            g.prevProjYaw[i] = pr.yaw;
+            g.prevProjRings[i] = uint8_t(pr.radarRings);
+        }
+        else
+            g.prevProjRadar[i] = 0.0f;
         if (!g.prevProjActive[i] && pr.active && InSession())
         {
             if (g.projMatchedProv[i])
@@ -1057,14 +1064,17 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
         ro.deformAge = float(g.time - g.projSpawnTime[i]);
         frame.objects.push_back(ro);
 
-        // RADAR rockets: thin red detection rings (nested thirds)
+        // RADAR rockets: the packed circle tree, drawn where it detects
         if (pr.radarRange > 0.0f)
         {
-            float rr = pr.radarRange;
-            for (int k = 0; k <= pr.radarRings; ++k, rr /= 3.0f)
+            float ox[MaxRadarNodes], oz[MaxRadarNodes], rad[MaxRadarNodes];
+            int dep[MaxRadarNodes];
+            int nn = RadarTreeLayout(pr.radarRange, pr.radarRings, pr.yaw,
+                                     ox, oz, rad, dep, MaxRadarNodes);
+            for (int k = 0; k < nn; ++k)
                 frame.objects.push_back({ g.meshRing, g.texWhite,
-                    Store(XMMatrixScaling(rr, 1.0f, rr)
-                          * XMMatrixTranslation(px, py, pz)),
+                    Store(XMMatrixScaling(rad[k], 1.0f, rad[k])
+                          * XMMatrixTranslation(px + ox[k], py, pz + oz[k])),
                     { 1.0f, 0.14f, 0.1f, 1.0f }, true });
         }
     }
@@ -1107,9 +1117,9 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
             green, true });
         // jaw: hinged at the back, chomping
         float open = 0.30f + 0.28f * sinf(float(g.time) * 8.0f + float(i) * 1.7f);
-        XMMATRIX jaw = XMMatrixTranslation(0, 0, 0.14f)      // hinge offset
+        XMMATRIX jaw = XMMatrixTranslation(0, 0, 0.20f)      // hinge offset
                      * XMMatrixRotationX(open)               // chomp
-                     * XMMatrixTranslation(0, -0.16f, -0.02f)
+                     * XMMatrixTranslation(0, -0.24f, -0.03f)
                      * XMMatrixRotationY(syaw)
                      * XMMatrixTranslation(sx, SkullY + bob, sz);
         frame.objects.push_back({ g.meshJaw, g.texWhite, Store(jaw),
@@ -1159,15 +1169,12 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
             gz = a.z + (gh.z - a.z) * g.tickAlpha;
         }
         float bob = sinf(float(g.time) * 2.6f + float(i) * 2.1f) * 0.18f;
-        float sway = 1.0f + 0.08f * sinf(float(g.time) * 3.7f + float(i));
-        frame.objects.push_back({ g.meshFlash, g.texWhite,
-            Store(XMMatrixScaling(0.55f * sway, 0.95f, 0.55f * sway)
-                  * XMMatrixTranslation(gx, 1.15f + bob, gz)),
-            { 0.72f, 0.85f, 1.25f, 0.55f }, true });
-        frame.objects.push_back({ g.meshFlash, g.texWhite,   // wispy tail
-            Store(XMMatrixScaling(0.3f, 0.45f, 0.3f)
-                  * XMMatrixTranslation(gx, 0.55f + bob * 0.5f, gz)),
-            { 0.72f, 0.85f, 1.25f, 0.35f }, true });
+        float sway = 1.0f + 0.06f * sinf(float(g.time) * 3.7f + float(i));
+        frame.objects.push_back({ g.meshGhost, g.texWhite,
+            Store(XMMatrixScaling(sway, 1.0f, sway)
+                  * XMMatrixRotationY(float(g.time) * 1.6f + float(i))
+                  * XMMatrixTranslation(gx, 0.30f + bob, gz)),
+            { 0.75f, 0.85f, 1.15f, 0.85f }, true });
     }
 
     // soldier summons: skinned, animated locally from the replicated state
@@ -1360,11 +1367,16 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
         frame.objects.push_back(ro);
         if (pv.sim.radarRange > 0.0f)
         {
-            float rr = pv.sim.radarRange;
-            for (int k = 0; k <= pv.sim.radarRings; ++k, rr /= 3.0f)
+            float ox[MaxRadarNodes], oz[MaxRadarNodes], rad[MaxRadarNodes];
+            int dep[MaxRadarNodes];
+            int nn = RadarTreeLayout(pv.sim.radarRange, pv.sim.radarRings,
+                                     pv.sim.yaw, ox, oz, rad, dep,
+                                     MaxRadarNodes);
+            for (int k = 0; k < nn; ++k)
                 frame.objects.push_back({ g.meshRing, g.texWhite,
-                    Store(XMMatrixScaling(rr, 1.0f, rr)
-                          * XMMatrixTranslation(pv.sim.x, pv.sim.y, pv.sim.z)),
+                    Store(XMMatrixScaling(rad[k], 1.0f, rad[k])
+                          * XMMatrixTranslation(pv.sim.x + ox[k], pv.sim.y,
+                                                pv.sim.z + oz[k])),
                     { 1.0f, 0.14f, 0.1f, 1.0f }, true });
         }
     }
@@ -1838,10 +1850,10 @@ bool CreateAssets()
     // necromancer + radar visuals: green skull (cranium + jaw), acid disc,
     // and the thin red radar annulus (scaled per ring at draw time)
     {
-        MeshData cranium = MakeSphere(0.34f, 12, 9);
+        MeshData cranium = MakeSphere(0.50f, 14, 10);
         g.meshSkull = r->CreateMesh(cranium.verts.data(), cranium.verts.size(),
                                     cranium.indices.data(), cranium.indices.size());
-        MeshData jawM = MakeBox(0.20f, 0.09f, 0.16f, 1.0f);
+        MeshData jawM = MakeBox(0.28f, 0.12f, 0.22f, 1.0f);
         g.meshJaw = r->CreateMesh(jawM.verts.data(), jawM.verts.size(),
                                   jawM.indices.data(), jawM.indices.size());
         MeshData disc = MakeDisc(1.0f, 0.04f, 24);
@@ -1850,6 +1862,9 @@ bool CreateAssets()
         MeshData ring = MakeRing(1.0f, 0.06f, 48);
         g.meshRing = r->CreateMesh(ring.verts.data(), ring.verts.size(),
                                    ring.indices.data(), ring.indices.size());
+        MeshData spook = MakeGhostMesh();
+        g.meshGhost = r->CreateMesh(spook.verts.data(), spook.verts.size(),
+                                    spook.indices.data(), spook.indices.size());
     }
 
     // The soldier rig is GAMEPLAY now (summons), not just the --rigtest demo:
@@ -2504,7 +2519,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                                 pv.sim.radarRange = me.stats[int(Stat::RadarRange)];
                                 pv.sim.radarRings = std::clamp(
                                     int(me.stats[int(Stat::RadarRings)] + 0.5f),
-                                    0, MaxRadarRings - 1);
+                                    0, MaxRadarExtra);
                             }
                             pv.sim.life = ProjectileLife;
                             pv.born = g.time;
@@ -2686,6 +2701,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                 {
                     PlayerState& me = g.game.players[g.myId];
                     me.owned.push_back(uint8_t(UpgradeId::RadarClass));
+                    me.owned.push_back(uint8_t(UpgradeId::NestedArray));
                     me.owned.push_back(uint8_t(UpgradeId::NestedArray));
                     g.game.RecalcStats(g.myId);
                     Log("demo: granted RADAR class (rings %d)",

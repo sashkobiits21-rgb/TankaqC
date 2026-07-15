@@ -210,16 +210,22 @@ int RunClassTest()
         g3.matchEndTick = g3.tick + 100000000u;
         InputCmd idle[MaxPlayers]{};
 
+        // clear lane: the skull must BITE the tank (5 base) then puddle
+        g3.players[0].x = 0; g3.players[0].z = -24;
+        g3.players[1].x = 0; g3.players[1].z = -12;
         g3.Tick(idle);
         bool skullUp = false;
         for (const SkullState& sk : g3.skulls) skullUp |= sk.active;
         check(skullUp, "skull launched at the nearest enemy");
+        int hpPre = g3.players[1].health;
         bool puddleUp = false;
-        for (int t = 0; t < TickRate * 12 && !puddleUp; ++t)
+        for (int t = 0; t < TickRate * 4; ++t)
         {
             g3.Tick(idle);
             for (const PuddleState& pu : g3.puddles) puddleUp |= pu.active;
         }
+        check(g3.players[1].health <= hpPre - 5,
+              "skull bite lands its 5 base contact damage");
         check(puddleUp, "skull burst into an acid puddle on contact");
 
         // park the enemy in a fresh puddle: DoT must tick at ~AcidDps
@@ -301,9 +307,9 @@ int RunClassTest()
             g4.projectiles[0] = pr;
         };
 
-        // offset 2.5: inside the main ring only -> exactly RadarDamage
+        // offset 3.0: inside the ROOT circle only -> exactly RadarDamage
         int hp0 = tgt.health;
-        fireRadar(2.5f);
+        fireRadar(3.0f);
         bool detonated = false;
         for (int t = 0; t < TickRate * 5 && !detonated; ++t)
         {
@@ -311,11 +317,11 @@ int RunClassTest()
             detonated = !g4.projectiles[0].active;
         }
         check(detonated, "radar rocket detonated from ring lock (no contact)");
-        check(tgt.health == hp0 - 12, "outer-ring-only victim takes 1x damage");
+        check(tgt.health == hp0 - 12, "root-only victim takes root damage");
 
-        // a rocket parked 1.8 from the target: inside the nested ring
-        // (2.0 with the hull margin) AND the main ring, outside direct
-        // contact -- the main lock fills and detonates BOTH rings: 2x
+        // a rocket parked 1.8 away with ONE packed circle (which centers
+        // on its parent): the victim sits inside root (12) AND the child
+        // (half depth = 6) -- tree damage stacks to 18
         hp0 = tgt.health;
         {
             Projectile pr{};
@@ -341,7 +347,8 @@ int RunClassTest()
             detonated = !g4.projectiles[0].active;
         }
         check(detonated, "nested radar rocket detonated");
-        check(tgt.health == hp0 - 24, "victim inside both rings takes 2x");
+        check(tgt.health == hp0 - 18,
+              "tree damage: root 12 + half-depth child 6");
     }
 
     Log("classtest done: %d failure(s)", fails);

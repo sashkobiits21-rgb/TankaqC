@@ -21,7 +21,9 @@ namespace tankaq::net
 // v14: NECROMANCER (skulls / acid puddles / possessing ghosts) and RADAR
 // (ring detonation rockets): Skull/Puddle/Ghost arrays, possession timer in
 // PlayerNet, radar range + ring count per projectile.
-constexpr uint8_t ProtocolVersion = 14;
+// v15: SkullDamage stat, radar circles become a packed TREE (rings field =
+// extra circle count), skull contact damage -- derived-stat contract change.
+constexpr uint8_t ProtocolVersion = 15;
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t

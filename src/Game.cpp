@@ -29,14 +29,15 @@ const float kBaseStats[StatCount] = {
     1.0f,               // BounceDamage: x1 per ricochet until upgraded
     1.0f,               // BounceSpeed
     5.0f,               // SkullRate: a skull every 5 s
+    5.0f,               // SkullDamage: direct contact damage
     4.0f,               // AcidDps
     3.0f,               // AcidDuration
     3.0f,               // PossessDps: 3 damage/s while possessed
     2.0f,               // PossessDuration: 2 s base
     3.5f,               // RadarRange
     0.6f,               // RadarLock: seconds inside a ring to trigger
-    12.0f,              // RadarDamage: per exploded ring containing the victim
-    1.0f,               // RadarRings: one nested ring by default
+    12.0f,              // RadarDamage: root circle (halves per tree level)
+    1.0f,               // RadarRings: one packed circle by default
 };
 
 int gDebugBounces = 0;   // --bounces=N dev knob (added on top of the stat)
@@ -291,6 +292,7 @@ void GameState::RecalcStats(int id)
     p.stats[int(Stat::BounceDamage)] = std::max(0.25f, p.stats[int(Stat::BounceDamage)]);
     p.stats[int(Stat::BounceSpeed)] = std::max(0.25f, p.stats[int(Stat::BounceSpeed)]);
     p.stats[int(Stat::SkullRate)] = std::max(0.8f, p.stats[int(Stat::SkullRate)]);
+    p.stats[int(Stat::SkullDamage)] = std::max(1.0f, p.stats[int(Stat::SkullDamage)]);
     p.stats[int(Stat::AcidDps)] = std::max(0.5f, p.stats[int(Stat::AcidDps)]);
     p.stats[int(Stat::AcidDuration)] = std::max(0.5f, p.stats[int(Stat::AcidDuration)]);
     p.stats[int(Stat::PossessDps)] = std::max(0.5f, p.stats[int(Stat::PossessDps)]);
@@ -299,7 +301,7 @@ void GameState::RecalcStats(int id)
     p.stats[int(Stat::RadarLock)] = std::max(0.15f, p.stats[int(Stat::RadarLock)]);
     p.stats[int(Stat::RadarDamage)] = std::max(1.0f, p.stats[int(Stat::RadarDamage)]);
     p.stats[int(Stat::RadarRings)] = std::clamp(p.stats[int(Stat::RadarRings)],
-                                                0.0f, float(MaxRadarRings - 1));
+                                                0.0f, float(MaxRadarExtra));
 }
 
 void GameState::SpawnPlayer(int id)
@@ -803,16 +805,25 @@ static void TickSkull(GameState& gs, SkullState& sk)
                 continue;
             float dx = sk.x - p.x, dz = sk.z - p.z;
             float r = TankRadius + SkullRadius;
-            burst = dx * dx + dz * dz < r * r;     // enemy tank
+            if (dx * dx + dz * dz < r * r)         // enemy tank: BITE
+            {
+                gs.ApplyDamage(sk.owner, id, int(sk.dmg + 0.5f), 2);
+                burst = true;
+            }
         }
     if (!burst)
-        for (const SoldierState& s : gs.soldiers)
+        for (SoldierState& s : gs.soldiers)
         {
             if (!s.active || s.state == SoldierDying || s.owner == sk.owner)
                 continue;
             float dx = sk.x - s.x, dz = sk.z - s.z;
             float r = SoldierRadius + SkullRadius;
-            if (dx * dx + dz * dz < r * r) { burst = true; break; }
+            if (dx * dx + dz * dz < r * r)
+            {
+                s.health -= sk.dmg;
+                burst = true;
+                break;
+            }
         }
     if (burst)
     {
@@ -895,85 +906,119 @@ static void TickGhost(GameState& gs, GhostState& gh)
     }
 }
 
-// ------------------------------------------------------------ radar rings
-// Ring k has radius radarRange / 3^k. Each ring charges its own lock while
-// any enemy is inside; a full lock detonates that ring AND every ring
-// nested inside it -- victims take radarDamage per exploded ring that
-// contains them, so sitting deep inside the array is devastating.
+// ------------------------------------------------------------ radar tree
+
+int RadarTreeLayout(float rootR, int extra, float yaw,
+                    float* ox, float* oz, float* radius, int* depth, int cap)
+{
+    int n = std::min(1 + extra, cap);
+    int parent[MaxRadarNodes];
+    int kids[MaxRadarNodes]{};
+    int slotUsed[MaxRadarNodes]{};
+    ox[0] = 0; oz[0] = 0; radius[0] = rootR; depth[0] = 0; parent[0] = -1;
+    for (int i = 1; i < n; ++i)
+    {
+        parent[i] = (i - 1) / 3;   // breadth-first, three slots per parent
+        ++kids[parent[i]];
+    }
+    for (int i = 1; i < n; ++i)
+    {
+        int p = parent[i];
+        int slot = slotUsed[p]++;
+        float pr = radius[p];
+        float dist, ang;
+        if (kids[p] == 1)          // an only child sits centered
+        {
+            dist = 0.0f;
+            ang = 0.0f;
+        }
+        else if (kids[p] == 2)     // two sit opposite each other
+        {
+            dist = pr * 0.5f;
+            ang = yaw + float(slot) * DirectX::XM_PI;
+        }
+        else                       // three pack as a triangle
+        {
+            dist = pr * 0.5f;
+            ang = yaw + DirectX::XM_PI * 0.5f
+                + float(slot) * (DirectX::XM_2PI / 3.0f);
+        }
+        ox[i] = ox[p] + sinf(ang) * dist;
+        oz[i] = oz[p] + cosf(ang) * dist;
+        radius[i] = pr * 0.5f;
+        depth[i] = depth[p] + 1;
+    }
+    return n;
+}
+
+// One lock decides (the root circle contains every child, so it always
+// charges first); a full charge detonates the ENTIRE tree. Victims take
+// radarDamage * (1/2)^depth for every circle that contains them.
 static void TickRadar(GameState& gs, Projectile& pr)
 {
-    float radius[MaxRadarRings];
-    float r = pr.radarRange;
-    for (int k = 0; k <= pr.radarRings; ++k)
-    {
-        radius[k] = r;
-        r /= 3.0f;
-    }
-    int triggered = -1;
-    for (int k = 0; k <= pr.radarRings; ++k)
-    {
-        bool inside = false;
-        for (int id = 0; id < MaxPlayers && !inside; ++id)
-        {
-            const PlayerState& p = gs.players[id];
-            if (!p.active || p.health <= 0 || id == pr.owner)
-                continue;
-            float dx = p.x - pr.x, dz = p.z - pr.z;
-            float rr = radius[k] + TankRadius * 0.5f;
-            inside = dx * dx + dz * dz < rr * rr;
-        }
-        for (const SoldierState& s : gs.soldiers)
-        {
-            if (inside)
-                break;
-            if (!s.active || s.state == SoldierDying || s.owner == pr.owner)
-                continue;
-            float dx = s.x - pr.x, dz = s.z - pr.z;
-            float rr = radius[k] + SoldierRadius;
-            inside = dx * dx + dz * dz < rr * rr;
-        }
-        if (inside)
-        {
-            pr.radarLock[k] += TickDt;
-            if (pr.radarLock[k] >= pr.radarLockNeed && triggered < 0)
-                triggered = k;
-        }
-        else
-            pr.radarLock[k] = 0.0f;
-    }
-    if (triggered < 0)
-        return;
-    // detonate rings triggered..deepest
-    for (int id = 0; id < MaxPlayers; ++id)
+    bool inside = false;
+    float rootRR = pr.radarRange + TankRadius * 0.5f;
+    for (int id = 0; id < MaxPlayers && !inside; ++id)
     {
         const PlayerState& p = gs.players[id];
         if (!p.active || p.health <= 0 || id == pr.owner)
             continue;
         float dx = p.x - pr.x, dz = p.z - pr.z;
-        float d2 = dx * dx + dz * dz;
-        int hits = 0;
-        for (int k = triggered; k <= pr.radarRings; ++k)
+        inside = dx * dx + dz * dz < rootRR * rootRR;
+    }
+    for (const SoldierState& s : gs.soldiers)
+    {
+        if (inside)
+            break;
+        if (!s.active || s.state == SoldierDying || s.owner == pr.owner)
+            continue;
+        float dx = s.x - pr.x, dz = s.z - pr.z;
+        float rr = pr.radarRange + SoldierRadius;
+        inside = dx * dx + dz * dz < rr * rr;
+    }
+    if (!inside)
+    {
+        pr.radarLock = 0.0f;
+        return;
+    }
+    pr.radarLock += TickDt;
+    if (pr.radarLock < pr.radarLockNeed)
+        return;
+
+    float ox[MaxRadarNodes], oz[MaxRadarNodes], rad[MaxRadarNodes];
+    int dep[MaxRadarNodes];
+    int n = RadarTreeLayout(pr.radarRange, pr.radarRings, pr.yaw,
+                            ox, oz, rad, dep, MaxRadarNodes);
+    for (int id = 0; id < MaxPlayers; ++id)
+    {
+        const PlayerState& p = gs.players[id];
+        if (!p.active || p.health <= 0 || id == pr.owner)
+            continue;
+        float sum = 0.0f;
+        for (int k = 0; k < n; ++k)
         {
-            float rr = radius[k] + TankRadius * 0.5f;
-            if (d2 < rr * rr) ++hits;
+            float dx = p.x - (pr.x + ox[k]), dz = p.z - (pr.z + oz[k]);
+            float rr = rad[k] + TankRadius * 0.5f;
+            if (dx * dx + dz * dz < rr * rr)
+                sum += pr.radarDamage / float(1 << dep[k]);
         }
-        if (hits > 0)
-            gs.ApplyDamage(pr.owner, id, int(pr.radarDamage + 0.5f) * hits, 5);
+        if (sum > 0.0f)
+            gs.ApplyDamage(pr.owner, id, int(sum + 0.5f), 5);
     }
     for (SoldierState& s : gs.soldiers)
     {
         if (!s.active || s.state == SoldierDying || s.owner == pr.owner)
             continue;
-        float dx = s.x - pr.x, dz = s.z - pr.z;
-        float d2 = dx * dx + dz * dz;
-        int hits = 0;
-        for (int k = triggered; k <= pr.radarRings; ++k)
+        float sum = 0.0f;
+        for (int k = 0; k < n; ++k)
         {
-            float rr = radius[k] + SoldierRadius;
-            if (d2 < rr * rr) ++hits;
+            float dx = s.x - (pr.x + ox[k]), dz = s.z - (pr.z + oz[k]);
+            float rr = rad[k] + SoldierRadius;
+            if (dx * dx + dz * dz < rr * rr)
+                sum += pr.radarDamage / float(1 << dep[k]);
         }
-        if (hits > 0)
-            s.health -= pr.radarDamage * float(hits);
+        if (sum > 0.0f)
+            s.health -= sum;
     }
     pr.active = false;   // the detonation consumes the rocket
 }
@@ -1284,7 +1329,7 @@ static void SoldierTryFire(GameState& gs, SoldierState& s)
             pr.radarLockNeed = own.stats[int(Stat::RadarLock)];
             pr.radarRings = std::clamp(
                 int(own.stats[int(Stat::RadarRings)] + 0.5f),
-                0, MaxRadarRings - 1);
+                0, MaxRadarExtra);
         }
         s.fireCooldown = 1.0f / std::max(0.1f, s.fireRate);
         s.muzzleFlash = 0.12f;
@@ -1789,6 +1834,7 @@ void GameState::Tick(const InputCmd* inputs)
                     sk.z = p.z;
                     sk.yaw = p.turretYaw;
                     sk.life = 8.0f;
+                    sk.dmg = p.stats[int(Stat::SkullDamage)];
                     p.skullWait = p.stats[int(Stat::SkullRate)];
                     break;
                 }
@@ -1877,7 +1923,7 @@ void GameState::Tick(const InputCmd* inputs)
                     pr.radarLockNeed = p.stats[int(Stat::RadarLock)];
                     pr.radarRings = std::clamp(
                         int(p.stats[int(Stat::RadarRings)] + 0.5f),
-                        0, MaxRadarRings - 1);
+                        0, MaxRadarExtra);
                 }
                 p.fireCooldown = p.stats[int(Stat::ReloadTime)];
                 p.muzzleFlash = 0.12f;

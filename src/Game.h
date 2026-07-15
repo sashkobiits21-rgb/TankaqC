@@ -90,15 +90,16 @@ enum class Stat : uint8_t
     BounceSpeed,      // speed multiplier applied on every wall bounce
     // NECROMANCER class
     SkullRate,        // seconds between skull launches
+    SkullDamage,      // direct contact damage when a skull hits a body
     AcidDps,          // acid puddle damage per second (standing in it)
     AcidDuration,     // puddle lifetime in seconds
     PossessDps,       // damage per second while possessed by a ghost
     PossessDuration,  // possession length in seconds
-    // RADAR class: rockets carry detection rings
-    RadarRange,       // main ring radius around the rocket
-    RadarLock,        // seconds an enemy must stay inside a ring to trigger
-    RadarDamage,      // damage per exploded ring containing the victim
-    RadarRings,       // nested rings inside the main one (each 1/3 the size)
+    // RADAR class: rockets carry a TREE of detection circles
+    RadarRange,       // root circle radius around the rocket
+    RadarLock,        // seconds an enemy must stay inside to trigger
+    RadarDamage,      // root-circle damage (halves per tree level)
+    RadarRings,       // extra circles packed inside (3 slots per parent)
     Count
 };
 constexpr int StatCount = int(Stat::Count);
@@ -249,7 +250,8 @@ inline int MaxHealthFor(const PlayerState& p)
     return int(p.stats[int(Stat::MaxHealth)] + 0.5f);
 }
 
-constexpr int MaxRadarRings = 4;     // main ring + up to 3 nested levels
+constexpr int MaxRadarExtra = 12;    // circles packed inside the root
+constexpr int MaxRadarNodes = 1 + MaxRadarExtra;
 
 struct Projectile
 {
@@ -263,16 +265,25 @@ struct Projectile
     int bounces = 0;                 // wall bounces left (baked at fire time)
     float bounceDmg = 1.0f;          // damage multiplier per ricochet (baked)
     float bounceSpd = 1.0f;          // speed multiplier per ricochet (baked)
-    // RADAR class (baked at fire time; 0 = not a radar rocket). Ring k has
-    // radius radarRange / 3^k -- "three ranges fit into the one above".
-    // Each ring locks separately: an enemy inside it charges its timer, and
-    // a full timer detonates that ring AND every ring nested inside it.
+    // RADAR class (baked at fire time; 0 = not a radar rocket). The rocket
+    // carries a TREE of circles: the root (radarRange) plus radarRings extra
+    // circles packed inside their parents at HALF radius (1 child centers,
+    // 2 sit opposite, 3 form a triangle; 3 slots per parent, breadth-first).
+    // The root contains every child, so one lock decides: a full charge
+    // detonates the whole tree, and victims take radarDamage * (1/2)^depth
+    // for every circle containing them.
     float radarRange = 0.0f;
     float radarDamage = 0.0f;
-    float radarLockNeed = 0.0f;      // seconds inside a ring to trigger
-    int radarRings = 0;              // nested levels (0..MaxRadarRings-1)
-    float radarLock[MaxRadarRings]{};
+    float radarLockNeed = 0.0f;      // seconds inside the root to trigger
+    int radarRings = 0;              // extra circles (0..MaxRadarExtra)
+    float radarLock = 0.0f;
 };
+
+// Lay out the radar circle tree for a rocket (sim, rendering and VFX all
+// call this, so they can never disagree). Writes offsets relative to the
+// rocket, radii and tree depth per node; returns the node count.
+int RadarTreeLayout(float rootR, int extra, float yaw,
+                    float* ox, float* oz, float* radius, int* depth, int cap);
 
 struct Obstacle
 {
@@ -344,7 +355,7 @@ constexpr int   MaxSkulls = 12;
 constexpr int   MaxPuddles = 24;
 constexpr int   MaxGhosts = 8;
 constexpr float SkullSpeed = 9.0f;
-constexpr float SkullRadius = 0.45f;
+constexpr float SkullRadius = 0.62f;
 constexpr float SkullY = 1.2f;            // hover height
 constexpr float PuddleRadius = 1.7f;
 constexpr float GhostOrbitStart = 7.0f;   // spiral start radius
@@ -358,6 +369,7 @@ struct SkullState
     float x = 0, z = 0;
     float yaw = 0;
     float life = 0;
+    float dmg = 0;   // direct contact damage, baked from the owner
 };
 
 struct PuddleState

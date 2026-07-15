@@ -126,9 +126,12 @@ struct App
 
     // necromancer + radar visuals
     int meshSkull = -1, meshJaw = -1, meshPuddle = -1, meshRing = -1;
+    int meshGhost = -1;
     bool prevSkullActive[MaxSkulls]{};         // burst on skull death
     DirectX::XMFLOAT3 prevSkullPos[MaxSkulls]{};
-    float prevProjRadar[MaxProjectiles]{};     // range-scaled explosion VFX
+    float prevProjRadar[MaxProjectiles]{};     // per-circle explosion VFX
+    float prevProjYaw[MaxProjectiles]{};       // tree layout at death time
+    uint8_t prevProjRings[MaxProjectiles]{};
     bool prevPossessed = false;                // possession-start sound
 
     // game

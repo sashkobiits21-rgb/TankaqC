@@ -1049,6 +1049,49 @@ MeshData MakeRing(float radius, float width, int segments)
     return m;
 }
 
+MeshData MakeGhostMesh()
+{
+    // lathe profile bottom-to-top: wavy hem, skirt, pinched waist,
+    // shoulders, dome closing at the crown
+    const int SEG = 18, RINGS = 9;
+    const float hs[RINGS] = { 0.00f, 0.10f, 0.28f, 0.50f, 0.74f,
+                              0.98f, 1.16f, 1.30f, 1.40f };
+    const float rs[RINGS] = { 0.48f, 0.52f, 0.44f, 0.37f, 0.36f,
+                              0.43f, 0.38f, 0.24f, 0.02f };
+    MeshData m;
+    for (int i = 0; i < RINGS; ++i)
+    {
+        for (int j = 0; j <= SEG; ++j)
+        {
+            float a = XM_2PI * float(j) / float(SEG);
+            float wav = (i == 0) ? 0.06f * sinf(3.0f * a) : 0.0f;
+            float r = rs[i] + wav;
+            Vertex v{};
+            v.px = sinf(a) * r;
+            v.py = hs[i] + (i == 0 ? 0.04f * sinf(3.0f * a + 1.6f) : 0.0f);
+            v.pz = cosf(a) * r;
+            // approximate outward normal with a slight upward lean
+            float nl = sqrtf(sinf(a) * sinf(a) + 0.12f + cosf(a) * cosf(a));
+            v.nx = sinf(a) / nl; v.ny = 0.35f / nl; v.nz = cosf(a) / nl;
+            v.u = float(j) / SEG;
+            v.v = float(i) / (RINGS - 1);
+            m.verts.push_back(v);
+        }
+    }
+    for (int i = 0; i < RINGS - 1; ++i)
+        for (int j = 0; j < SEG; ++j)
+        {
+            uint32_t a = uint32_t(i * (SEG + 1) + j);
+            uint32_t b = a + 1;
+            uint32_t c = a + (SEG + 1);
+            uint32_t e = c + 1;
+            m.indices.push_back(a); m.indices.push_back(b); m.indices.push_back(c);
+            m.indices.push_back(b); m.indices.push_back(e); m.indices.push_back(c);
+        }
+    ComputeTangents(m);
+    return m;
+}
+
 // ------------------------------------------------------------ icon atlas
 
 namespace
