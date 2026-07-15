@@ -42,6 +42,19 @@ public:
     bool ConnectToIP(const std::string& addrWithPort, std::string& error);
     void Disconnect();
 
+    // ---- quick match (free Steam lobby directory; no dedicated servers) ----
+    // A public Steam lobby is used purely as an advert: its data carries the
+    // host's SteamID. Searchers read that and ConnectP2P as usual -- nobody
+    // ever joins the Steam lobby itself. Async: one of the two callbacks
+    // below fires from inside Poll().
+    void QuickMatch();                     // search worldwide for an open game
+    bool CreatePublicLobby();              // host: advertise this game
+    void UpdateLobbyAdvert(int players, int phase);
+    void LeaveLobby();                     // stop advertising
+    bool hasPublicLobby() const;
+    std::function<void(uint64_t hostSteamId)> onMatchFound;
+    std::function<void()> onNoMatch;       // caller should host a public game
+
     void Poll(const Events& ev);            // pump callbacks + messages, once per frame
 
     void SendInputToHost(const MsgInput& msg);

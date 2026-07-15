@@ -106,6 +106,12 @@ Drive the hull with WASD, aim the turret with the mouse, shoot your friends.
 - **Camera lean** — strafing tilts the camera slightly around Y, forward/back
   pitches around its local X; dt-exponential smoothing with epsilon snaps, targets
   only from held input, so no twitching at rest or near-target.
+- **Quick match** — FIND MATCH searches the free Steam lobby directory
+  (worldwide, filtered to this game + protocol version + open slots). Found: the
+  host's SteamID is read straight off the lobby data and joined over P2P/SDR.
+  Not found: you become the host and a public lobby advertises your game (player
+  count + phase kept fresh, closed on leave). The Steam lobby is a directory
+  entry only -- nobody joins it, so no membership bookkeeping. No servers, $0.
 - **Sound** — XAudio2, zero assets: every effect is synthesized at startup
   (square/saw/noise + envelopes + a bitcrush for the low-bit techno style).
   Deep bass shoot + explosion, fire-crackle purchase burn, glass-shard slat

@@ -36,6 +36,93 @@ private:
 };
 static StatusListener* g_statusListener = nullptr;
 
+// Quick-match plumbing. CCallResult members need Steam types, so the state
+// lives here in the .cpp (same pattern as StatusListener) instead of Net.h.
+// The public lobby is a directory advert only: data = { game, ver, host,
+// open, players, phase }. Searchers read "host" straight off the search
+// results (lobby data comes with them) and never JoinLobby.
+class LobbyWork
+{
+public:
+    uint64_t lobbyId = 0;
+    bool searching = false;
+
+    void Search()
+    {
+        ISteamMatchmaking* mm = SteamMatchmaking();
+        mm->AddRequestLobbyListStringFilter("game", "tankaq",
+                                            k_ELobbyComparisonEqual);
+        mm->AddRequestLobbyListNumericalFilter("ver", ProtocolVersion,
+                                               k_ELobbyComparisonEqual);
+        mm->AddRequestLobbyListNumericalFilter("open", 1,
+                                               k_ELobbyComparisonEqual);
+        // Russia <-> America must see each other: no distance cutoff
+        mm->AddRequestLobbyListDistanceFilter(k_ELobbyDistanceFilterWorldwide);
+        m_listResult.Set(mm->RequestLobbyList(), this, &LobbyWork::OnList);
+        searching = true;
+        Log("Net: quick match - searching for open lobbies");
+    }
+
+    void Create()
+    {
+        m_createResult.Set(
+            SteamMatchmaking()->CreateLobby(k_ELobbyTypePublic, MaxLobbyPlayers),
+            this, &LobbyWork::OnCreated);
+    }
+
+private:
+    void OnList(LobbyMatchList_t* r, bool ioFailure);
+    void OnCreated(LobbyCreated_t* r, bool ioFailure);
+    CCallResult<LobbyWork, LobbyMatchList_t> m_listResult;
+    CCallResult<LobbyWork, LobbyCreated_t> m_createResult;
+};
+static LobbyWork* g_lobbyWork = nullptr;
+
+void LobbyWork::OnList(LobbyMatchList_t* r, bool ioFailure)
+{
+    searching = false;
+    int n = ioFailure ? 0 : int(r->m_nLobbiesMatching);
+    Log("Net: lobby search finished: %d result(s)", n);
+    ISteamMatchmaking* mm = SteamMatchmaking();
+    for (int i = 0; i < n; ++i)
+    {
+        CSteamID lobby = mm->GetLobbyByIndex(i);
+        uint64_t host = strtoull(mm->GetLobbyData(lobby, "host"), nullptr, 10);
+        if (host != 0)
+        {
+            Log("Net: match found, host %llu", (unsigned long long)host);
+            if (g_net && g_net->onMatchFound)
+                g_net->onMatchFound(host);
+            return;
+        }
+    }
+    if (g_net && g_net->onNoMatch)
+        g_net->onNoMatch();
+}
+
+void LobbyWork::OnCreated(LobbyCreated_t* r, bool ioFailure)
+{
+    if (ioFailure || r->m_eResult != k_EResultOK)
+    {
+        Log("Net: public lobby creation failed (%d)",
+            ioFailure ? -1 : int(r->m_eResult));
+        return;
+    }
+    lobbyId = r->m_ulSteamIDLobby;
+    ISteamMatchmaking* mm = SteamMatchmaking();
+    CSteamID lobby(lobbyId);
+    char buf[32];
+    mm->SetLobbyData(lobby, "game", "tankaq");
+    sprintf_s(buf, "%u", unsigned(ProtocolVersion));
+    mm->SetLobbyData(lobby, "ver", buf);
+    sprintf_s(buf, "%llu", (unsigned long long)(g_net ? g_net->mySteamId() : 0));
+    mm->SetLobbyData(lobby, "host", buf);
+    mm->SetLobbyData(lobby, "open", "1");
+    mm->SetLobbyData(lobby, "players", "1");
+    mm->SetLobbyData(lobby, "phase", "0");
+    Log("Net: public lobby advertised (%llu)", (unsigned long long)lobbyId);
+}
+
 static void SteamDebugOut(ESteamNetworkingSocketsDebugOutputType type, const char* msg)
 {
     Log("SteamNet[%d]: %s", int(type), msg);
@@ -59,6 +146,8 @@ bool Net::InitSteam()
     g_net = this;
     if (!g_statusListener)
         g_statusListener = new StatusListener();
+    if (!g_lobbyWork)
+        g_lobbyWork = new LobbyWork();
     Log("Net: Steam up as '%s' (%llu)", m_myName.c_str(),
         (unsigned long long)m_mySteamId);
     return true;
@@ -80,6 +169,8 @@ int Net::relayStatus(std::string& detail) const
 void Net::Shutdown()
 {
     Disconnect();
+    delete g_lobbyWork;
+    g_lobbyWork = nullptr;
     delete g_statusListener;
     g_statusListener = nullptr;
     if (m_steamOk)
@@ -175,6 +266,7 @@ void Net::Disconnect()
 {
     if (!m_steamOk)
         return;
+    LeaveLobby();   // stop advertising a game that no longer exists
     ISteamNetworkingSockets* s = SteamNetworkingSockets();
     for (Client& c : m_clients)
         s->CloseConnection(c.conn, 0, "host shutting down", false);
@@ -185,6 +277,53 @@ void Net::Disconnect()
     if (m_pollGroup) { s->DestroyPollGroup(m_pollGroup); m_pollGroup = 0; }
     m_mode = Mode::Offline;
     m_clientState = ClientState::Idle;
+}
+
+void Net::QuickMatch()
+{
+    if (!m_steamOk || !g_lobbyWork || g_lobbyWork->searching)
+    {
+        if (onNoMatch)
+            onNoMatch();
+        return;
+    }
+    g_lobbyWork->Search();
+}
+
+bool Net::CreatePublicLobby()
+{
+    if (!m_steamOk || !g_lobbyWork || g_lobbyWork->lobbyId)
+        return false;
+    g_lobbyWork->Create();
+    return true;
+}
+
+void Net::UpdateLobbyAdvert(int players, int phase)
+{
+    if (!m_steamOk || !g_lobbyWork || !g_lobbyWork->lobbyId)
+        return;
+    ISteamMatchmaking* mm = SteamMatchmaking();
+    CSteamID lobby(g_lobbyWork->lobbyId);
+    char buf[16];
+    mm->SetLobbyData(lobby, "open", players < MaxLobbyPlayers ? "1" : "0");
+    sprintf_s(buf, "%d", players);
+    mm->SetLobbyData(lobby, "players", buf);
+    sprintf_s(buf, "%d", phase);
+    mm->SetLobbyData(lobby, "phase", buf);
+}
+
+void Net::LeaveLobby()
+{
+    if (!m_steamOk || !g_lobbyWork || !g_lobbyWork->lobbyId)
+        return;
+    SteamMatchmaking()->LeaveLobby(CSteamID(g_lobbyWork->lobbyId));
+    g_lobbyWork->lobbyId = 0;
+    Log("Net: public lobby closed");
+}
+
+bool Net::hasPublicLobby() const
+{
+    return g_lobbyWork && g_lobbyWork->lobbyId != 0;
 }
 
 void Net::SendPingOn(uint32_t conn, uint32_t& seqCounter, PingProbe* probes)

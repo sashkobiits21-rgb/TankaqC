@@ -49,6 +49,7 @@ struct Options
     bool rich = false;                                  // start with 500 credits
     bool shopTest = false;                              // auto-open + auto-buy (testing)
     int pauseTest = 0;           // 1 = force-pause at frame 200, 2 = + settings
+    bool quickMatch = false;     // auto-click FIND MATCH at startup (testing)
 };
 
 const struct { int w, h; } kResolutions[] = {
@@ -95,6 +96,10 @@ struct App
     // hull angular velocity for the rotation sound layer
     float sndPrevHullYaw = 0;
     bool sndHullYawValid = false;
+    // quick match state
+    bool searching = false;              // lobby search in flight
+    int lastAdvertPlayers = -1;          // last values pushed to the Steam
+    int lastAdvertPhase = -1;            //  lobby advert (push on change only)
     Screen screen = Screen::MainMenu;
     Screen settingsReturn = Screen::MainMenu;   // where BACK leads
     bool sessionActive = false;  // a game session exists (pause overlays it)
@@ -301,6 +306,7 @@ Options ParseOptions(const std::string& cmd)
     o.rich = cmd.find("--rich") != std::string::npos;
     o.shopTest = cmd.find("--shoptest") != std::string::npos;
     if (!(v = GetArg(cmd, "--pausetest=")).empty()) o.pauseTest = atoi(v.c_str());
+    o.quickMatch = cmd.find("--quickmatch") != std::string::npos;
     if (!(v = GetArg(cmd, "--winsize=")).empty())
         sscanf_s(v.c_str(), "%dx%d", &o.winW, &o.winH);
     return o;
@@ -660,6 +666,8 @@ void LeaveToMenu(const std::string& why)
     g.sessionActive = false;
     g.online = false;
     g.isHost = false;
+    g.searching = false;
+    g.lastAdvertPlayers = g.lastAdvertPhase = -1;
     ResetNetSimState();
     g.statusLine = why;
 }
@@ -714,6 +722,22 @@ void StartHost()
     g.screen = Screen::InGame;
     g.sessionActive = true;
     g.statusLine.clear();
+}
+
+// Quick match: search the free Steam lobby directory for an open public game;
+// onMatchFound / onNoMatch (set in wWinMain) continue the flow.
+void StartFindMatch()
+{
+    if (!g.net.steamAvailable())
+    {
+        g.statusLine = "steam is not available - cannot search for matches";
+        return;
+    }
+    g.searching = true;
+    g.screen = Screen::Connecting;
+    g.connectStart = g.time;
+    g.statusLine.clear();
+    g.net.QuickMatch();
 }
 
 void StartJoin(const std::string& target)
@@ -1382,6 +1406,9 @@ void BuildLobbyUi(FrameData& frame)
         }
     sprintf_s(buf, "LOBBY  %d / %d PLAYERS   %d READY", active, MaxLobbyPlayers, ready);
     g.ui.TextCentered(w * 0.5f, 84, 2.4f, { 0.9f, 1, 0.85f, 1 }, buf);
+    if (g.net.hasPublicLobby())
+        g.ui.TextCentered(w * 0.5f, 112, 1.5f, { 0.7f, 0.95f, 1, 0.8f },
+                          "PUBLIC MATCH - players can find this game");
 
     // name + ready tag floating above each tank in the lineup
     for (int i = 0; i < MaxPlayers; ++i)
@@ -1549,11 +1576,13 @@ std::vector<UiButton> MenuButtons()
     std::vector<UiButton> buttons;
     if (g.screen == Screen::MainMenu)
     {
-        buttons.push_back({ x, y + 0 * (bh + gap), bw, bh, "PLAY SOLO" });
-        buttons.push_back({ x, y + 1 * (bh + gap), bw, bh, "HOST GAME" });
-        buttons.push_back({ x, y + 2 * (bh + gap), bw, bh, "JOIN GAME" });
-        buttons.push_back({ x, y + 3 * (bh + gap), bw, bh, "SETTINGS" });
-        buttons.push_back({ x, y + 4 * (bh + gap), bw, bh, "QUIT" });
+        y = h * 0.36f;   // six buttons: start a little higher
+        buttons.push_back({ x, y + 0 * (bh + gap), bw, bh, "FIND MATCH" });
+        buttons.push_back({ x, y + 1 * (bh + gap), bw, bh, "PLAY SOLO" });
+        buttons.push_back({ x, y + 2 * (bh + gap), bw, bh, "HOST GAME" });
+        buttons.push_back({ x, y + 3 * (bh + gap), bw, bh, "JOIN GAME" });
+        buttons.push_back({ x, y + 4 * (bh + gap), bw, bh, "SETTINGS" });
+        buttons.push_back({ x, y + 5 * (bh + gap), bw, bh, "QUIT" });
     }
     else if (g.screen == Screen::JoinEntry)
     {
@@ -1670,7 +1699,9 @@ void BuildMenu()
     if (g.screen == Screen::Connecting)
     {
         char cbuf[128];
-        sprintf_s(cbuf, "CONNECTING... %.0fs", g.time - g.connectStart);
+        sprintf_s(cbuf, g.searching ? "SEARCHING FOR A MATCH... %.0fs"
+                                    : "CONNECTING... %.0fs",
+                  g.time - g.connectStart);
         g.ui.TextCentered(w * 0.5f, h * 0.45f, 2.6f, { 1, 1, 0.7f, 1 }, cbuf);
         std::string relayDetail;
         int avail = g.net.relayStatus(relayDetail);
@@ -1705,7 +1736,8 @@ void HandleMenuClick()
         if (!b.Contains(float(g.mouseX), float(g.mouseY)))
             continue;
         snd::Play(snd::Sfx::Click, 0.5f, SndJitter(0.06f));
-        if (b.label == "PLAY SOLO") StartSolo();
+        if (b.label == "FIND MATCH") StartFindMatch();
+        else if (b.label == "PLAY SOLO") StartSolo();
         else if (b.label == "HOST GAME") StartHost();
         else if (b.label == "JOIN GAME") { g.screen = Screen::JoinEntry; g.statusLine.clear(); }
         else if (b.label == "SETTINGS")
@@ -2139,6 +2171,49 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     if (!steamOk)
         g.statusLine = "steam not available - solo only";
 
+    // Quick-match continuations. Both fire from inside net.Poll(); ignore
+    // stale results if the user cancelled out of the search meanwhile.
+    g.net.onMatchFound = [](uint64_t hostId)
+    {
+        if (!g.searching)
+            return;
+        g.searching = false;
+        std::string err;
+        bool ok;
+        if (hostId == g.net.mySteamId())
+        {
+            // Our own advert (same Steam account testing, or a stale lobby
+            // from a crashed run): Steam can't relay P2P to itself, use the
+            // host's local UDP socket -- same trick as code self-joins.
+            Log("QuickMatch: found own lobby, using loopback");
+            ok = g.net.ConnectToIP("127.0.0.1:" + std::to_string(g.opt.port), err);
+        }
+        else
+        {
+            ok = g.net.ConnectToCode(hostId, err);
+        }
+        if (!ok)
+        {
+            g.screen = Screen::MainMenu;
+            g.statusLine = "JOIN FAILED: " + err;
+            return;
+        }
+        g.connectStart = g.time;   // restart the watchdog for the connect leg
+    };
+    g.net.onNoMatch = []()
+    {
+        if (!g.searching)
+            return;
+        g.searching = false;
+        // nobody out there: become the host and advertise publicly
+        StartHost();
+        if (g.screen == Screen::InGame)
+        {
+            g.net.CreatePublicLobby();
+            g.statusLine.clear();
+        }
+    };
+
     // Command-line shortcuts for testing.
     if (g.opt.solo)
         StartSolo();
@@ -2146,6 +2221,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         (steamOk ? StartHost() : StartSolo());
     else if (!g.opt.join.empty() && steamOk)
         StartJoin(g.opt.join);
+    else if (g.opt.quickMatch && steamOk)
+        StartFindMatch();
 
     net::Net::Events ev;
     ev.onPlayerJoined = [](int pid, const char* name)
@@ -2236,6 +2313,21 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         }
 
         g.net.Poll(ev);
+
+        // keep the public-lobby advert fresh (push on change only)
+        if (g.isHost && g.online && g.net.hasPublicLobby())
+        {
+            int n = 0;
+            for (int i = 0; i < MaxPlayers; ++i)
+                if (g.game.players[i].active)
+                    ++n;
+            if (n != g.lastAdvertPlayers || int(g.game.phase) != g.lastAdvertPhase)
+            {
+                g.net.UpdateLobbyAdvert(n, int(g.game.phase));
+                g.lastAdvertPlayers = n;
+                g.lastAdvertPhase = int(g.game.phase);
+            }
+        }
 
         // joining watchdog
         if (g.screen == Screen::Connecting && g.time - g.connectStart > 30.0)
