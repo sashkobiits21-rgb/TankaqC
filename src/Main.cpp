@@ -985,11 +985,13 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
             py = a.y + (pr.y - a.y) * g.tickAlpha;
             pz = a.z + (pr.z - a.z) * g.tickAlpha;
         }
-        // rockets render 1.35x their sim size for readability; the deform
+        // rockets render larger than sim size for readability; the deform
         // shader works in local units, so distance is mapped back through
-        // the scale (the "pipe" grows with the rocket)
-        const float kRocketScale = 2.0f;
-        XMMATRIX m = XMMatrixScaling(kRocketScale, kRocketScale, kRocketScale)
+        // the LENGTH scale (the "pipe" follows the rocket's physical length).
+        // Length (local +Z, the travel axis) is 10% shorter than the girth.
+        const float kRocketScale = 1.6f;
+        const float kRocketLenScale = kRocketScale * 0.9f;
+        XMMATRIX m = XMMatrixScaling(kRocketScale, kRocketScale, kRocketLenScale)
                    * XMMatrixRotationY(pr.yaw)
                    * XMMatrixTranslation(px, py, pz);
         RenderObject ro{ g.meshProj, g.texWhite, Store(m),
@@ -998,7 +1000,7 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
         // position and seconds since fired (see UpdateVfxFromSim tracking)
         float sdx = px - g.projSpawnPos[i].x;
         float sdz = pz - g.projSpawnPos[i].z;
-        ro.deformDist = sqrtf(sdx * sdx + sdz * sdz) / kRocketScale;
+        ro.deformDist = sqrtf(sdx * sdx + sdz * sdz) / kRocketLenScale;
         ro.deformAge = float(g.time - g.projSpawnTime[i]);
         frame.objects.push_back(ro);
     }
