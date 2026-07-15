@@ -28,6 +28,15 @@ const float kBaseStats[StatCount] = {
     10.0f,              // SoldierCooldown: 10 s between spawns
     1.0f,               // BounceDamage: x1 per ricochet until upgraded
     1.0f,               // BounceSpeed
+    5.0f,               // SkullRate: a skull every 5 s
+    4.0f,               // AcidDps
+    3.0f,               // AcidDuration
+    3.0f,               // PossessDps: 3 damage/s while possessed
+    2.0f,               // PossessDuration: 2 s base
+    3.5f,               // RadarRange
+    0.6f,               // RadarLock: seconds inside a ring to trigger
+    12.0f,              // RadarDamage: per exploded ring containing the victim
+    1.0f,               // RadarRings: one nested ring by default
 };
 
 int gDebugBounces = 0;   // --bounces=N dev knob (added on top of the stat)
@@ -104,6 +113,33 @@ const UpgradeType kUpgradePool[UpgradeCount] = {
       { { S(BounceDamage), 0, 1.15f } }, 1, ClassBouncy },
     { U(Slingshot),    "SLINGSHOT", "+12% SPEED PER BOUNCE",           2, 55,
       { { S(BounceSpeed), 0, 1.12f } }, 1, ClassBouncy },
+    // two more class cards
+    { U(NecroClass),   "NECRO CLASS", "UNLOCK NECROMANCY +BONE FURNACE",
+      RarityClass, 80, {}, 0, ClassNone, ClassNecro, U(BoneFurnace) },
+    { U(RadarClass),   "RADAR CLASS", "UNLOCK RADAR ROCKETS +FAST LOCK",
+      RarityClass, 80, {}, 0, ClassNone, ClassRadar, U(FastLock) },
+    // NECROMANCER family
+    { U(BoneFurnace),  "BONE FURNACE", "-20% SKULL COOLDOWN",          2, 55,
+      { { S(SkullRate), 0, 0.80f } }, 1, ClassNecro },
+    { U(CausticBrew),  "CAUSTIC BREW", "+3/s ACID DAMAGE",             2, 55,
+      { { S(AcidDps), 3, 1 } }, 1, ClassNecro },
+    { U(LingeringRot), "LINGERING ROT", "+1.5s ACID PUDDLE LIFE",      1, 40,
+      { { S(AcidDuration), 1.5f, 1 } }, 1, ClassNecro },
+    { U(DeepGrip),     "DEEP GRIP", "+0.6s POSSESSION",                3, 70,
+      { { S(PossessDuration), 0.6f, 1 } }, 1, ClassNecro },
+    { U(SoulLeech),    "SOUL LEECH", "+2/s POSSESSION DAMAGE",         3, 70,
+      { { S(PossessDps), 2, 1 } }, 1, ClassNecro },
+    // RADAR family
+    { U(FastLock),     "FAST LOCK", "-20% RADAR LOCK TIME",            2, 55,
+      { { S(RadarLock), 0, 0.80f } }, 1, ClassRadar },
+    { U(WideScan),     "WIDE SCAN", "+20% RADAR RANGE",                2, 55,
+      { { S(RadarRange), 0, 1.20f } }, 1, ClassRadar },
+    { U(Payload),      "PAYLOAD", "+6 RADAR RING DAMAGE",              2, 55,
+      { { S(RadarDamage), 6, 1 } }, 1, ClassRadar },
+    { U(SharpPing),    "SHARP PING", "-0.1s RADAR LOCK TIME",          1, 40,
+      { { S(RadarLock), -0.1f, 1 } }, 1, ClassRadar },
+    { U(NestedArray),  "NESTED ARRAY", "+1 NESTED RADAR RING",         4, 95,
+      { { S(RadarRings), 1, 1 } }, 1, ClassRadar },
 };
 #undef S
 #undef U
@@ -254,6 +290,16 @@ void GameState::RecalcStats(int id)
     p.stats[int(Stat::SoldierCooldown)] = std::max(0.5f, p.stats[int(Stat::SoldierCooldown)]);
     p.stats[int(Stat::BounceDamage)] = std::max(0.25f, p.stats[int(Stat::BounceDamage)]);
     p.stats[int(Stat::BounceSpeed)] = std::max(0.25f, p.stats[int(Stat::BounceSpeed)]);
+    p.stats[int(Stat::SkullRate)] = std::max(0.8f, p.stats[int(Stat::SkullRate)]);
+    p.stats[int(Stat::AcidDps)] = std::max(0.5f, p.stats[int(Stat::AcidDps)]);
+    p.stats[int(Stat::AcidDuration)] = std::max(0.5f, p.stats[int(Stat::AcidDuration)]);
+    p.stats[int(Stat::PossessDps)] = std::max(0.5f, p.stats[int(Stat::PossessDps)]);
+    p.stats[int(Stat::PossessDuration)] = std::max(0.3f, p.stats[int(Stat::PossessDuration)]);
+    p.stats[int(Stat::RadarRange)] = std::max(1.0f, p.stats[int(Stat::RadarRange)]);
+    p.stats[int(Stat::RadarLock)] = std::max(0.15f, p.stats[int(Stat::RadarLock)]);
+    p.stats[int(Stat::RadarDamage)] = std::max(1.0f, p.stats[int(Stat::RadarDamage)]);
+    p.stats[int(Stat::RadarRings)] = std::clamp(p.stats[int(Stat::RadarRings)],
+                                                0.0f, float(MaxRadarRings - 1));
 }
 
 void GameState::SpawnPlayer(int id)
@@ -282,6 +328,12 @@ void GameState::StartMatch()
         pr.active = false;
     for (SoldierState& s : soldiers)
         s.active = false;
+    for (SkullState& sk : skulls)
+        sk.active = false;
+    for (PuddleState& pu : puddles)
+        pu.active = false;
+    for (GhostState& gh : ghosts)
+        gh.active = false;
     phase = PhasePlaying;
     winner = 0xFF;
     matchEndTick = tick + MatchDurationTicks;
@@ -305,6 +357,12 @@ void GameState::ToLobby()
         pr.active = false;
     for (SoldierState& s : soldiers)
         s.active = false;
+    for (SkullState& sk : skulls)
+        sk.active = false;
+    for (PuddleState& pu : puddles)
+        pu.active = false;
+    for (GhostState& gh : ghosts)
+        gh.active = false;
     phase = PhaseLobby;
 }
 
@@ -647,6 +705,19 @@ void GameState::ApplyDamage(int shooterId, int victimId, int rawDamage,
         {
             ++shooter.score;
             shooter.money = uint16_t(std::min(999, shooter.money + 100));
+            // NECROMANCER: a ghost rises from every tank the necromancer
+            // kills and goes hunting for its next victim
+            if (HasClass(shooter, ClassNecro))
+                for (GhostState& gh : ghosts)
+                    if (!gh.active)
+                    {
+                        gh = GhostState{};
+                        gh.active = true;
+                        gh.owner = uint8_t(shooterId);
+                        gh.x = t.x;
+                        gh.z = t.z;
+                        break;
+                    }
             if (phase == PhaseOvertime)   // sudden death: first kill
             {
                 phase = PhaseEnded;
@@ -659,7 +730,252 @@ void GameState::ApplyDamage(int shooterId, int victimId, int rawDamage,
     {
         t.health = 0;
         t.respawnTimer = RespawnTime;
+        t.possessTimer = 0;   // death exorcises
+        t.dotAccum = 0;
     }
+}
+
+// ------------------------------------------------- necromancer entities
+
+static int NearestEnemyTank(const GameState& gs, int owner, float x, float z)
+{
+    int best = -1;
+    float bestD2 = 1e18f;
+    for (int id = 0; id < MaxPlayers; ++id)
+    {
+        const PlayerState& p = gs.players[id];
+        if (!p.active || p.health <= 0 || id == owner)
+            continue;
+        float dx = p.x - x, dz = p.z - z;
+        float d2 = dx * dx + dz * dz;
+        if (d2 < bestD2) { bestD2 = d2; best = id; }
+    }
+    return best;
+}
+
+static void SpawnPuddle(GameState& gs, int owner, float x, float z)
+{
+    for (PuddleState& pu : gs.puddles)
+    {
+        if (pu.active)
+            continue;
+        const PlayerState& o = gs.players[owner];
+        pu.active = true;
+        pu.owner = uint8_t(owner);
+        pu.x = std::clamp(x, -ArenaHalf + 0.5f, ArenaHalf - 0.5f);
+        pu.z = std::clamp(z, -ArenaHalf + 0.5f, ArenaHalf - 0.5f);
+        pu.life = o.stats[int(Stat::AcidDuration)];
+        pu.dps = o.stats[int(Stat::AcidDps)];
+        return;
+    }
+}
+
+// Skulls fly STRAIGHT at the nearest enemy (course refreshed every tick),
+// slam into whatever is in the way -- walls included -- and burst into acid.
+static void TickSkull(GameState& gs, SkullState& sk)
+{
+    sk.life -= TickDt;
+    if (sk.life <= 0.0f)
+    {
+        sk.active = false;
+        return;
+    }
+    int target = NearestEnemyTank(gs, sk.owner, sk.x, sk.z);
+    if (target >= 0)
+    {
+        const PlayerState& t = gs.players[target];
+        sk.yaw = atan2f(t.x - sk.x, t.z - sk.z);
+    }
+    sk.x += sinf(sk.yaw) * SkullSpeed * TickDt;
+    sk.z += cosf(sk.yaw) * SkullSpeed * TickDt;
+
+    bool burst = false;
+    if (fabsf(sk.x) > ArenaHalf - SkullRadius
+        || fabsf(sk.z) > ArenaHalf - SkullRadius)
+        burst = true;                              // arena wall
+    if (!burst && PointHitsObstacle(sk.x, 0.5f, sk.z, SkullRadius))
+        burst = true;                              // obstacle box
+    if (!burst)
+        for (int id = 0; id < MaxPlayers && !burst; ++id)
+        {
+            const PlayerState& p = gs.players[id];
+            if (!p.active || p.health <= 0 || id == sk.owner)
+                continue;
+            float dx = sk.x - p.x, dz = sk.z - p.z;
+            float r = TankRadius + SkullRadius;
+            burst = dx * dx + dz * dz < r * r;     // enemy tank
+        }
+    if (!burst)
+        for (const SoldierState& s : gs.soldiers)
+        {
+            if (!s.active || s.state == SoldierDying || s.owner == sk.owner)
+                continue;
+            float dx = sk.x - s.x, dz = sk.z - s.z;
+            float r = SoldierRadius + SkullRadius;
+            if (dx * dx + dz * dz < r * r) { burst = true; break; }
+        }
+    if (burst)
+    {
+        SpawnPuddle(gs, sk.owner, sk.x, sk.z);
+        sk.active = false;
+    }
+}
+
+static void TickPuddle(GameState& gs, PuddleState& pu)
+{
+    pu.life -= TickDt;
+    if (pu.life <= 0.0f)
+    {
+        pu.active = false;
+        return;
+    }
+    for (int id = 0; id < MaxPlayers; ++id)
+    {
+        PlayerState& t = gs.players[id];
+        if (!t.active || t.health <= 0 || id == pu.owner)
+            continue;
+        float dx = t.x - pu.x, dz = t.z - pu.z;
+        float r = PuddleRadius + TankRadius * 0.5f;
+        if (dx * dx + dz * dz < r * r)
+        {
+            // fractional DoT accumulates; whole points land via ApplyDamage
+            t.dotAccum += pu.dps * TickDt;
+            while (t.dotAccum >= 1.0f && t.health > 0)
+            {
+                t.dotAccum -= 1.0f;
+                gs.ApplyDamage(pu.owner, id, 1, 0);
+            }
+        }
+    }
+    for (SoldierState& s : gs.soldiers)
+    {
+        if (!s.active || s.state == SoldierDying || s.owner == pu.owner)
+            continue;
+        float dx = s.x - pu.x, dz = s.z - pu.z;
+        float r = PuddleRadius + SoldierRadius;
+        if (dx * dx + dz * dz < r * r)
+            s.health -= pu.dps * TickDt;
+    }
+}
+
+// Ghosts spiral inward around their victim (through walls -- they are
+// ghosts) and possess on contact: the tank takes PossessDps for
+// PossessDuration, drives itself with deterministic chaos and cannot fire.
+static void TickGhost(GameState& gs, GhostState& gh)
+{
+    if (gh.targetId >= MaxPlayers || !gs.players[gh.targetId].active
+        || gs.players[gh.targetId].health <= 0)
+    {
+        int t = NearestEnemyTank(gs, gh.owner, gh.x, gh.z);
+        if (t < 0)
+        {
+            gh.angle += 2.0f * TickDt;   // idle bob, wait for prey
+            return;
+        }
+        gh.targetId = uint8_t(t);
+        const PlayerState& p = gs.players[t];
+        gh.orbitR = std::max(GhostOrbitStart * 0.6f,
+                             sqrtf((p.x - gh.x) * (p.x - gh.x)
+                                   + (p.z - gh.z) * (p.z - gh.z)));
+        gh.angle = atan2f(gh.x - p.x, gh.z - p.z);
+    }
+    PlayerState& t = gs.players[gh.targetId];
+    gh.angle += (GhostOrbitSpeed / std::max(1.0f, gh.orbitR)) * TickDt;
+    gh.orbitR -= GhostCloseRate * TickDt;
+    gh.x = t.x + sinf(gh.angle) * gh.orbitR;
+    gh.z = t.z + cosf(gh.angle) * gh.orbitR;
+    if (gh.orbitR <= TankRadius + 0.3f)
+    {
+        // POSSESSION: bake the necromancer's stats into the victim
+        const PlayerState& o = gs.players[gh.owner];
+        t.possessTimer = o.stats[int(Stat::PossessDuration)];
+        t.possessDps = o.stats[int(Stat::PossessDps)];
+        t.possessedBy = gh.owner;
+        gh.active = false;
+    }
+}
+
+// ------------------------------------------------------------ radar rings
+// Ring k has radius radarRange / 3^k. Each ring charges its own lock while
+// any enemy is inside; a full lock detonates that ring AND every ring
+// nested inside it -- victims take radarDamage per exploded ring that
+// contains them, so sitting deep inside the array is devastating.
+static void TickRadar(GameState& gs, Projectile& pr)
+{
+    float radius[MaxRadarRings];
+    float r = pr.radarRange;
+    for (int k = 0; k <= pr.radarRings; ++k)
+    {
+        radius[k] = r;
+        r /= 3.0f;
+    }
+    int triggered = -1;
+    for (int k = 0; k <= pr.radarRings; ++k)
+    {
+        bool inside = false;
+        for (int id = 0; id < MaxPlayers && !inside; ++id)
+        {
+            const PlayerState& p = gs.players[id];
+            if (!p.active || p.health <= 0 || id == pr.owner)
+                continue;
+            float dx = p.x - pr.x, dz = p.z - pr.z;
+            float rr = radius[k] + TankRadius * 0.5f;
+            inside = dx * dx + dz * dz < rr * rr;
+        }
+        for (const SoldierState& s : gs.soldiers)
+        {
+            if (inside)
+                break;
+            if (!s.active || s.state == SoldierDying || s.owner == pr.owner)
+                continue;
+            float dx = s.x - pr.x, dz = s.z - pr.z;
+            float rr = radius[k] + SoldierRadius;
+            inside = dx * dx + dz * dz < rr * rr;
+        }
+        if (inside)
+        {
+            pr.radarLock[k] += TickDt;
+            if (pr.radarLock[k] >= pr.radarLockNeed && triggered < 0)
+                triggered = k;
+        }
+        else
+            pr.radarLock[k] = 0.0f;
+    }
+    if (triggered < 0)
+        return;
+    // detonate rings triggered..deepest
+    for (int id = 0; id < MaxPlayers; ++id)
+    {
+        const PlayerState& p = gs.players[id];
+        if (!p.active || p.health <= 0 || id == pr.owner)
+            continue;
+        float dx = p.x - pr.x, dz = p.z - pr.z;
+        float d2 = dx * dx + dz * dz;
+        int hits = 0;
+        for (int k = triggered; k <= pr.radarRings; ++k)
+        {
+            float rr = radius[k] + TankRadius * 0.5f;
+            if (d2 < rr * rr) ++hits;
+        }
+        if (hits > 0)
+            gs.ApplyDamage(pr.owner, id, int(pr.radarDamage + 0.5f) * hits, 5);
+    }
+    for (SoldierState& s : gs.soldiers)
+    {
+        if (!s.active || s.state == SoldierDying || s.owner == pr.owner)
+            continue;
+        float dx = s.x - pr.x, dz = s.z - pr.z;
+        float d2 = dx * dx + dz * dz;
+        int hits = 0;
+        for (int k = triggered; k <= pr.radarRings; ++k)
+        {
+            float rr = radius[k] + SoldierRadius;
+            if (d2 < rr * rr) ++hits;
+        }
+        if (hits > 0)
+            s.health -= pr.radarDamage * float(hits);
+    }
+    pr.active = false;   // the detonation consumes the rocket
 }
 
 // Candidate hiding spots: points floated off every obstacle face (three per
@@ -958,6 +1274,18 @@ static void SoldierTryFire(GameState& gs, SoldierState& s)
         pr.speed = SoldierRocketSpeed;
         pr.damage = int(s.damage + 0.5f);
         pr.bounces = 0;
+        // class synergy: a SOLDIER+RADAR necromancer of war -- summons fire
+        // ring rockets when their owner also holds the RADAR class
+        const PlayerState& own = gs.players[s.owner];
+        if (HasClass(own, ClassRadar))
+        {
+            pr.radarRange = own.stats[int(Stat::RadarRange)];
+            pr.radarDamage = own.stats[int(Stat::RadarDamage)];
+            pr.radarLockNeed = own.stats[int(Stat::RadarLock)];
+            pr.radarRings = std::clamp(
+                int(own.stats[int(Stat::RadarRings)] + 0.5f),
+                0, MaxRadarRings - 1);
+        }
         s.fireCooldown = 1.0f / std::max(0.1f, s.fireRate);
         s.muzzleFlash = 0.12f;
         s.yaw = yaw;   // square up to the shot
@@ -1227,9 +1555,25 @@ void GameState::TickSoldier(SoldierState& s)
 // screen. The camera sits at -Z looking toward +Z with a right-handed
 // view, which makes screen-right equal world -X (and screen-up +Z).
 // The hull only *visually* turns to face the direction of travel.
-void GameState::AdvanceMovement(int id, const InputCmd& in)
+void GameState::AdvanceMovement(int id, const InputCmd& inRaw)
 {
     PlayerState& p = players[id];
+    // POSSESSION: the ghost drives. Deterministic chaos derived from the
+    // remaining-time bucket so client prediction replays the exact same
+    // swerves after rebasing possessTimer from the snapshot.
+    InputCmd in = inRaw;
+    if (p.possessTimer > 0.0f)
+    {
+        p.possessTimer = std::max(0.0f, p.possessTimer - TickDt);
+        uint32_t h = uint32_t(id) * 2654435761u
+                   ^ uint32_t(int(p.possessTimer * 2.5f) + 1) * 40503u;
+        h ^= h << 13; h ^= h >> 17; h ^= h << 5;
+        float ang = float(h & 0xFFFF) * (DirectX::XM_2PI / 65535.0f);
+        in.moveX = sinf(ang);
+        in.moveZ = cosf(ang);
+        in.turretYaw = ang;                        // head spins too
+        in.buttons &= uint8_t(~(BtnFire | BtnBoost));
+    }
     // The client resolves camera-relative WASD into a world-space vector, so
     // the host (and prediction replay) integrate the same numbers.
     float dx = in.moveX, dz = in.moveZ;
@@ -1413,9 +1757,42 @@ void GameState::Tick(const InputCmd* inputs)
             continue;
         }
 
-        // passive income: 1 credit per second while alive
-        if (tick % TickRate == 0 && p.money < 999)
+        // passive income: 2 credits per second while alive
+        if (tick % (TickRate / 2) == 0 && p.money < 999)
             ++p.money;
+
+        // possession damage-over-time (attributed to the ghost's owner)
+        if (p.possessTimer > 0.0f)
+        {
+            p.dotAccum += p.possessDps * TickDt;
+            while (p.dotAccum >= 1.0f && p.health > 0)
+            {
+                p.dotAccum -= 1.0f;
+                ApplyDamage(p.possessedBy, id, 1, 0);
+            }
+        }
+
+        // NECROMANCER: launch a skull at the nearest enemy every SkullRate
+        if (HasClass(p, ClassNecro))
+        {
+            p.skullWait = std::max(0.0f, p.skullWait - TickDt);
+            if (p.skullWait <= 0.0f
+                && NearestEnemyTank(*this, id, p.x, p.z) >= 0)
+                for (SkullState& sk : skulls)
+                {
+                    if (sk.active)
+                        continue;
+                    sk = SkullState{};
+                    sk.active = true;
+                    sk.owner = uint8_t(id);
+                    sk.x = p.x;
+                    sk.z = p.z;
+                    sk.yaw = p.turretYaw;
+                    sk.life = 8.0f;
+                    p.skullWait = p.stats[int(Stat::SkullRate)];
+                    break;
+                }
+        }
 
         // SOLDIER class summon: a fresh soldier every SoldierCooldown while
         // below the owner's SoldierMax (the first arrives immediately after
@@ -1474,13 +1851,15 @@ void GameState::Tick(const InputCmd* inputs)
 
         AdvanceMovement(id, in);
 
-        if ((in.buttons & BtnFire) && p.fireCooldown <= 0.0f)
+        if ((in.buttons & BtnFire) && p.fireCooldown <= 0.0f
+            && p.possessTimer <= 0.0f)
         {
             for (Projectile& pr : projectiles)
             {
                 if (pr.active)
                     continue;
                 XMFLOAT3 m = MuzzleWorld(p);
+                pr = Projectile{};
                 pr.active = true;
                 pr.owner = uint8_t(id);
                 pr.x = m.x; pr.y = m.y; pr.z = m.z;
@@ -1491,6 +1870,15 @@ void GameState::Tick(const InputCmd* inputs)
                 pr.bounces = int(p.stats[int(Stat::Bounces)] + 0.5f);
                 pr.bounceDmg = p.stats[int(Stat::BounceDamage)];
                 pr.bounceSpd = p.stats[int(Stat::BounceSpeed)];
+                if (HasClass(p, ClassRadar))
+                {
+                    pr.radarRange = p.stats[int(Stat::RadarRange)];
+                    pr.radarDamage = p.stats[int(Stat::RadarDamage)];
+                    pr.radarLockNeed = p.stats[int(Stat::RadarLock)];
+                    pr.radarRings = std::clamp(
+                        int(p.stats[int(Stat::RadarRings)] + 0.5f),
+                        0, MaxRadarRings - 1);
+                }
                 p.fireCooldown = p.stats[int(Stat::ReloadTime)];
                 p.muzzleFlash = 0.12f;
                 break;
@@ -1506,6 +1894,13 @@ void GameState::Tick(const InputCmd* inputs)
         {
             pr.active = false;
             continue;
+        }
+        // RADAR rockets scan while flying; a full ring lock detonates
+        if (pr.radarRange > 0.0f)
+        {
+            TickRadar(*this, pr);
+            if (!pr.active)
+                continue;
         }
         bool spent = false;
         for (int id = 0; id < MaxPlayers && !spent; ++id)
@@ -1548,6 +1943,15 @@ void GameState::Tick(const InputCmd* inputs)
     for (SoldierState& s : soldiers)
         if (s.active)
             TickSoldier(s);
+    for (SkullState& sk : skulls)
+        if (sk.active)
+            TickSkull(*this, sk);
+    for (PuddleState& pu : puddles)
+        if (pu.active)
+            TickPuddle(*this, pu);
+    for (GhostState& gh : ghosts)
+        if (gh.active)
+            TickGhost(*this, gh);
 }
 
 } // namespace tankaq

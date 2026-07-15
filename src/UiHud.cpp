@@ -231,6 +231,19 @@ void BuildHud(FrameData& frame)
         return;
     }
 
+    // POSSESSED: the ghost is driving -- wash the screen blue and pulse
+    if (me.possessTimer > 0.0f)
+    {
+        float pulse = 0.5f + 0.5f * sinf(float(g.time) * 9.0f);
+        g.ui.Rect(0, 0, w, float(g.height),
+                  { 0.25f, 0.45f, 1.0f, 0.20f + 0.08f * pulse });
+        g.ui.RectOutline(6, 6, w - 12, float(g.height) - 12, 4,
+                         { 0.45f, 0.65f, 1.0f, 0.30f + 0.25f * pulse });
+        g.ui.TextCentered(w * 0.5f, g.height * 0.30f, 3.2f,
+                          { 0.78f, 0.88f, 1.0f, 0.55f + 0.3f * pulse },
+                          "POSSESSED");
+    }
+
     // health bar + credits
     float hx = 10, hy = float(g.height) - 46;
     g.ui.Rect(hx, hy, 260, 26, { 0, 0, 0, 0.55f });

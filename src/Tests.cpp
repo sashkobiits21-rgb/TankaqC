@@ -198,6 +198,152 @@ int RunClassTest()
         }
     }
 
+    // ---- necromancer: skulls -> acid, ghosts -> possession ----
+    {
+        GameState g3{};
+        g3.SpawnPlayer(0);
+        g3.SpawnPlayer(1);
+        PlayerState& necro = g3.players[0];
+        necro.owned.push_back(uint8_t(UpgradeId::NecroClass));
+        g3.RecalcStats(0);
+        g3.phase = PhasePlaying;
+        g3.matchEndTick = g3.tick + 100000000u;
+        InputCmd idle[MaxPlayers]{};
+
+        g3.Tick(idle);
+        bool skullUp = false;
+        for (const SkullState& sk : g3.skulls) skullUp |= sk.active;
+        check(skullUp, "skull launched at the nearest enemy");
+        bool puddleUp = false;
+        for (int t = 0; t < TickRate * 12 && !puddleUp; ++t)
+        {
+            g3.Tick(idle);
+            for (const PuddleState& pu : g3.puddles) puddleUp |= pu.active;
+        }
+        check(puddleUp, "skull burst into an acid puddle on contact");
+
+        // park the enemy in a fresh puddle: DoT must tick at ~AcidDps
+        PlayerState& victim = g3.players[1];
+        for (PuddleState& pu : g3.puddles) pu.active = false;
+        for (SkullState& sk : g3.skulls) sk.active = false;
+        necro.owned.clear();           // stop new skulls interfering
+        g3.RecalcStats(0);
+        int hpBefore = victim.health;
+        g3.puddles[0].active = true;
+        g3.puddles[0].owner = 0;
+        g3.puddles[0].x = victim.x;
+        g3.puddles[0].z = victim.z;
+        g3.puddles[0].life = 3.0f;
+        g3.puddles[0].dps = 4.0f;
+        for (int t = 0; t < TickRate * 2; ++t) g3.Tick(idle);
+        check(victim.health <= hpBefore - 7, "acid burns ~4/s while inside");
+
+        // ghost: spiral in, possess, chaos-drive, expire
+        g3.ghosts[0] = GhostState{};
+        g3.ghosts[0].active = true;
+        g3.ghosts[0].owner = 0;
+        g3.ghosts[0].x = victim.x + 3.0f;
+        g3.ghosts[0].z = victim.z;
+        hpBefore = victim.health;
+        float px0 = victim.x, pz0 = victim.z;
+        bool possessedSeen = false;
+        for (int t = 0; t < TickRate * 6; ++t)
+        {
+            g3.Tick(idle);
+            possessedSeen |= victim.possessTimer > 0.0f;
+        }
+        check(possessedSeen, "ghost closed in and possessed the enemy");
+        check(fabsf(victim.x - px0) > 0.5f || fabsf(victim.z - pz0) > 0.5f,
+              "possessed tank drives itself (deterministic chaos)");
+        check(victim.health <= hpBefore - 4, "possession burns ~3/s for 2s");
+        check(victim.possessTimer <= 0.0f, "possession expires");
+
+        // a necromancer kill raises a ghost
+        necro.owned.push_back(uint8_t(UpgradeId::NecroClass));
+        g3.RecalcStats(0);
+        for (GhostState& gh : g3.ghosts) gh.active = false;
+        g3.ApplyDamage(0, 1, 10000, 0);
+        bool ghostUp = false;
+        for (const GhostState& gh : g3.ghosts) ghostUp |= gh.active;
+        check(ghostUp, "a ghost rises from the necromancer's kill");
+    }
+
+    // ---- radar: ring lock detonates without contact; nested rings stack --
+    {
+        GameState g4{};
+        g4.SpawnPlayer(0);
+        g4.SpawnPlayer(1);
+        PlayerState& op = g4.players[0];
+        op.owned.push_back(uint8_t(UpgradeId::RadarClass));
+        g4.RecalcStats(0);
+        g4.phase = PhasePlaying;
+        g4.matchEndTick = g4.tick + 100000000u;
+        InputCmd idle[MaxPlayers]{};
+        PlayerState& tgt = g4.players[1];
+        tgt.x = 0; tgt.z = -10;        // parked in the open
+
+        auto fireRadar = [&](float zOffset)
+        {
+            Projectile pr{};
+            pr.active = true;
+            pr.owner = 0;
+            pr.x = -12.0f;
+            pr.z = tgt.z + zOffset;
+            pr.y = 0.17f;
+            pr.yaw = XM_PI * 0.5f;     // flying +X, passing the target
+            pr.life = 6.0f;
+            pr.speed = 5.0f;           // slow: guarantees lock time
+            pr.damage = 34;
+            pr.radarRange = op.stats[int(Stat::RadarRange)];
+            pr.radarDamage = op.stats[int(Stat::RadarDamage)];
+            pr.radarLockNeed = op.stats[int(Stat::RadarLock)];
+            pr.radarRings = 1;
+            g4.projectiles[0] = pr;
+        };
+
+        // offset 2.5: inside the main ring only -> exactly RadarDamage
+        int hp0 = tgt.health;
+        fireRadar(2.5f);
+        bool detonated = false;
+        for (int t = 0; t < TickRate * 5 && !detonated; ++t)
+        {
+            g4.Tick(idle);
+            detonated = !g4.projectiles[0].active;
+        }
+        check(detonated, "radar rocket detonated from ring lock (no contact)");
+        check(tgt.health == hp0 - 12, "outer-ring-only victim takes 1x damage");
+
+        // a rocket parked 1.8 from the target: inside the nested ring
+        // (2.0 with the hull margin) AND the main ring, outside direct
+        // contact -- the main lock fills and detonates BOTH rings: 2x
+        hp0 = tgt.health;
+        {
+            Projectile pr{};
+            pr.active = true;
+            pr.owner = 0;
+            pr.x = tgt.x;
+            pr.z = tgt.z - 1.8f;
+            pr.y = 0.17f;
+            pr.yaw = 0;
+            pr.life = 6.0f;
+            pr.speed = 0.0f;           // hovering: pure ring-lock test
+            pr.damage = 34;
+            pr.radarRange = op.stats[int(Stat::RadarRange)];
+            pr.radarDamage = op.stats[int(Stat::RadarDamage)];
+            pr.radarLockNeed = op.stats[int(Stat::RadarLock)];
+            pr.radarRings = 1;
+            g4.projectiles[0] = pr;
+        }
+        detonated = false;
+        for (int t = 0; t < TickRate * 5 && !detonated; ++t)
+        {
+            g4.Tick(idle);
+            detonated = !g4.projectiles[0].active;
+        }
+        check(detonated, "nested radar rocket detonated");
+        check(tgt.health == hp0 - 24, "victim inside both rings takes 2x");
+    }
+
     Log("classtest done: %d failure(s)", fails);
     return fails;
 }

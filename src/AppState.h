@@ -51,6 +51,7 @@ struct Options
     int readyTest = 0;           // toggle ready once at this frame (testing)
     bool rigTest = false;        // show the animated test rig in the arena
     bool soldierTest = false;    // solo: grant SOLDIER class + dummy target
+    std::string demoClass;       // --demo=necro|radar: grant + dummy (solo)
 };
 
 constexpr struct { int w, h; } kResolutions[] = {
@@ -122,6 +123,13 @@ struct App
     Animator soldierAnim[MaxSoldiers];
     uint8_t soldierAnimState[MaxSoldiers]{};   // last state fed to the animator
     bool soldierPrevMuzzle[MaxSoldiers]{};
+
+    // necromancer + radar visuals
+    int meshSkull = -1, meshJaw = -1, meshPuddle = -1, meshRing = -1;
+    bool prevSkullActive[MaxSkulls]{};         // burst on skull death
+    DirectX::XMFLOAT3 prevSkullPos[MaxSkulls]{};
+    float prevProjRadar[MaxProjectiles]{};     // range-scaled explosion VFX
+    bool prevPossessed = false;                // possession-start sound
 
     // game
     GameState game;

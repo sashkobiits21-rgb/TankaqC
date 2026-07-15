@@ -88,6 +88,17 @@ enum class Stat : uint8_t
     // BOUNCY class: per-ricochet multipliers baked into the rocket at fire
     BounceDamage,     // damage multiplier applied on every wall bounce
     BounceSpeed,      // speed multiplier applied on every wall bounce
+    // NECROMANCER class
+    SkullRate,        // seconds between skull launches
+    AcidDps,          // acid puddle damage per second (standing in it)
+    AcidDuration,     // puddle lifetime in seconds
+    PossessDps,       // damage per second while possessed by a ghost
+    PossessDuration,  // possession length in seconds
+    // RADAR class: rockets carry detection rings
+    RadarRange,       // main ring radius around the rocket
+    RadarLock,        // seconds an enemy must stay inside a ring to trigger
+    RadarDamage,      // damage per exploded ring containing the victim
+    RadarRings,       // nested rings inside the main one (each 1/3 the size)
     Count
 };
 constexpr int StatCount = int(Stat::Count);
@@ -109,7 +120,8 @@ struct StatMod
 // rarity band, teal). The card immediately grants the class's base upgrade
 // and unlocks the family. A player holds at most kMaxClasses classes.
 constexpr uint8_t ClassNone = 0xFF;
-enum : uint8_t { ClassSoldier = 0, ClassBouncy, ClassCount };
+enum : uint8_t { ClassSoldier = 0, ClassBouncy, ClassNecro, ClassRadar,
+                 ClassCount };
 constexpr int kMaxClasses = 2;
 constexpr int RarityClass = 5;    // rolled between rare and epic
 
@@ -126,6 +138,9 @@ enum class UpgradeId : uint8_t
     Ricochet, Superball, NitroTank, Afterburner, QuickPump, PitCrew,
     FuelInjection, SoldierClass, BouncyClass, Recruiter, DoubleTime,
     FlakVest, HollowPoints, RapidFire, Platoon, RubberShells, Slingshot,
+    NecroClass, RadarClass,
+    BoneFurnace, CausticBrew, LingeringRot, DeepGrip, SoulLeech,
+    FastLock, WideScan, Payload, SharpPing, NestedArray,
     Count
 };
 constexpr int UpgradeCount = int(UpgradeId::Count);
@@ -214,12 +229,27 @@ struct PlayerState
 
     // host-only: seconds until the next soldier summon (SOLDIER class)
     float soldierSpawnWait = 0;
+    // host-only: seconds until the next skull launch (NECROMANCER class)
+    float skullWait = 0;
+    // host-only: fractional damage-over-time accumulator (acid + possession)
+    float dotAccum = 0;
+
+    // POSSESSION (ghost hit): while > 0 the tank ignores its owner's input
+    // and drives itself with deterministic pseudo-random movement, cannot
+    // fire, and takes PossessDps from the possessing ghost's owner. Lives in
+    // AdvanceMovement so client prediction replays it identically (the value
+    // is replicated quantized and rebased like boost fuel).
+    float possessTimer = 0;
+    float possessDps = 0;         // host-only, baked from the ghost's owner
+    uint8_t possessedBy = 0xFF;   // host-only, damage attribution
 };
 
 inline int MaxHealthFor(const PlayerState& p)
 {
     return int(p.stats[int(Stat::MaxHealth)] + 0.5f);
 }
+
+constexpr int MaxRadarRings = 4;     // main ring + up to 3 nested levels
 
 struct Projectile
 {
@@ -233,6 +263,15 @@ struct Projectile
     int bounces = 0;                 // wall bounces left (baked at fire time)
     float bounceDmg = 1.0f;          // damage multiplier per ricochet (baked)
     float bounceSpd = 1.0f;          // speed multiplier per ricochet (baked)
+    // RADAR class (baked at fire time; 0 = not a radar rocket). Ring k has
+    // radius radarRange / 3^k -- "three ranges fit into the one above".
+    // Each ring locks separately: an enemy inside it charges its timer, and
+    // a full timer detonates that ring AND every ring nested inside it.
+    float radarRange = 0.0f;
+    float radarDamage = 0.0f;
+    float radarLockNeed = 0.0f;      // seconds inside a ring to trigger
+    int radarRings = 0;              // nested levels (0..MaxRadarRings-1)
+    float radarLock[MaxRadarRings]{};
 };
 
 struct Obstacle
@@ -294,6 +333,52 @@ struct SoldierState
 bool SegmentBlockedByObstacles(float x0, float z0, float x1, float z1,
                                float inflate = 0.0f);
 
+// ------------------------------------------------------------ necromancer
+// Skulls: launched from the tank every SkullRate seconds, fly STRAIGHT at
+// the nearest enemy (course updated each tick), happily smack into walls,
+// and burst into an acid puddle on ANY contact. Puddles deal AcidDps to
+// enemies standing in them. Ghosts: one rises wherever the necromancer
+// scores a tank kill; it orbits the nearest enemy, spiraling inward through
+// walls, and on reaching the hull possesses it (see PlayerState).
+constexpr int   MaxSkulls = 12;
+constexpr int   MaxPuddles = 24;
+constexpr int   MaxGhosts = 8;
+constexpr float SkullSpeed = 9.0f;
+constexpr float SkullRadius = 0.45f;
+constexpr float SkullY = 1.2f;            // hover height
+constexpr float PuddleRadius = 1.7f;
+constexpr float GhostOrbitStart = 7.0f;   // spiral start radius
+constexpr float GhostCloseRate = 1.4f;    // radius shrink per second
+constexpr float GhostOrbitSpeed = 7.0f;   // tangential units/s
+
+struct SkullState
+{
+    bool active = false;
+    uint8_t owner = 0;
+    float x = 0, z = 0;
+    float yaw = 0;
+    float life = 0;
+};
+
+struct PuddleState
+{
+    bool active = false;
+    uint8_t owner = 0;
+    float x = 0, z = 0;
+    float life = 0;
+    float dps = 0;
+};
+
+struct GhostState
+{
+    bool active = false;
+    uint8_t owner = 0;
+    uint8_t targetId = 0xFF;
+    float x = 0, z = 0;
+    float angle = 0;      // orbit phase around the target
+    float orbitR = GhostOrbitStart;
+};
+
 // One tick of projectile flight: lifetime, movement, and the wall/obstacle
 // ricochet rules (each bounce consumes pr.bounces and multiplies speed and
 // damage by the baked per-bounce stats). Returns false when spent. THE single
@@ -306,6 +391,9 @@ struct GameState
     PlayerState players[MaxPlayers];
     Projectile projectiles[MaxProjectiles];
     SoldierState soldiers[MaxSoldiers];
+    SkullState skulls[MaxSkulls];
+    PuddleState puddles[MaxPuddles];
+    GhostState ghosts[MaxGhosts];
     uint32_t tick = 0;
     uint8_t phase = PhaseLobby;
     uint8_t winner = 0xFF;

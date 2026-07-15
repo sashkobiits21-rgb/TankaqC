@@ -135,6 +135,17 @@ Drive the hull with WASD, aim the turret with the mouse, shoot your friends.
   animation (duck / run + gun-up torso / death) and torso aim constraint
   locally from replicated state -- fire-and-forget, no corrections.
   `--soldiertest` grants the class solo against a parked dummy.
+- **NECROMANCER class** — chomping green skulls auto-launch at the nearest
+  enemy, fly straight (walls included) and burst into acid puddles that melt
+  anyone standing in them; kills raise ghosts that spiral inward through
+  walls and POSSESS the victim: deterministic chaos driving (prediction
+  replays it exactly), no firing, damage over time, and a pulsing blue
+  screen wash for the possessed player.
+- **RADAR class** — rockets carry thin red detection rings (nested thirds,
+  NESTED ARRAY adds levels); an enemy staying inside a ring past the lock
+  threshold detonates that ring and every ring inside it, damage stacking
+  per containing ring, with the explosion crown scaled to the ring radius.
+  Soldier rockets inherit the array when the owner also runs RADAR.
 - **Skinned meshes / rigs** — glTF/GLB skins + animations (Blender exports drop
   in): up to 64 bones, 4 influences, multi-part characters with material
   colors, CPU clip sampling with crossfades, GPU palette skinning on both
@@ -177,34 +188,4 @@ The post-build step copies `steam_api64.dll`, writes `steam_appid.txt` (480), an
 
 1. Both machines: Steam running and logged in, game built (same protocol version).
 2. Host clicks **HOST GAME** and shares the yellow **GAME CODE** from the HUD.
-3. Friend clicks **JOIN GAME**, pastes the code, **CONNECT** (relayed P2P — no port
-   forwarding). On the same LAN you can instead enter the host's `ip:27500`.
-
-Same-machine test: run one instance with `--host`, another with `--join=127.0.0.1:27500`
-— or just paste your own game code into JOIN; the game detects it and reroutes to
-loopback automatically (Steam cannot relay P2P to the same account).
-
-Join troubleshooting: the client shows relay warm-up status while connecting and times
-out after 30 s with the Steam end-reason; each process writes `tankaq_log_<pid>.txt`
-next to the exe with the full connection trace. The SteamID64 relay path between two
-*different* Steam accounts still needs a second account/machine to verify.
-
-## Command-line flags (testing)
-
-`--renderer=d3d11|d3d12`, `--solo`, `--host`, `--join=<code|ip[:port]>`, `--port=N`,
-`--drive` (auto-drive + auto-fire), `--frames=N --screenshot=file.png` (dump backbuffer
-and exit), `--winpos=x,y`, `--winsize=WxH`, `--novsync`, `--gi=0|1`, `--ao=0|1`,
-`--girays=1..16`, `--temporal=2..16`, `--gires=half|full`, `--shadows=0|1`,
-`--shadowres=1024|2048|4096`, `--shadowfilter=0|1|2`, `--aa=0|1`, `--boom`.
-
-## Layout
-
-```
-src/            Main.cpp (loop/menu/camera), Game.* (sim), GpuDetect.*, AssetLoad.*, Ui.*
-src/render/     IRenderer.h + RendererD3D11.cpp + RendererD3D12.cpp
-src/net/        Protocol.h (wire format) + Net.* (Steam transport, host/client)
-shaders/        Basic.hlsl (shared by both backends)
-assets/tank/    tank_baked.glb + tank_meta.txt + LICENSE.md (CC0 attribution)
-third_party/    cgltf, stb_image, stb_image_write, stb_easy_font, steamworks/ (gitignored)
-tools/          bake_tank.py (model bake: split/reorient/palette-texture)
-```
+3. Friend clicks 

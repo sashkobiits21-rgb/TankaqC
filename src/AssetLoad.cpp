@@ -995,6 +995,60 @@ ImageData MakeSolidTexture(uint8_t r, uint8_t g, uint8_t b)
     return img;
 }
 
+MeshData MakeDisc(float radius, float y, int segments)
+{
+    MeshData m;
+    Vertex c{};
+    c.px = 0; c.py = y; c.pz = 0;
+    c.nx = 0; c.ny = 1; c.nz = 0;
+    c.u = 0.5f; c.v = 0.5f;
+    m.verts.push_back(c);
+    for (int i = 0; i <= segments; ++i)
+    {
+        float a = XM_2PI * float(i) / float(segments);
+        Vertex v{};
+        v.px = sinf(a) * radius; v.py = y; v.pz = cosf(a) * radius;
+        v.nx = 0; v.ny = 1; v.nz = 0;
+        v.u = 0.5f + sinf(a) * 0.5f; v.v = 0.5f + cosf(a) * 0.5f;
+        m.verts.push_back(v);
+    }
+    for (int i = 1; i <= segments; ++i)
+    {
+        m.indices.push_back(0);
+        m.indices.push_back(uint32_t(i));
+        m.indices.push_back(uint32_t(i + 1));
+    }
+    ComputeTangents(m);
+    return m;
+}
+
+MeshData MakeRing(float radius, float width, int segments)
+{
+    MeshData m;
+    float r0 = radius - width * 0.5f, r1 = radius + width * 0.5f;
+    for (int i = 0; i <= segments; ++i)
+    {
+        float a = XM_2PI * float(i) / float(segments);
+        float s = sinf(a), c = cosf(a);
+        Vertex vin{}, vout{};
+        vin.px = s * r0; vin.py = 0; vin.pz = c * r0;
+        vout.px = s * r1; vout.py = 0; vout.pz = c * r1;
+        vin.nx = vout.nx = 0; vin.ny = vout.ny = 1; vin.nz = vout.nz = 0;
+        vin.u = float(i) / segments; vin.v = 0;
+        vout.u = float(i) / segments; vout.v = 1;
+        m.verts.push_back(vin);
+        m.verts.push_back(vout);
+    }
+    for (int i = 0; i < segments; ++i)
+    {
+        uint32_t a = uint32_t(i * 2), b = a + 1, c2 = a + 2, d = a + 3;
+        m.indices.push_back(a); m.indices.push_back(b); m.indices.push_back(c2);
+        m.indices.push_back(b); m.indices.push_back(d); m.indices.push_back(c2);
+    }
+    ComputeTangents(m);
+    return m;
+}
+
 // ------------------------------------------------------------ icon atlas
 
 namespace
@@ -1173,6 +1227,70 @@ void DrawIconGlyph(IconCanvas& c, int icon)
         c.Fill(7, 7, 8, 13, W);                                // handle
         c.Fill(4, 2, 5, 7, W); c.Fill(10, 2, 11, 7, W);        // forks
         c.Fill(5, 3, 10, 3, D);                                // band
+        break;
+    case 29: // NECRO CLASS: skull
+        c.Fill(4, 2, 11, 8, W); c.Fill(5, 9, 10, 10, W);
+        c.Fill(5, 4, 6, 6, D); c.Fill(9, 4, 10, 6, D);
+        c.Fill(5, 11, 5, 13, W); c.Fill(7, 11, 8, 13, W);
+        c.Fill(10, 11, 10, 13, W);
+        break;
+    case 30: // RADAR CLASS: hub with sweep + arcs
+        c.Fill(7, 7, 8, 8, W);
+        c.Fill(3, 3, 3, 5, W); c.Fill(4, 2, 6, 2, W);
+        c.Fill(12, 10, 12, 12, W); c.Fill(9, 13, 11, 13, W);
+        for (int i = 0; i < 5; ++i) c.Fill(8 + i, 7 - i, 8 + i, 7 - i, W);
+        break;
+    case 31: // BONE FURNACE: flame over a bone
+        c.Fill(7, 2, 8, 4, W); c.Fill(5, 5, 10, 8, W);
+        c.Fill(3, 11, 4, 12, W); c.Fill(11, 11, 12, 12, W);
+        c.Fill(4, 11, 11, 12, W);
+        break;
+    case 32: // CAUSTIC BREW: dripping flask
+        c.Fill(6, 2, 9, 3, W); c.Fill(7, 4, 8, 6, W);
+        c.Fill(5, 7, 10, 12, W); c.Fill(6, 9, 9, 11, D);
+        c.Fill(12, 5, 12, 6, W); c.Fill(3, 8, 3, 9, W);
+        break;
+    case 33: // LINGERING ROT: droplets over a pool
+        c.Fill(4, 2, 4, 4, W); c.Fill(7, 1, 8, 4, W); c.Fill(11, 3, 11, 5, W);
+        c.Fill(3, 9, 12, 11, W); c.Fill(2, 10, 13, 10, W);
+        break;
+    case 34: // DEEP GRIP: grabbing hand
+        c.Fill(4, 3, 4, 7, W); c.Fill(6, 2, 6, 7, W);
+        c.Fill(8, 2, 8, 7, W); c.Fill(10, 3, 10, 7, W);
+        c.Fill(4, 8, 11, 12, W); c.Fill(12, 6, 12, 9, W);
+        break;
+    case 35: // SOUL LEECH: spiral
+        c.Fill(4, 3, 11, 3, W); c.Fill(11, 4, 11, 9, W);
+        c.Fill(6, 9, 11, 9, W); c.Fill(6, 6, 6, 9, W);
+        c.Fill(6, 6, 9, 6, W); c.Fill(9, 6, 9, 7, W);
+        c.Fill(2, 3, 2, 12, D);
+        break;
+    case 36: // FAST LOCK: crosshair
+        c.Fill(7, 2, 8, 5, W); c.Fill(7, 10, 8, 13, W);
+        c.Fill(2, 7, 5, 8, W); c.Fill(10, 7, 13, 8, W);
+        c.Fill(7, 7, 8, 8, W);
+        break;
+    case 37: // WIDE SCAN: expanding arcs
+        c.Fill(3, 7, 4, 8, W);
+        c.Fill(6, 5, 6, 10, W); c.Fill(7, 4, 7, 4, W); c.Fill(7, 11, 7, 11, W);
+        c.Fill(10, 3, 10, 12, W); c.Fill(11, 2, 11, 2, W); c.Fill(11, 13, 11, 13, W);
+        break;
+    case 38: // PAYLOAD: bomb
+        c.Fill(5, 6, 10, 12, W); c.Fill(4, 7, 11, 11, W);
+        c.Fill(7, 4, 8, 5, W); c.Fill(9, 3, 10, 3, W);
+        c.Fill(11, 1, 12, 2, D);
+        break;
+    case 39: // SHARP PING: dot with one tight ring
+        c.Fill(7, 7, 8, 8, W);
+        c.Fill(5, 4, 10, 4, W); c.Fill(5, 11, 10, 11, W);
+        c.Fill(4, 5, 4, 10, W); c.Fill(11, 5, 11, 10, W);
+        break;
+    case 40: // NESTED ARRAY: concentric squares
+        c.Fill(2, 2, 13, 2, W); c.Fill(2, 13, 13, 13, W);
+        c.Fill(2, 3, 2, 12, W); c.Fill(13, 3, 13, 12, W);
+        c.Fill(5, 5, 10, 5, W); c.Fill(5, 10, 10, 10, W);
+        c.Fill(5, 6, 5, 9, W); c.Fill(10, 6, 10, 9, W);
+        c.Fill(7, 7, 8, 8, W);
         break;
     default: // FIELD KIT: wrench
         c.Fill(2, 2, 5, 3, W); c.Fill(2, 5, 5, 6, W); c.Fill(4, 3, 5, 5, W);

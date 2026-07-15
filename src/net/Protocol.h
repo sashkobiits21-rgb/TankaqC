@@ -18,7 +18,10 @@ namespace tankaq::net
 // animation locally from this state (fire-and-forget visuals).
 // v13: soldiers fire pool rockets, base SoldierHealth 30 -- kBaseStats is
 // part of the derived-stats contract, so mixed versions must not pair.
-constexpr uint8_t ProtocolVersion = 13;
+// v14: NECROMANCER (skulls / acid puddles / possessing ghosts) and RADAR
+// (ring detonation rockets): Skull/Puddle/Ghost arrays, possession timer in
+// PlayerNet, radar range + ring count per projectile.
+constexpr uint8_t ProtocolVersion = 14;
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t
@@ -144,13 +147,39 @@ struct PlayerNet
     uint8_t flags = 0;     // bit0 hitFlash, bit1 muzzleFlash
     uint8_t fuel255 = 0;       // boost fuel / capacity, quantized to 0..255
     uint8_t regenWait32 = 0;   // regen delay remaining, 1/32 s units
+    uint8_t possess32 = 0;     // possession remaining, 1/32 s (0 = free)
 };
 
 struct ProjectileNet
 {
     uint8_t active = 0;
+    uint8_t radar16 = 0;      // radar ring radius * 16 (0 = not radar)
+    uint8_t radarRings = 0;   // nested ring levels
     float x = 0, y = 0, z = 0;
     float yaw = 0;
+};
+
+struct SkullNet
+{
+    uint8_t active = 0;
+    uint8_t owner = 0;
+    float x = 0, z = 0;
+    float yaw = 0;
+};
+
+struct PuddleNet
+{
+    uint8_t active = 0;
+    uint8_t owner = 0;
+    uint8_t life16 = 0;   // remaining life * 16, capped (fade-out on client)
+    float x = 0, z = 0;
+};
+
+struct GhostNet
+{
+    uint8_t active = 0;
+    uint8_t owner = 0;
+    float x = 0, z = 0;
 };
 
 struct SoldierNet
@@ -176,6 +205,9 @@ struct MsgSnapshot
     PlayerNet players[MaxPlayers];
     ProjectileNet projectiles[MaxProjectiles];
     SoldierNet soldiers[MaxSoldiers];
+    SkullNet skulls[MaxSkulls];
+    PuddleNet puddles[MaxPuddles];
+    GhostNet ghosts[MaxGhosts];
 };
 
 #pragma pack(pop)

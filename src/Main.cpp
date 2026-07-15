@@ -155,6 +155,7 @@ Options ParseOptions(const std::string& cmd)
     o.rigTest = cmd.find("--rigtest") != std::string::npos;
     o.classTest = cmd.find("--classtest") != std::string::npos;
     o.soldierTest = cmd.find("--soldiertest") != std::string::npos;
+    o.demoClass = GetArg(cmd, "--demo=");
     if (!(v = GetArg(cmd, "--winsize=")).empty())
         sscanf_s(v.c_str(), "%dx%d", &o.winW, &o.winH);
     return o;
@@ -213,7 +214,38 @@ void ApplySnapshot(const net::MsgSnapshot& s)
             p.x = in.x; p.z = in.z;
             p.hullYaw = in.hullYaw;
             p.turretYaw = in.turretYaw;
+            p.possessTimer = in.possess32 / 32.0f;   // ghost-tint on remotes
         }
+    }
+
+    // necromancer entities + radar fields: authoritative adoption, visuals
+    // interpolate from the snapshot pair
+    for (int i = 0; i < MaxSkulls; ++i)
+    {
+        const net::SkullNet& in = s.skulls[i];
+        SkullState& sk = g.game.skulls[i];
+        sk.active = in.active != 0;
+        if (sk.active) { sk.owner = in.owner; sk.x = in.x; sk.z = in.z; sk.yaw = in.yaw; }
+    }
+    for (int i = 0; i < MaxPuddles; ++i)
+    {
+        const net::PuddleNet& in = s.puddles[i];
+        PuddleState& pu = g.game.puddles[i];
+        pu.active = in.active != 0;
+        if (pu.active) { pu.owner = in.owner; pu.x = in.x; pu.z = in.z;
+                         pu.life = in.life16 / 16.0f; }
+    }
+    for (int i = 0; i < MaxGhosts; ++i)
+    {
+        const net::GhostNet& in = s.ghosts[i];
+        GhostState& gh = g.game.ghosts[i];
+        gh.active = in.active != 0;
+        if (gh.active) { gh.owner = in.owner; gh.x = in.x; gh.z = in.z; }
+    }
+    for (int i = 0; i < MaxProjectiles; ++i)
+    {
+        g.game.projectiles[i].radarRange = s.projectiles[i].radar16 / 16.0f;
+        g.game.projectiles[i].radarRings = s.projectiles[i].radarRings;
     }
 
     // soldiers: adopt the authoritative state wholesale; rendering
@@ -256,6 +288,8 @@ void ApplySnapshot(const net::MsgSnapshot& s)
         me.boostFuel = (own.fuel255 / 255.0f)
                      * me.stats[int(Stat::BoostFuel)];
         me.boostRegenWait = own.regenWait32 / 32.0f;
+        // ...and possession: the replay drives the same deterministic chaos
+        me.possessTimer = own.possess32 / 32.0f;
         while (!g.pendingInputs.empty() && g.pendingInputs.front().seq <= own.ackSeq)
             g.pendingInputs.erase(g.pendingInputs.begin());
         for (const auto& pi : g.pendingInputs)
@@ -345,6 +379,7 @@ net::MsgSnapshot BuildSnapshot()
         float cap = std::max(p.stats[int(Stat::BoostFuel)], 0.01f);
         out.fuel255 = uint8_t(std::clamp(p.boostFuel / cap, 0.0f, 1.0f) * 255.0f);
         out.regenWait32 = uint8_t(std::min(p.boostRegenWait * 32.0f, 255.0f));
+        out.possess32 = uint8_t(std::min(p.possessTimer * 32.0f, 255.0f));
         for (int s = 0; s < NumOfferSlots; ++s)
         {
             out.offers[s].active = p.offers[s].active;
@@ -363,7 +398,34 @@ net::MsgSnapshot BuildSnapshot()
         const Projectile& pr = g.game.projectiles[i];
         net::ProjectileNet& out = s.projectiles[i];
         out.active = pr.active ? 1 : 0;
+        out.radar16 = uint8_t(std::min(pr.radarRange * 16.0f, 255.0f));
+        out.radarRings = uint8_t(pr.radarRings);
         out.x = pr.x; out.y = pr.y; out.z = pr.z; out.yaw = pr.yaw;
+    }
+    for (int i = 0; i < MaxSkulls; ++i)
+    {
+        const SkullState& sk = g.game.skulls[i];
+        net::SkullNet& out = s.skulls[i];
+        out.active = sk.active ? 1 : 0;
+        out.owner = sk.owner;
+        out.x = sk.x; out.z = sk.z; out.yaw = sk.yaw;
+    }
+    for (int i = 0; i < MaxPuddles; ++i)
+    {
+        const PuddleState& pu = g.game.puddles[i];
+        net::PuddleNet& out = s.puddles[i];
+        out.active = pu.active ? 1 : 0;
+        out.owner = pu.owner;
+        out.life16 = uint8_t(std::min(pu.life * 16.0f, 255.0f));
+        out.x = pu.x; out.z = pu.z;
+    }
+    for (int i = 0; i < MaxGhosts; ++i)
+    {
+        const GhostState& gh = g.game.ghosts[i];
+        net::GhostNet& out = s.ghosts[i];
+        out.active = gh.active ? 1 : 0;
+        out.owner = gh.owner;
+        out.x = gh.x; out.z = gh.z;
     }
     for (int i = 0; i < MaxSoldiers; ++i)
     {
@@ -582,6 +644,20 @@ void UpdateVfxFromSim()
         if (g.prevProjActive[i] && !pr.active && InSession())
         {
             SpawnExplosion(g.prevProjPos[i]);
+            // RADAR detonation: amount and spread of smoke scale with the
+            // ring radius -- a wide array pops a wide crown of bursts
+            if (g.prevProjRadar[i] > 0.0f)
+            {
+                float rr = g.prevProjRadar[i];
+                int extra = 2 + int(rr * 1.4f);
+                for (int b = 0; b < extra; ++b)
+                {
+                    float a = XM_2PI * float(b) / float(extra);
+                    SpawnExplosion({ g.prevProjPos[i].x + sinf(a) * rr * 0.55f,
+                                     0.8f,
+                                     g.prevProjPos[i].z + cosf(a) * rr * 0.55f });
+                }
+            }
             // authority: the veiled server twin died, so our locally rendered
             // provisional dies with it (the explosion above is the boom)
             if (g.projVeiledBy[i] >= 0)
@@ -590,6 +666,7 @@ void UpdateVfxFromSim()
                 g.projVeiledBy[i] = -1;
             }
         }
+        g.prevProjRadar[i] = pr.active ? pr.radarRange : 0.0f;
         if (!g.prevProjActive[i] && pr.active && InSession())
         {
             if (g.projMatchedProv[i])
@@ -611,6 +688,24 @@ void UpdateVfxFromSim()
         if (pr.active)
             g.prevProjPos[i] = XMFLOAT3(pr.x, pr.y, pr.z);
     }
+    // skulls burst into acid: one small puff where each one died
+    for (int i = 0; i < MaxSkulls; ++i)
+    {
+        const SkullState& sk = g.game.skulls[i];
+        if (g.prevSkullActive[i] && !sk.active && InSession())
+        {
+            if (g.bursts.size() >= 16)
+                g.bursts.erase(g.bursts.begin());
+            g.bursts.push_back({ g.prevSkullPos[i], g.time });
+            snd::Play(snd::Sfx::Glass,
+                      SndDistVol(g.prevSkullPos[i].x, g.prevSkullPos[i].z, 0.4f),
+                      0.8f * SndJitter(0.1f));
+        }
+        g.prevSkullActive[i] = sk.active;
+        if (sk.active)
+            g.prevSkullPos[i] = XMFLOAT3(sk.x, SkullY, sk.z);
+    }
+
     // prune dead effects
     while (!g.bursts.empty() && g.time - g.bursts.front().t0 > 3.0)
         g.bursts.erase(g.bursts.begin());
@@ -700,9 +795,9 @@ void StartSolo()
     SetPlayerName(0, "YOU");
     if (g.opt.rich || g.opt.shopTest)
         g.game.players[0].money = 500;
-    if (g.opt.soldierTest)
+    if (g.opt.soldierTest || !g.opt.demoClass.empty())
     {
-        // a parked target so the soldiers have someone to fight
+        // a parked target so the summons/rockets have someone to fight
         g.game.SpawnPlayer(1);
         SetPlayerName(1, "DUMMY");
         g.game.players[1].ready = 1;
@@ -880,6 +975,8 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
         bool dead = p.health <= 0;
         float sink = dead ? -0.35f : 0.0f;
         XMFLOAT4 tint = kPlayerTint[i % MaxLobbyPlayers];   // per-player identity
+        if (p.possessTimer > 0)
+            tint = { 0.45f, 0.6f, 1.5f, 0.15f };            // ghost-ridden blue
         if (p.hitFlash > 0)
             tint = { 1.0f, 0.25f, 0.2f, 0.35f };
         if (dead)
@@ -959,6 +1056,118 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
         ro.deformDist = sqrtf(sdx * sdx + sdz * sdz) / kRocketLenScale;
         ro.deformAge = float(g.time - g.projSpawnTime[i]);
         frame.objects.push_back(ro);
+
+        // RADAR rockets: thin red detection rings (nested thirds)
+        if (pr.radarRange > 0.0f)
+        {
+            float rr = pr.radarRange;
+            for (int k = 0; k <= pr.radarRings; ++k, rr /= 3.0f)
+                frame.objects.push_back({ g.meshRing, g.texWhite,
+                    Store(XMMatrixScaling(rr, 1.0f, rr)
+                          * XMMatrixTranslation(px, py, pz)),
+                    { 1.0f, 0.14f, 0.1f, 1.0f }, true });
+        }
+    }
+
+    // ------------------------------------------------ necromancer visuals
+    // skulls: green cranium + flapping jaw, homing at head height
+    for (int i = 0; i < MaxSkulls; ++i)
+    {
+        const SkullState& sk = g.game.skulls[i];
+        if (!sk.active)
+            continue;
+        float sx = sk.x, sz = sk.z, syaw = sk.yaw;
+        if (clientMode)
+        {
+            if (g.haveTwoSnaps && g.snapPrev.skulls[i].active
+                && g.snapCurr.skulls[i].active)
+            {
+                const net::SkullNet& a = g.snapPrev.skulls[i];
+                const net::SkullNet& b = g.snapCurr.skulls[i];
+                float t = std::clamp(float((g.time - g.snapCurrTime)
+                                           / (SnapshotEveryTicks * TickDt)),
+                                     0.0f, 1.0f);
+                sx = a.x + (b.x - a.x) * t;
+                sz = a.z + (b.z - a.z) * t;
+                syaw = LerpAngle(a.yaw, b.yaw, t);
+            }
+        }
+        else if (g.prevTick.skulls[i].active)
+        {
+            const SkullState& a = g.prevTick.skulls[i];
+            sx = a.x + (sk.x - a.x) * g.tickAlpha;
+            sz = a.z + (sk.z - a.z) * g.tickAlpha;
+            syaw = LerpAngle(a.yaw, sk.yaw, g.tickAlpha);
+        }
+        float bob = sinf(float(g.time) * 5.0f + float(i)) * 0.08f;
+        XMFLOAT4 green{ 0.35f, 1.0f, 0.35f, 0.25f };
+        frame.objects.push_back({ g.meshSkull, g.texWhite,
+            Store(XMMatrixRotationY(syaw)
+                  * XMMatrixTranslation(sx, SkullY + bob, sz)),
+            green, true });
+        // jaw: hinged at the back, chomping
+        float open = 0.30f + 0.28f * sinf(float(g.time) * 8.0f + float(i) * 1.7f);
+        XMMATRIX jaw = XMMatrixTranslation(0, 0, 0.14f)      // hinge offset
+                     * XMMatrixRotationX(open)               // chomp
+                     * XMMatrixTranslation(0, -0.16f, -0.02f)
+                     * XMMatrixRotationY(syaw)
+                     * XMMatrixTranslation(sx, SkullY + bob, sz);
+        frame.objects.push_back({ g.meshJaw, g.texWhite, Store(jaw),
+                                  green, true });
+    }
+
+    // acid puddles: flat green discs, shrinking out in their last second
+    for (int i = 0; i < MaxPuddles; ++i)
+    {
+        const PuddleState& pu = g.game.puddles[i];
+        if (!pu.active)
+            continue;
+        float fade = std::clamp(pu.life, 0.0f, 1.0f);
+        float pulse = 1.0f + 0.05f * sinf(float(g.time) * 4.0f + float(i));
+        float s = PuddleRadius * pulse * (0.35f + 0.65f * fade);
+        frame.objects.push_back({ g.meshPuddle, g.texWhite,
+            Store(XMMatrixScaling(s, 1.0f, s)
+                  * XMMatrixTranslation(pu.x, 0.0f, pu.z)),
+            { 0.3f, 0.9f, 0.18f, 0.3f }, true });
+    }
+
+    // ghosts: pale wisps spiraling toward their victim (through walls)
+    for (int i = 0; i < MaxGhosts; ++i)
+    {
+        const GhostState& gh = g.game.ghosts[i];
+        if (!gh.active)
+            continue;
+        float gx = gh.x, gz = gh.z;
+        if (clientMode)
+        {
+            if (g.haveTwoSnaps && g.snapPrev.ghosts[i].active
+                && g.snapCurr.ghosts[i].active)
+            {
+                const net::GhostNet& a = g.snapPrev.ghosts[i];
+                const net::GhostNet& b = g.snapCurr.ghosts[i];
+                float t = std::clamp(float((g.time - g.snapCurrTime)
+                                           / (SnapshotEveryTicks * TickDt)),
+                                     0.0f, 1.0f);
+                gx = a.x + (b.x - a.x) * t;
+                gz = a.z + (b.z - a.z) * t;
+            }
+        }
+        else if (g.prevTick.ghosts[i].active)
+        {
+            const GhostState& a = g.prevTick.ghosts[i];
+            gx = a.x + (gh.x - a.x) * g.tickAlpha;
+            gz = a.z + (gh.z - a.z) * g.tickAlpha;
+        }
+        float bob = sinf(float(g.time) * 2.6f + float(i) * 2.1f) * 0.18f;
+        float sway = 1.0f + 0.08f * sinf(float(g.time) * 3.7f + float(i));
+        frame.objects.push_back({ g.meshFlash, g.texWhite,
+            Store(XMMatrixScaling(0.55f * sway, 0.95f, 0.55f * sway)
+                  * XMMatrixTranslation(gx, 1.15f + bob, gz)),
+            { 0.72f, 0.85f, 1.25f, 0.55f }, true });
+        frame.objects.push_back({ g.meshFlash, g.texWhite,   // wispy tail
+            Store(XMMatrixScaling(0.3f, 0.45f, 0.3f)
+                  * XMMatrixTranslation(gx, 0.55f + bob * 0.5f, gz)),
+            { 0.72f, 0.85f, 1.25f, 0.35f }, true });
     }
 
     // soldier summons: skinned, animated locally from the replicated state
@@ -1149,6 +1358,15 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
         ro.deformDist = sqrtf(sdx * sdx + sdz * sdz) / kRocketLenScale;
         ro.deformAge = float(g.time - pv.born);
         frame.objects.push_back(ro);
+        if (pv.sim.radarRange > 0.0f)
+        {
+            float rr = pv.sim.radarRange;
+            for (int k = 0; k <= pv.sim.radarRings; ++k, rr /= 3.0f)
+                frame.objects.push_back({ g.meshRing, g.texWhite,
+                    Store(XMMatrixScaling(rr, 1.0f, rr)
+                          * XMMatrixTranslation(pv.sim.x, pv.sim.y, pv.sim.z)),
+                    { 1.0f, 0.14f, 0.1f, 1.0f }, true });
+        }
     }
 }
 
@@ -1616,6 +1834,23 @@ bool CreateAssets()
     g.texFlatNRA = r->CreateTexture(flatNRA.rgba.data(), flatNRA.width, flatNRA.height);
     ImageData icons = MakeIconAtlas(32, UpgradeCount);
     g.texIconAtlas = r->CreateTexture(icons.rgba.data(), icons.width, icons.height);
+
+    // necromancer + radar visuals: green skull (cranium + jaw), acid disc,
+    // and the thin red radar annulus (scaled per ring at draw time)
+    {
+        MeshData cranium = MakeSphere(0.34f, 12, 9);
+        g.meshSkull = r->CreateMesh(cranium.verts.data(), cranium.verts.size(),
+                                    cranium.indices.data(), cranium.indices.size());
+        MeshData jawM = MakeBox(0.20f, 0.09f, 0.16f, 1.0f);
+        g.meshJaw = r->CreateMesh(jawM.verts.data(), jawM.verts.size(),
+                                  jawM.indices.data(), jawM.indices.size());
+        MeshData disc = MakeDisc(1.0f, 0.04f, 24);
+        g.meshPuddle = r->CreateMesh(disc.verts.data(), disc.verts.size(),
+                                     disc.indices.data(), disc.indices.size());
+        MeshData ring = MakeRing(1.0f, 0.06f, 48);
+        g.meshRing = r->CreateMesh(ring.verts.data(), ring.verts.size(),
+                                   ring.indices.data(), ring.indices.size());
+    }
 
     // The soldier rig is GAMEPLAY now (summons), not just the --rigtest demo:
     // always load it, resolve the clips the summon needs BY NAME (loud on
@@ -2246,7 +2481,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                     // the input is pressed; the server's rocket adopts it on
                     // arrival (see ApplySnapshot matching)
                     g.predCooldown = std::max(0.0f, g.predCooldown - TickDt);
-                    if ((local.buttons & BtnFire) && g.predCooldown <= 0.0f)
+                    if ((local.buttons & BtnFire) && g.predCooldown <= 0.0f
+                        && me.possessTimer <= 0.0f)
                     {
                         for (auto& pv : g.provRockets)
                         {
@@ -2262,6 +2498,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                             pv.sim.bounces = int(me.stats[int(Stat::Bounces)] + 0.5f);
                             pv.sim.bounceSpd = me.stats[int(Stat::BounceSpeed)];
                             pv.sim.bounceDmg = me.stats[int(Stat::BounceDamage)];
+                            if (HasClass(me, ClassRadar))
+                            {
+                                // rings render on the predicted rocket too
+                                pv.sim.radarRange = me.stats[int(Stat::RadarRange)];
+                                pv.sim.radarRings = std::clamp(
+                                    int(me.stats[int(Stat::RadarRings)] + 0.5f),
+                                    0, MaxRadarRings - 1);
+                            }
                             pv.sim.life = ProjectileLife;
                             pv.born = g.time;
                             pv.spawn = mz;
@@ -2430,8 +2674,26 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                         int(me.stats[int(Stat::SoldierMax)] + 0.5f),
                         me.stats[int(Stat::SoldierCooldown)]);
                 }
+                if (g.opt.demoClass == "necro")
+                {
+                    PlayerState& me = g.game.players[g.myId];
+                    me.owned.push_back(uint8_t(UpgradeId::NecroClass));
+                    me.owned.push_back(uint8_t(UpgradeId::CausticBrew));
+                    g.game.RecalcStats(g.myId);
+                    Log("demo: granted NECRO class");
+                }
+                else if (g.opt.demoClass == "radar")
+                {
+                    PlayerState& me = g.game.players[g.myId];
+                    me.owned.push_back(uint8_t(UpgradeId::RadarClass));
+                    me.owned.push_back(uint8_t(UpgradeId::NestedArray));
+                    g.game.RecalcStats(g.myId);
+                    Log("demo: granted RADAR class (rings %d)",
+                        int(me.stats[int(Stat::RadarRings)] + 0.5f));
+                }
             }
-            if ((g.opt.shopTest || g.opt.autoDrive || g.opt.soldierTest)
+            if ((g.opt.shopTest || g.opt.autoDrive || g.opt.soldierTest
+                 || !g.opt.demoClass.empty())
                 && g.screen == Screen::InGame
                 && ph == PhaseLobby && !g.game.players[g.myId].ready)
                 ToggleReady();
@@ -2509,6 +2771,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                 break;
             }
         }
+
+        // class demos: periodically pull the local trigger so the radar
+        // rings ride a rocket across the frame (space = the real fire path)
+        if (!g.opt.demoClass.empty() && g.screen == Screen::InGame)
+            g.keys[VK_SPACE] = (g.frameCounter % 200) < 10;
 
         UpdateVfxFromSim();
 
@@ -2594,6 +2861,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                               SndDistVol(s.x, s.z, 0.34f),
                               1.25f * SndJitter(0.10f));
                 g.soldierPrevMuzzle[i] = muzzle;
+            }
+
+            // possession start: an eerie shatter for the victim's speakers
+            {
+                bool possessed = InSession()
+                              && g.game.players[g.myId].possessTimer > 0.0f;
+                if (possessed && !g.prevPossessed)
+                    snd::Play(snd::Sfx::Glass, 0.6f, 0.55f);
+                g.prevPossessed = possessed;
             }
 
             float intensity = 0.0f;
