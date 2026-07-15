@@ -100,6 +100,8 @@ struct App
     // hull angular velocity for the rotation sound layer
     float sndPrevHullYaw = 0;
     bool sndHullYawValid = false;
+    // frame spike diagnostics
+    bool dbgSnapThisFrame = false;       // a snapshot applied this frame
     // quick match state
     bool searching = false;              // lobby search in flight
     int searchNeed = 2;                  // chosen queue size (FIND MATCH)
@@ -330,6 +332,7 @@ Options ParseOptions(const std::string& cmd)
 
 void ApplySnapshot(const net::MsgSnapshot& s)
 {
+    g.dbgSnapThisFrame = true;
     // keep the last two snapshots for remote-player render interpolation
     g.snapPrev = g.haveSnap ? g.snapCurr : s;
     g.snapCurr = s;
@@ -2448,7 +2451,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             fpsFrames = 0;
         }
 
+        LARGE_INTEGER dbgA, dbgB, dbgC, dbgD;
+        QueryPerformanceCounter(&dbgA);
         g.net.Poll(ev);
+        QueryPerformanceCounter(&dbgB);
 
         // keep the public-lobby advert fresh (push on change only)
         if (g.isHost && g.online && g.net.hasPublicLobby())
@@ -2565,6 +2571,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                 }
             }
         }
+        QueryPerformanceCounter(&dbgC);
         g.tickAlpha = float(accumulator / TickDt);
 
         // glide the reconciliation-error render offset to zero (~80 ms)
@@ -2851,6 +2858,41 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         }
 
         g.renderer->RenderFrame(frame);
+        QueryPerformanceCounter(&dbgD);
+
+        // Background throttle. A covered/unfocused window's Present(1) stops
+        // blocking on vblank (DXGI occlusion), so a background instance runs
+        // unthrottled (~1400 fps measured) and starves the GPU -- the focused
+        // instance then stutters. Classic symptom when testing host + client
+        // on one PC. Cap background instances at ~60 fps; the sim accumulator
+        // is fixed-timestep, so simulation and networking are unaffected.
+        if (GetForegroundWindow() != g.hwnd)
+            Sleep(16);
+
+        // frame spike diagnostics: when a frame takes 3x the rolling average
+        // (and > 8 ms), log where the time went so render / sim / network
+        // hitches are distinguishable
+        {
+            static double avgMs = 5.0;
+            static double prevPoll = 0, prevSim = 0, prevRender = 0;
+            double fq = double(freq.QuadPart);
+            double curPoll = double(dbgB.QuadPart - dbgA.QuadPart) * 1000.0 / fq;
+            double curSim = double(dbgC.QuadPart - dbgB.QuadPart) * 1000.0 / fq;
+            double curRender = double(dbgD.QuadPart - dbgC.QuadPart) * 1000.0 / fq;
+            double frameMs = g.frameDt * 1000.0;   // previous frame's total
+            if (frameMs > avgMs * 3.0 && frameMs > 8.0 && g.frameCounter > 400)
+            {
+                Log("SPIKE %.2fms (avg %.2f) prev[poll=%.2f sim=%.2f rend=%.2f]"
+                    " cur[poll=%.2f sim=%.2f rend=%.2f] snap=%d pend=%zu t=%.1f",
+                    frameMs, avgMs, prevPoll, prevSim, prevRender,
+                    curPoll, curSim, curRender,
+                    g.dbgSnapThisFrame ? 1 : 0,
+                    g.pendingInputs.size(), g.time);
+            }
+            avgMs += (frameMs - avgMs) * 0.02;
+            prevPoll = curPoll; prevSim = curSim; prevRender = curRender;
+            g.dbgSnapThisFrame = false;
+        }
         ++g.frameCounter;
 
         if (g.opt.screenshotAfterFrames > 0
