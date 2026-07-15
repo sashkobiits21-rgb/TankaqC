@@ -17,6 +17,7 @@
 #include "render/IRenderer.h"
 #include "net/Net.h"
 #include "Sound.h"
+#include <deque>
 
 using namespace DirectX;
 using namespace tankaq;
@@ -127,7 +128,14 @@ struct App
     struct PendingInput { uint32_t seq; InputCmd cmd; };
     std::vector<PendingInput> pendingInputs;
     PlayerState predPrev{}, predCurr{};     // client: local tank tick pair
-    uint32_t inputSeqs[MaxPlayers]{};       // host: last input seq per player
+    uint32_t inputSeqs[MaxPlayers]{};       // host: last input seq SIMULATED
+    // host: per-client input jitter buffer -- exactly one input is consumed
+    // per tick, in order, so no client input is ever duplicated or skipped
+    // by arrival-timing jitter (that was a steady source of prediction drift)
+    std::deque<net::MsgInput> inputQueue[MaxPlayers];
+    // client: reconciliation corrections become a render-space offset that
+    // decays over ~80 ms instead of snapping the visual (freeze + teleport)
+    float predErrX = 0, predErrZ = 0, predErrYaw = 0;
 
     // game-code click-to-copy
     float codeRect[4]{};                    // x, y, w, h
@@ -375,6 +383,10 @@ void ApplySnapshot(const net::MsgSnapshot& s)
     if (own.active)
     {
         PlayerState& me = g.game.players[g.myId];
+        bool hadPred = g.predCurr.active;
+        float beforeX = g.predCurr.x, beforeZ = g.predCurr.z;
+        float beforeYaw = g.predCurr.hullYaw;
+
         me.x = own.x; me.z = own.z;
         me.hullYaw = own.hullYaw;
         me.turretYaw = own.turretYaw;
@@ -382,6 +394,24 @@ void ApplySnapshot(const net::MsgSnapshot& s)
             g.pendingInputs.erase(g.pendingInputs.begin());
         for (const auto& pi : g.pendingInputs)
             g.game.AdvanceMovement(g.myId, pi.cmd);
+
+        // Never snap the rendered tank: any difference between what we were
+        // predicting and the reconciled result becomes a render-space error
+        // offset that decays over ~80 ms (GetRenderPlayer adds it). Large
+        // differences are real teleports (respawn) and do snap.
+        float dx = beforeX - me.x, dz = beforeZ - me.z;
+        bool playing = s.phase == PhasePlaying || s.phase == PhaseOvertime;
+        if (hadPred && playing && dx * dx + dz * dz < 9.0f)
+        {
+            g.predErrX = std::clamp(g.predErrX + dx, -2.0f, 2.0f);
+            g.predErrZ = std::clamp(g.predErrZ + dz, -2.0f, 2.0f);
+            g.predErrYaw = std::clamp(
+                g.predErrYaw + WrapAngle(beforeYaw - me.hullYaw), -1.2f, 1.2f);
+        }
+        else
+        {
+            g.predErrX = g.predErrZ = g.predErrYaw = 0.0f;
+        }
         g.predPrev = g.predCurr = me;
     }
 
@@ -464,9 +494,12 @@ void GetRenderPlayer(int id, float& x, float& z, float& hullYaw, float& turretYa
     else if (id == g.myId)
     {
         float t = g.tickAlpha;
-        x = g.predPrev.x + (g.predCurr.x - g.predPrev.x) * t;
-        z = g.predPrev.z + (g.predCurr.z - g.predPrev.z) * t;
-        hullYaw = LerpAngle(g.predPrev.hullYaw, g.predCurr.hullYaw, t);
+        // predicted pair + the decaying reconciliation-error offset: server
+        // corrections glide out instead of freezing/teleporting the tank
+        x = g.predPrev.x + (g.predCurr.x - g.predPrev.x) * t + g.predErrX;
+        z = g.predPrev.z + (g.predCurr.z - g.predPrev.z) * t + g.predErrZ;
+        hullYaw = WrapAngle(LerpAngle(g.predPrev.hullYaw, g.predCurr.hullYaw, t)
+                            + g.predErrYaw);
         turretYaw = LerpAngle(g.predPrev.turretYaw, g.predCurr.turretYaw, t);
     }
     else if (g.haveTwoSnaps)
@@ -658,6 +691,9 @@ void ResetNetSimState()
     g.inputSeq = 0;
     for (uint32_t& s : g.inputSeqs) s = 0;
     for (InputCmd& c : g.inputs) c = InputCmd{};
+    for (auto& q : g.inputQueue) q.clear();
+    g.predErrX = g.predErrZ = g.predErrYaw = 0.0f;
+    g.predPrev = g.predCurr = PlayerState{};
     for (auto& a : g.cardAnims) a.active = false;
     g.shopBurnFx.clear();
     g.ejectFx.clear();
@@ -2323,7 +2359,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             g.game.players[pid].hullYaw = g.game.players[pid].turretYaw = yaw;
         }
     };
-    ev.onPlayerLeft = [](int pid) { g.game.RemovePlayer(pid); };
+    ev.onPlayerLeft = [](int pid)
+    {
+        g.game.RemovePlayer(pid);
+        g.inputQueue[pid].clear();
+        g.inputs[pid] = InputCmd{};
+    };
     ev.onReady = [](int pid, bool ready)
     {
         Log("Host: ready message from player %d -> %d (phase=%d)",
@@ -2333,13 +2374,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     };
     ev.onInput = [](int pid, const net::MsgInput& m)
     {
-        if (m.seq > g.inputSeqs[pid])   // ignore late/out-of-order packets
+        // queue in order; the tick loop consumes exactly one per tick
+        auto& q = g.inputQueue[pid];
+        uint32_t lastSeen = q.empty() ? g.inputSeqs[pid] : q.back().seq;
+        if (m.seq <= lastSeen)
+            return;                     // stale or out-of-order packet
+        q.push_back(m);
+        while (q.size() > 8)            // pathological backlog: fast-forward
         {
-            g.inputs[pid].buttons = m.buttons;
-            g.inputs[pid].moveX = m.moveX;
-            g.inputs[pid].moveZ = m.moveZ;
-            g.inputs[pid].turretYaw = m.turretYaw;
-            g.inputSeqs[pid] = m.seq;
+            g.inputSeqs[pid] = q.front().seq;
+            q.pop_front();
         }
     };
     ev.onPurchase = [](int pid, int slot)
@@ -2435,6 +2479,29 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             if (g.isHost)
             {
                 g.inputs[g.myId] = local;
+                // Jitter buffer: consume exactly one queued input per client
+                // per tick, in order, acking only what was actually simulated
+                // -- the client's replay then matches the host's integration.
+                // Starved (packet late): reuse the previous input and leave
+                // the ack alone so the client keeps replaying that tick.
+                for (int pid = 1; pid < MaxLobbyPlayers; ++pid)
+                {
+                    auto& q = g.inputQueue[pid];
+                    while (q.size() > 3)   // creeping backlog: fast-forward
+                    {
+                        g.inputSeqs[pid] = q.front().seq;
+                        q.pop_front();
+                    }
+                    if (q.empty())
+                        continue;
+                    const net::MsgInput& m = q.front();
+                    g.inputs[pid].buttons = m.buttons;
+                    g.inputs[pid].moveX = m.moveX;
+                    g.inputs[pid].moveZ = m.moveZ;
+                    g.inputs[pid].turretYaw = m.turretYaw;
+                    g.inputSeqs[pid] = m.seq;
+                    q.pop_front();
+                }
                 g.game.lagCompEnabled = g.lagComp;
                 for (int pid = 1; pid < MaxLobbyPlayers; ++pid)
                     g.game.players[pid].lagOneWayMs =
@@ -2470,7 +2537,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                 else if (me.active && me.health > 0)
                 {
                     g.pendingInputs.push_back({ g.inputSeq, local });
-                    if (g.pendingInputs.size() > 120)
+                    if (g.pendingInputs.size() > 256)   // ~4 s of unacked input
                         g.pendingInputs.erase(g.pendingInputs.begin());
                     g.predPrev = me;
                     g.game.AdvanceMovement(g.myId, local);
@@ -2479,6 +2546,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             }
         }
         g.tickAlpha = float(accumulator / TickDt);
+
+        // glide the reconciliation-error render offset to zero (~80 ms)
+        {
+            float k = 1.0f - expf(-g.frameDt * 12.0f);
+            g.predErrX -= g.predErrX * k;
+            g.predErrZ -= g.predErrZ * k;
+            g.predErrYaw -= g.predErrYaw * k;
+        }
 
         // Camera: smooth-follow of the tank's *interpolated* render position.
         // The target is continuous (tick-interpolated), so smoothing can't
