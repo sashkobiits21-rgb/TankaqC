@@ -2497,6 +2497,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                         g.inputSeqs[pid] = q.front().seq;
                         q.pop_front();
                     }
+                    // inert inputs (no movement, no fire) simulate to nothing,
+                    // so acking them without simulation is drift-free -- drain
+                    // them whenever something newer waits behind. This removes
+                    // the FIFO buffer's movement-onset delay: the first moving
+                    // input after standing still is consumed THIS tick.
+                    while (q.size() > 1 && q.front().buttons == 0
+                           && q.front().moveX == 0 && q.front().moveZ == 0)
+                    {
+                        g.inputSeqs[pid] = q.front().seq;
+                        q.pop_front();
+                    }
                     if (q.empty())
                         continue;
                     const net::MsgInput& m = q.front();
