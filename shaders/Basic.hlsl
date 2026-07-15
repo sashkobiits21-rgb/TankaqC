@@ -53,9 +53,9 @@ VsOut VSMesh(VsIn i)
     {
         float d = gMisc.y;
         float age = gMisc.z;
-        // the exit plane sweeps slower than travel (x0.6) so the extrusion
-        // reads as jello squeezing out over ~1.7 rocket lengths
-        float zExit = 0.5 - d * 0.6;
+        // the exit plane sweeps FASTER than travel (x1.4): the whole squeeze
+        // resolves in ~0.7 rocket lengths (~50 ms) so firing feels instant
+        float zExit = 0.5 - d * 1.4;
         // everything is released by the PLANE passing it (smooth, per-vertex);
         // this factor only retires the residual bulge once the plane has
         // cleared the tail entirely -- no distance-window pop
@@ -68,25 +68,25 @@ VsOut VSMesh(VsIn i)
         // to the bore, with a bulge riding the plane itself
         float inside = (1.0 - smoothstep(zExit - 0.12, zExit + 0.08, zi))
                      * pipeActive;
-        float radial = lerp(1.0, 0.45, inside);
-        radial *= 1.0 + exp(-abs(zi - zExit) * 6.0) * 0.55
+        float radial = lerp(1.0, 0.55, inside);
+        radial *= 1.0 + exp(-abs(zi - zExit) * 7.0) * 0.45
                         * step(0.02, d) * pipeActive;
 
         // longitudinal compression ANCHORED AT THE NOSE: the emerged front
         // holds its shape while the unexited rear stays compressed and
         // relaxes rearward as the plane frees it (nose never wobbles)
         float fin = saturate(zExit + 0.5);        // fraction still in pipe
-        float squash = 1.0 - 0.42 * fin;
+        float squash = 1.0 - 0.30 * fin;
         p.z = 0.5 - (0.5 - zi) * squash;
 
         // spring: tail-weighted decaying ring-down. Only the rear -- the part
         // that left the barrel last -- oscillates; weight fades to zero at
         // the nose so the front flies clean.
-        float freed = smoothstep(1.5, 1.9, d);
-        float osc = sin(age * 18.0) * exp(-age * 3.5) * freed;
+        float freed = smoothstep(0.65, 0.95, d);
+        float osc = sin(age * 24.0) * exp(-age * 5.0) * freed;
         float tailW = saturate((0.30 - zi) / 0.80);   // 0 nose, 1 tail
-        p.z -= osc * 0.22 * tailW;
-        radial *= 1.0 + osc * 0.35 * tailW;           // counter-bulge
+        p.z -= osc * 0.18 * tailW;
+        radial *= 1.0 + osc * 0.30 * tailW;           // counter-bulge
 
         p.xy *= radial;
         n = normalize(float3(n.xy / max(radial, 0.05), n.z));
