@@ -23,15 +23,20 @@ namespace
 constexpr int kRate = 44100;
 constexpr int kPoolVoices = 24;
 constexpr float kEngineMaxVol = 0.14f;   // deliberately quiet (user request)
+constexpr float kTurnMaxVol = 0.11f;     // rotation whirr, also quiet
 
 IXAudio2* s_xa = nullptr;
 IXAudio2MasteringVoice* s_master = nullptr;
 IXAudio2SourceVoice* s_pool[kPoolVoices]{};
 IXAudio2SourceVoice* s_engine = nullptr;
+IXAudio2SourceVoice* s_turn = nullptr;
 std::vector<int16_t> s_pcm[int(Sfx::Count)];
 std::vector<int16_t> s_enginePcm;
+std::vector<int16_t> s_turnPcm;
 float s_engineTarget = 0.0f;
 float s_engineCur = 0.0f;
+float s_turnTarget = 0.0f;
+float s_turnCur = 0.0f;
 bool s_ok = false;
 
 // ---------------------------------------------------------------- helpers
@@ -46,6 +51,11 @@ float RandS() { return Rand01() * 2.0f - 1.0f; }
 
 float Square(float phase) { return fmodf(phase, 1.0f) < 0.5f ? 1.0f : -1.0f; }
 float Saw(float phase) { return fmodf(phase, 1.0f) * 2.0f - 1.0f; }
+float Tri(float phase)
+{
+    float f = fmodf(phase, 1.0f);
+    return 4.0f * fabsf(f - 0.5f) - 1.0f;
+}
 
 // one-pole lowpass coefficient for a cutoff in Hz
 float LpK(float cutoff)
@@ -226,17 +236,18 @@ std::vector<int16_t> MakeGlass()
 }
 
 // Engine loop: a quiet low hum. All layers have integer periods inside the
-// 1-second buffer (and the noise bed tiles at 0.1 s), so the loop is
-// mathematically seamless. Kept dark with a final lowpass so it never fights
-// the effects.
+// 1-second buffer (and the noise bed tiles at 0.25 s), so the loop is
+// mathematically seamless. Smooth waveforms on purpose: triangles and a sine
+// sub instead of squares/saw, a slow noise tile instead of a 10 Hz one, and
+// no bitcrush -- quantization roughness on a steady tone reads as vibration.
 std::vector<int16_t> MakeEngine()
 {
     int n = kRate;   // exactly 1 s
     std::vector<float> s(n);
-    // periodic noise bed: one 0.1 s block tiled 10x, lowpassed inside a cycle
-    int block = kRate / 10;
+    // periodic noise bed: one 0.25 s block tiled 4x (4 Hz cycle, no fast throb)
+    int block = kRate / 4;
     std::vector<float> noise(block);
-    float lp = 0.0f, kN = LpK(700.0f);
+    float lp = 0.0f, kN = LpK(500.0f);
     for (int i = 0; i < block; ++i)
     {
         lp += kN * (RandS() - lp);
@@ -245,23 +256,58 @@ std::vector<int16_t> MakeEngine()
     for (int i = 0; i < n; ++i)
     {
         float t = float(i) / kRate;
-        float v = Square(t * 56.0f) * 0.40f     // fundamental
-                + Square(t * 112.0f) * 0.16f    // octave
-                + Saw(t * 28.0f) * 0.22f        // sub growl
-                + noise[i % block] * 1.1f;      // periodic rumble
+        float v = Tri(t * 56.0f) * 0.42f              // fundamental, soft edges
+                + Tri(t * 112.0f) * 0.12f             // octave shimmer
+                + sinf(t * 28.0f * 6.2831853f) * 0.30f // smooth sub
+                + noise[i % block] * 0.9f;            // slow rumble
         s[i] = v;
     }
     // final one-pole lowpass; run it twice around the loop so the filter
     // state at sample 0 matches sample n (keeps the seam silent)
-    float f = 0.0f, kF = LpK(950.0f);
+    float f = 0.0f, kF = LpK(850.0f);
     for (int pass = 0; pass < 2; ++pass)
         for (int i = 0; i < n; ++i)
         {
             f += kF * (s[i] - f);
             if (pass == 1) s[i] = f;
         }
-    Bitcrush(s, 7, 3);
     return ToPcm(s, 0.7f);
+}
+
+// Turn loop: the "tank rotating" layer -- a track-slip whirr. Mid-band noise
+// and a soft 138 Hz triangle, both pulsing at 11 Hz like tread links
+// slipping, with the pulses phase-offset so it churns instead of beeping.
+// Integer periods everywhere keep the 1 s loop seamless.
+std::vector<int16_t> MakeTurn()
+{
+    int n = kRate;
+    std::vector<float> s(n);
+    int block = kRate / 4;
+    std::vector<float> noise(block);
+    float lp = 0.0f, kN = LpK(1400.0f);
+    for (int i = 0; i < block; ++i)
+    {
+        lp += kN * (RandS() - lp);
+        noise[i] = lp;
+    }
+    for (int i = 0; i < n; ++i)
+    {
+        float t = float(i) / kRate;
+        float trem = 0.72f + 0.28f * sinf(t * 11.0f * 6.2831853f);
+        float trem2 = 0.80f + 0.20f * sinf(t * 11.0f * 6.2831853f + 2.1f);
+        float v = Tri(t * 138.0f) * 0.26f * trem     // servo tone
+                + Tri(t * 69.0f) * 0.12f             // half-speed underlayer
+                + noise[i % block] * 0.85f * trem2;  // slipping treads
+        s[i] = v;
+    }
+    float f = 0.0f, kF = LpK(1700.0f);
+    for (int pass = 0; pass < 2; ++pass)
+        for (int i = 0; i < n; ++i)
+        {
+            f += kF * (s[i] - f);
+            if (pass == 1) s[i] = f;
+        }
+    return ToPcm(s, 0.6f);
 }
 
 } // namespace
@@ -299,17 +345,23 @@ bool Init()
     s_pcm[int(Sfx::Burn)] = MakeBurn();
     s_pcm[int(Sfx::Glass)] = MakeGlass();
     s_enginePcm = MakeEngine();
+    s_turnPcm = MakeTurn();
 
-    if (SUCCEEDED(s_xa->CreateSourceVoice(&s_engine, &wf, 0, 2.0f)))
+    auto startLoop = [&](IXAudio2SourceVoice*& voice,
+                         const std::vector<int16_t>& pcm)
     {
+        if (FAILED(s_xa->CreateSourceVoice(&voice, &wf, 0, 2.0f)))
+            return;
         XAUDIO2_BUFFER b{};
-        b.AudioBytes = UINT32(s_enginePcm.size() * 2);
-        b.pAudioData = reinterpret_cast<const BYTE*>(s_enginePcm.data());
+        b.AudioBytes = UINT32(pcm.size() * 2);
+        b.pAudioData = reinterpret_cast<const BYTE*>(pcm.data());
         b.LoopCount = XAUDIO2_LOOP_INFINITE;
-        s_engine->SetVolume(0.0f);
-        s_engine->SubmitSourceBuffer(&b);
-        s_engine->Start();
-    }
+        voice->SetVolume(0.0f);
+        voice->SubmitSourceBuffer(&b);
+        voice->Start();
+    };
+    startLoop(s_engine, s_enginePcm);
+    startLoop(s_turn, s_turnPcm);
 
     s_ok = true;
     return true;
@@ -321,6 +373,7 @@ void Shutdown()
     for (int i = 0; i < kPoolVoices; ++i)
         if (s_pool[i]) { s_pool[i]->DestroyVoice(); s_pool[i] = nullptr; }
     if (s_engine) { s_engine->DestroyVoice(); s_engine = nullptr; }
+    if (s_turn) { s_turn->DestroyVoice(); s_turn = nullptr; }
     if (s_master) { s_master->DestroyVoice(); s_master = nullptr; }
     if (s_xa) { s_xa->Release(); s_xa = nullptr; }
 }
@@ -356,18 +409,35 @@ void SetEngine(float intensity)
     s_engineTarget = std::clamp(intensity, 0.0f, 1.0f);
 }
 
+void SetTurn(float intensity)
+{
+    s_turnTarget = std::clamp(intensity, 0.0f, 1.0f);
+}
+
 void Update(float dt)
 {
     if (!s_ok || !s_engine)
         return;
-    // faster attack than release so the hum answers input but trails off soft
-    float rate = s_engineTarget > s_engineCur ? 7.0f : 4.0f;
-    float k = 1.0f - expf(-dt * rate);
-    s_engineCur += (s_engineTarget - s_engineCur) * k;
-    if (s_engineCur < 0.001f && s_engineTarget == 0.0f)
-        s_engineCur = 0.0f;
-    s_engine->SetVolume(s_engineCur * kEngineMaxVol);
-    s_engine->SetFrequencyRatio(1.0f + s_engineCur * 0.30f);
+    // faster attack than release so the loops answer input but trail off soft
+    auto smooth = [dt](float cur, float target, float atk, float rel)
+    {
+        float k = 1.0f - expf(-dt * (target > cur ? atk : rel));
+        cur += (target - cur) * k;
+        return (cur < 0.001f && target == 0.0f) ? 0.0f : cur;
+    };
+    s_engineCur = smooth(s_engineCur, s_engineTarget, 7.0f, 4.0f);
+    s_turnCur = smooth(s_turnCur, s_turnTarget, 9.0f, 5.0f);
+
+    // rotation feeds the engine too: the hum swells and strains a little
+    // while the hull turns, and the track-slip whirr fades in on top
+    float ev = std::min(1.0f, s_engineCur + s_turnCur * 0.55f);
+    s_engine->SetVolume(ev * kEngineMaxVol);
+    s_engine->SetFrequencyRatio(1.0f + s_engineCur * 0.26f + s_turnCur * 0.10f);
+    if (s_turn)
+    {
+        s_turn->SetVolume(s_turnCur * kTurnMaxVol);
+        s_turn->SetFrequencyRatio(0.92f + s_turnCur * 0.30f);
+    }
 }
 
 } // namespace tankaq::snd

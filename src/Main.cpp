@@ -92,6 +92,9 @@ struct App
     // mouse is over this frame (0 = nothing); play a blip when it changes
     int hoverKeyNow = 0;
     int hoverKeyPrev = 0;
+    // hull angular velocity for the rotation sound layer
+    float sndPrevHullYaw = 0;
+    bool sndHullYawValid = false;
     Screen screen = Screen::MainMenu;
     Screen settingsReturn = Screen::MainMenu;   // where BACK leads
     bool sessionActive = false;  // a game session exists (pause overlays it)
@@ -2510,6 +2513,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             g.hoverKeyNow = 0;
 
             float intensity = 0.0f;
+            float turn = 0.0f;
             const PlayerState& me = g.game.players[g.myId];
             bool playing = g.game.phase == PhasePlaying
                         || g.game.phase == PhaseOvertime;
@@ -2522,8 +2526,27 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                                                : g.pendingInputs.back().cmd);
                 intensity = std::min(1.0f, sqrtf(li.moveX * li.moveX
                                                  + li.moveZ * li.moveZ));
+
+                // hull rotation rate from the same interpolated yaw the
+                // renderer draws, normalized by the max visual turn speed
+                float rx, rz, rh, rt;
+                GetRenderPlayer(g.myId, rx, rz, rh, rt);
+                if (g.sndHullYawValid && g.frameDt > 1e-5f)
+                {
+                    float w = fabsf(WrapAngle(rh - g.sndPrevHullYaw)) / g.frameDt;
+                    turn = std::min(1.0f, w / HullFaceSpeed);
+                    if (turn < 0.06f)
+                        turn = 0.0f;   // deadband: interp jitter stays silent
+                }
+                g.sndPrevHullYaw = rh;
+                g.sndHullYawValid = true;
+            }
+            else
+            {
+                g.sndHullYawValid = false;
             }
             snd::SetEngine(intensity);
+            snd::SetTurn(turn);
             snd::Update(g.frameDt);
         }
 

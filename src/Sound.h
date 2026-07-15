@@ -20,8 +20,9 @@ enum class Sfx
 
 bool Init();
 void Shutdown();
-void Update(float dt);                  // smooths the engine loop volume/pitch
+void Update(float dt);                  // smooths the loop volumes/pitches
 void Play(Sfx s, float volume = 1.0f, float pitch = 1.0f);
 void SetEngine(float intensity);        // 0..1 movement intensity target
+void SetTurn(float intensity);          // 0..1 hull rotation rate target
 
 } // namespace tankaq::snd
