@@ -68,6 +68,7 @@ struct SkinJoint
 // skinned primitives (body/head/feet...), each with its own material color.
 struct SkinnedPart
 {
+    std::string name;                 // node/mesh name (weapon toggling etc.)
     std::vector<SkinnedVertex> verts;
     std::vector<uint32_t> indices;
     DirectX::XMFLOAT4 baseColor{ 1, 1, 1, 1 };   // material base color factor

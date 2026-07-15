@@ -97,6 +97,7 @@ struct App
     AnimPlayer rigAnim;
     std::vector<int> meshRigParts;          // one GPU mesh per skinned part
     std::vector<XMFLOAT4> rigPartColors;    // material base color per part
+    std::vector<bool> rigPartVisible;       // weapon toggling
     int texRig = -1;
     float rigScale = 1.0f;
 
@@ -1181,6 +1182,8 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
                        * XMMatrixTranslation(5.0f, 0.0f, -8.0f);
         for (size_t p = 0; p < g.meshRigParts.size(); ++p)
         {
+            if (!g.rigPartVisible[p])
+                continue;
             const XMFLOAT4& c = g.rigPartColors[p];
             RenderObject ro{ g.meshRigParts[p],
                              g.texRig >= 0 ? g.texRig : g.texWhite,
@@ -2386,6 +2389,13 @@ bool CreateAssets()
             g.rigModel = LoadSkinnedGLB("assets/test_rig.glb");
         if (g.rigModel.valid)
         {
+            // character rigs carry a whole arsenal of hand-attached weapons;
+            // show exactly one (guess which)
+            static const char* kWeapons[] = {
+                "Revolver", "Sniper", "Pistol", "SMG", "GrenadeLauncher",
+                "ShortCannon", "Shotgun", "AK", "Shovel", "Knife",
+                "RocketLauncher",
+            };
             for (const SkinnedPart& part : g.rigModel.parts)
             {
                 g.meshRigParts.push_back(
@@ -2393,14 +2403,21 @@ bool CreateAssets()
                                          part.indices.data(),
                                          part.indices.size()));
                 g.rigPartColors.push_back(part.baseColor);
+                bool isWeapon = false;
+                for (const char* w : kWeapons)
+                    if (part.name.find(w) != std::string::npos)
+                        isWeapon = true;
+                g.rigPartVisible.push_back(
+                    !isWeapon || part.name == "RocketLauncher");
             }
             if (g.rigModel.texture.width > 0)
                 g.texRig = r->CreateTexture(g.rigModel.texture.rgba.data(),
                                             g.rigModel.texture.width,
                                             g.rigModel.texture.height);
             g.rigAnim.model = &g.rigModel;
-            int run = g.rigModel.FindClip("Run");
-            g.rigAnim.Play(run >= 0 ? run : 0, true);
+            int clip = g.rigModel.FindClip("Idle_Shoot");
+            if (clip < 0) clip = g.rigModel.FindClip("Run");
+            g.rigAnim.Play(clip >= 0 ? clip : 0, true);
         }
     }
     return g.meshHull >= 0 && g.meshTurret >= 0 && g.texPalette >= 0;

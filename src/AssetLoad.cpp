@@ -409,6 +409,27 @@ SkinnedModel LoadSkinnedGLB(const std::string& path)
         XMStoreFloat4x4(&model.rootTransform, pre);
     }
 
+    auto nodeLocal = [](const cgltf_node* a) -> XMMATRIX
+    {
+        if (a->has_matrix)
+        {
+            XMFLOAT4X4 m;
+            memcpy(&m, a->matrix, sizeof(m));
+            return XMLoadFloat4x4(&m);
+        }
+        XMVECTOR q = a->has_rotation
+            ? XMVectorSet(a->rotation[0], a->rotation[1],
+                          a->rotation[2], a->rotation[3])
+            : XMQuaternionIdentity();
+        return XMMatrixScaling(a->has_scale ? a->scale[0] : 1.0f,
+                               a->has_scale ? a->scale[1] : 1.0f,
+                               a->has_scale ? a->scale[2] : 1.0f)
+             * XMMatrixRotationQuaternion(q)
+             * XMMatrixTranslation(a->has_translation ? a->translation[0] : 0.0f,
+                                   a->has_translation ? a->translation[1] : 0.0f,
+                                   a->has_translation ? a->translation[2] : 0.0f);
+    };
+
     // Geometry: every skinned primitive of EVERY skinned node. Characters
     // are often split into several parts (body/head/feet), each carrying its
     // own skin object over the same armature -- joint indices are remapped
@@ -504,6 +525,99 @@ SkinnedModel LoadSkinnedGLB(const std::string& path)
                         stbi_image_free(px);
                     }
                 }
+            }
+            part.name = node.name ? node.name
+                                  : (node.mesh->name ? node.mesh->name : "");
+            SkinnedTangents(part);
+            model.parts.push_back(std::move(part));
+        }
+    }
+
+    // Bone-attached STATIC meshes (heads, shoulder pads, hand-held weapons):
+    // nodes with a mesh but no skin whose ancestry reaches a joint. Convert
+    // to single-influence skinned parts: vertices pre-transformed by the
+    // local chain up to the joint, weighted 100% to it -- they then animate
+    // through the ordinary skinned path.
+    for (size_t ni = 0; ni < data->nodes_count; ++ni)
+    {
+        const cgltf_node& node = data->nodes[ni];
+        if (node.skin || !node.mesh)
+            continue;
+        XMMATRIX chain = nodeLocal(&node);
+        int joint = -1;
+        for (const cgltf_node* a = node.parent; a; a = a->parent)
+        {
+            int oi = orderedIndex(a);
+            if (oi >= 0) { joint = oi; break; }
+            chain = chain * nodeLocal(a);
+        }
+        if (joint < 0)
+            continue;   // not part of the rig (standalone prop)
+        // The skinned path computes v * inverseBind * global, expecting
+        // BIND-SPACE vertices; our chain lands in JOINT-LOCAL space, so
+        // append the joint's bind matrix (inverse of its inverse bind) --
+        // the shader's inverseBind then cancels exactly: v * chain * global.
+        chain = chain * XMMatrixInverse(
+            nullptr, XMLoadFloat4x4(&model.joints[joint].inverseBind));
+        for (size_t p = 0; p < node.mesh->primitives_count; ++p)
+        {
+            const cgltf_primitive& prim = node.mesh->primitives[p];
+            const cgltf_accessor* pos = nullptr;
+            const cgltf_accessor* nrm = nullptr;
+            const cgltf_accessor* uv = nullptr;
+            for (size_t a = 0; a < prim.attributes_count; ++a)
+            {
+                const cgltf_attribute& at = prim.attributes[a];
+                if (at.type == cgltf_attribute_type_position) pos = at.data;
+                else if (at.type == cgltf_attribute_type_normal) nrm = at.data;
+                else if (at.type == cgltf_attribute_type_texcoord && at.index == 0) uv = at.data;
+            }
+            if (!pos)
+                continue;
+            SkinnedPart part;
+            part.name = node.name ? node.name : "";
+            for (size_t v = 0; v < pos->count; ++v)
+            {
+                SkinnedVertex vert{};
+                float tmp[4]{};
+                cgltf_accessor_read_float(pos, v, tmp, 3);
+                XMVECTOR pv = XMVector3Transform(
+                    XMVectorSet(tmp[0], tmp[1], tmp[2], 1), chain);
+                vert.px = XMVectorGetX(pv);
+                vert.py = XMVectorGetY(pv);
+                vert.pz = XMVectorGetZ(pv);
+                if (nrm)
+                {
+                    cgltf_accessor_read_float(nrm, v, tmp, 3);
+                    XMVECTOR nv = XMVector3Normalize(XMVector3TransformNormal(
+                        XMVectorSet(tmp[0], tmp[1], tmp[2], 0), chain));
+                    vert.nx = XMVectorGetX(nv);
+                    vert.ny = XMVectorGetY(nv);
+                    vert.nz = XMVectorGetZ(nv);
+                }
+                if (uv)
+                {
+                    cgltf_accessor_read_float(uv, v, tmp, 2);
+                    vert.u = tmp[0]; vert.v = tmp[1];
+                }
+                vert.joints[0] = uint8_t(std::clamp(joint, 0, MaxBones - 1));
+                vert.weights[0] = 1.0f;
+                part.verts.push_back(vert);
+            }
+            if (prim.indices)
+                for (size_t i = 0; i < prim.indices->count; ++i)
+                    part.indices.push_back(
+                        uint32_t(cgltf_accessor_read_index(prim.indices, i)));
+            else
+                for (size_t i = 0; i < pos->count; ++i)
+                    part.indices.push_back(uint32_t(i));
+            if (prim.material && prim.material->has_pbr_metallic_roughness)
+            {
+                const auto& pbr = prim.material->pbr_metallic_roughness;
+                part.baseColor = XMFLOAT4(pbr.base_color_factor[0],
+                                          pbr.base_color_factor[1],
+                                          pbr.base_color_factor[2],
+                                          pbr.base_color_factor[3]);
             }
             SkinnedTangents(part);
             model.parts.push_back(std::move(part));
