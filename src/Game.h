@@ -140,7 +140,7 @@ int CountClasses(const PlayerState& p);
 // every 5 seconds at slot 0 and pushes the rest along; overflow burns the
 // tail. Offers carry a rolling id so clients can animate the shifts.
 constexpr int NumOfferSlots = 6;
-constexpr int OfferIntervalTicks = 5 * TickRate;
+constexpr int OfferIntervalTicks = 3 * TickRate;
 
 // Offer lifecycle: 0 = empty, 1 = purchasable, 2 = consumed (purchased, the
 // burn animation is playing; the slot is held and the conveyor must not shift
