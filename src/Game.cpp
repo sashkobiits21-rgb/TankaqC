@@ -15,6 +15,10 @@ const float kBaseStats[StatCount] = {
     ProjectileSpeed,    // ProjSpeed
     1.0f,               // DamageTaken multiplier
     0.0f,               // Bounces
+    2.0f,               // BoostSpeed: 2x while boosting
+    1.0f,               // BoostFuel: 1 second of boost
+    0.4f,               // BoostRegen: fuel/s once regenerating
+    1.2f,               // BoostRegenDelay: pause after boosting
 };
 
 int gDebugBounces = 0;   // --bounces=N dev knob (added on top of the stat)
@@ -23,10 +27,10 @@ int gDebugBounces = 0;   // --bounces=N dev knob (added on top of the stat)
 // can touch several stats (including tradeoffs).
 #define S(x) Stat::x
 const UpgradeType kUpgradePool[] = {
-    { "ENGINE",    "+15% MOVE SPEED",                 0, 30, 0,
-      { { S(MoveSpeed), 0, 1.15f } }, 1 },
-    { "TURBO",     "+1.5 MOVE SPEED",                 1, 40, 1,
-      { { S(MoveSpeed), 1.5f, 1 } }, 1 },
+    { "ENGINE",    "+5% MOVE SPEED",                  0, 30, 0,
+      { { S(MoveSpeed), 0, 1.05f } }, 1 },
+    { "TURBO",     "+0.5 MOVE SPEED",                 1, 40, 1,
+      { { S(MoveSpeed), 0.5f, 1 } }, 1 },
     { "AP ROUNDS", "+20% SHELL DAMAGE",               2, 55, 2,
       { { S(Damage), 0, 1.20f } }, 1 },
     { "HEAVY SHELLS", "+12 DAMAGE, -10% SHELL SPEED", 2, 50, 3,
@@ -43,14 +47,24 @@ const UpgradeType kUpgradePool[] = {
       { { S(ProjSpeed), 0, 1.15f } }, 1 },
     { "REACTIVE ARMOR", "-10% DAMAGE TAKEN",          4, 85, 9,
       { { S(DamageTaken), 0, 0.90f } }, 1 },
-    { "OVERDRIVE", "+25% SPEED, +10% DMG TAKEN",      4, 90, 10,
-      { { S(MoveSpeed), 0, 1.25f }, { S(DamageTaken), 0, 1.10f } }, 2 },
-    { "FIELD KIT", "+15 MAX HP, +0.5 SPEED",          0, 35, 11,
-      { { S(MaxHealth), 15, 1 }, { S(MoveSpeed), 0.5f, 1 } }, 2 },
+    { "OVERDRIVE", "+8% SPEED, +10% DMG TAKEN",       4, 90, 10,
+      { { S(MoveSpeed), 0, 1.08f }, { S(DamageTaken), 0, 1.10f } }, 2 },
+    { "FIELD KIT", "+15 MAX HP, +0.15 SPEED",         0, 35, 11,
+      { { S(MaxHealth), 15, 1 }, { S(MoveSpeed), 0.15f, 1 } }, 2 },
     { "RICOCHET",  "+1 WALL BOUNCE",                  2, 55, 12,
       { { S(Bounces), 1, 1 } }, 1 },
     { "SUPERBALL", "+2 WALL BOUNCES, -15% DAMAGE",    4, 90, 13,
       { { S(Bounces), 2, 1 }, { S(Damage), 0, 0.85f } }, 2 },
+    { "NITRO TANK", "+0.5s BOOST FUEL",               2, 55, 14,
+      { { S(BoostFuel), 0.5f, 1 } }, 1 },
+    { "AFTERBURNER", "+20% BOOST SPEED",              3, 70, 15,
+      { { S(BoostSpeed), 0, 1.20f } }, 1 },
+    { "QUICK PUMP", "+0.3/s FUEL REGEN",              1, 40, 16,
+      { { S(BoostRegen), 0.3f, 1 } }, 1 },
+    { "PIT CREW",  "-0.4s REGEN DELAY",               0, 30, 17,
+      { { S(BoostRegenDelay), -0.4f, 1 } }, 1 },
+    { "FUEL INJECTION", "+25% FUEL REGEN",            2, 55, 18,
+      { { S(BoostRegen), 0, 1.25f } }, 1 },
 };
 #undef S
 const int UpgradePoolSize = int(sizeof(kUpgradePool) / sizeof(kUpgradePool[0]));
@@ -135,6 +149,11 @@ void GameState::RecalcStats(int id)
     p.stats[int(Stat::DamageTaken)] = std::max(0.1f, p.stats[int(Stat::DamageTaken)]);
     p.stats[int(Stat::Bounces)] =
         std::max(0.0f, p.stats[int(Stat::Bounces)] + float(gDebugBounces));
+    p.stats[int(Stat::BoostSpeed)] = std::max(1.0f, p.stats[int(Stat::BoostSpeed)]);
+    p.stats[int(Stat::BoostFuel)] = std::max(0.25f, p.stats[int(Stat::BoostFuel)]);
+    p.stats[int(Stat::BoostRegen)] = std::max(0.05f, p.stats[int(Stat::BoostRegen)]);
+    p.stats[int(Stat::BoostRegenDelay)] =
+        std::max(0.0f, p.stats[int(Stat::BoostRegenDelay)]);
 }
 
 void GameState::SpawnPlayer(int id)
@@ -149,6 +168,8 @@ void GameState::SpawnPlayer(int id)
     p.turretYaw = p.hullYaw;
     RecalcStats(id);
     p.health = MaxHealthFor(p);
+    p.boostFuel = p.stats[int(Stat::BoostFuel)];   // spawn with a full tank
+    p.boostRegenWait = 0;
     p.nextOfferTick = tick + TickRate + uint32_t(id) * (TickRate / 4);
 }
 
@@ -326,11 +347,36 @@ void GameState::AdvanceMovement(int id, const InputCmd& in)
     // the host (and prediction replay) integrate the same numbers.
     float dx = in.moveX, dz = in.moveZ;
     float len2 = dx * dx + dz * dz;
-    if (len2 > 1e-6f)
+    bool moving = len2 > 1e-6f;
+
+    // Boost (SHIFT): multiplies speed while fuel lasts; only drains while
+    // actually moving. Regen waits BoostRegenDelay after the last boosted
+    // tick, then refills at BoostRegen/s. Lives here so client prediction
+    // and host simulation integrate fuel identically.
+    bool boosting = moving && (in.buttons & BtnBoost) && p.boostFuel > 0.0f;
+    if (boosting)
+    {
+        p.boostFuel = std::max(0.0f, p.boostFuel - TickDt);
+        p.boostRegenWait = p.stats[int(Stat::BoostRegenDelay)];
+    }
+    else if (p.boostRegenWait > 0.0f)
+    {
+        p.boostRegenWait = std::max(0.0f, p.boostRegenWait - TickDt);
+    }
+    else
+    {
+        p.boostFuel = std::min(p.stats[int(Stat::BoostFuel)],
+                               p.boostFuel
+                                   + p.stats[int(Stat::BoostRegen)] * TickDt);
+    }
+
+    if (moving)
     {
         float len = sqrtf(len2);
         if (len > 1.0f) { dx /= len; dz /= len; }
         float speed = p.stats[int(Stat::MoveSpeed)];
+        if (boosting)
+            speed *= p.stats[int(Stat::BoostSpeed)];
         p.x += dx * speed * TickDt;
         p.z += dz * speed * TickDt;
         p.hullYaw = MoveTowardsAngle(p.hullYaw, atan2f(dx, dz),

@@ -46,6 +46,7 @@ enum : uint8_t
     BtnLeft    = 1 << 2,
     BtnRight   = 1 << 3,
     BtnFire    = 1 << 4,
+    BtnBoost   = 1 << 5,   // SHIFT: 2x speed, drains the fuel bar
 };
 
 struct InputCmd
@@ -73,6 +74,10 @@ enum class Stat : uint8_t
     ProjSpeed,        // units/s
     DamageTaken,      // incoming damage multiplier (lower = tankier)
     Bounces,          // wall bounces per rocket (never bounces off tanks)
+    BoostSpeed,       // speed multiplier while boosting (SHIFT)
+    BoostFuel,        // fuel capacity in seconds of boost
+    BoostRegen,       // fuel restored per second (after the delay)
+    BoostRegenDelay,  // seconds after boosting before regen starts
     Count
 };
 constexpr int StatCount = int(Stat::Count);
@@ -134,6 +139,8 @@ struct PlayerState
     int health = 0;
     float respawnTimer = 0;
     float fireCooldown = 0;
+    float boostFuel = 0;         // current fuel (seconds of boost left)
+    float boostRegenWait = 0;    // time until regen resumes
     float hitFlash = 0;       // seconds of red flash remaining
     float muzzleFlash = 0;    // seconds of muzzle glow remaining
     uint16_t score = 0;

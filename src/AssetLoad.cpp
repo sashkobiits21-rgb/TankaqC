@@ -627,6 +627,33 @@ void DrawIconGlyph(IconCanvas& c, int icon)
         c.Fill(3, 10, 5, 10, W); c.Fill(2, 11, 3, 12, W);   // left arc
         c.Fill(10, 10, 12, 10, W); c.Fill(12, 11, 13, 12, W); // right arc
         break;
+    case 14: // NITRO TANK: fuel canister with cap + spout
+        c.Fill(4, 5, 11, 13, W); c.Fill(5, 3, 8, 4, W);
+        c.Fill(9, 2, 12, 3, W); c.Fill(11, 4, 12, 5, W);
+        c.Fill(6, 8, 9, 10, D);   // label notch
+        break;
+    case 15: // AFTERBURNER: flame with speed chevrons
+        c.Fill(8, 2, 9, 4, W); c.Fill(7, 5, 10, 7, W);
+        c.Fill(6, 8, 11, 10, W); c.Fill(7, 11, 10, 13, W);
+        for (int i = 0; i < 3; ++i)
+        { c.Fill(2, 4 + i, 3 + i, 4 + i, W); c.Fill(2, 12 - i, 3 + i, 12 - i, W); }
+        break;
+    case 16: // QUICK PUMP: droplet + up arrow
+        c.Fill(4, 6, 5, 8, W); c.Fill(3, 9, 6, 12, W); c.Fill(4, 13, 5, 13, W);
+        c.Fill(10, 3, 11, 12, W);
+        c.Fill(8, 6, 9, 6, W); c.Fill(12, 6, 13, 6, W);
+        c.Fill(9, 4, 9, 5, W); c.Fill(12, 4, 12, 5, W);
+        break;
+    case 17: // PIT CREW: clock face with fast hand
+        c.Fill(5, 2, 10, 3, W); c.Fill(3, 4, 4, 11, W); c.Fill(11, 4, 12, 11, W);
+        c.Fill(5, 12, 10, 13, W);
+        c.Fill(7, 5, 8, 8, W); c.Fill(9, 8, 10, 9, W);   // hand
+        break;
+    case 18: // FUEL INJECTION: syringe diagonal
+        for (int i = 0; i < 6; ++i) c.Fill(3 + i, 11 - i, 4 + i, 12 - i, W);
+        c.Fill(9, 3, 12, 6, W); c.Fill(12, 2, 13, 3, W);
+        c.Fill(2, 12, 3, 13, D);
+        break;
     default: // FIELD KIT: wrench
         c.Fill(2, 2, 5, 3, W); c.Fill(2, 5, 5, 6, W); c.Fill(4, 3, 5, 5, W);
         for (int i = 0; i < 8; ++i) c.Fill(5 + i, 4 + i, 6 + i, 5 + i, W);

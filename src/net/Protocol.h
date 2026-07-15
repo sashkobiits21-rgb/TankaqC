@@ -9,7 +9,9 @@ namespace tankaq::net
 // as reliable events; every peer derives stats locally with the identical
 // deterministic RecalcStats (additions first, then multiplications). Adding
 // stats no longer changes the protocol.
-constexpr uint8_t ProtocolVersion = 9;
+// v10: boost (SHIFT) -- BtnBoost input bit + quantized fuel/regen-wait in
+// PlayerNet so prediction replay rebases the fuel state.
+constexpr uint8_t ProtocolVersion = 10;
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t
@@ -133,6 +135,8 @@ struct PlayerNet
     float x = 0, z = 0;
     float hullYaw = 0, turretYaw = 0;
     uint8_t flags = 0;     // bit0 hitFlash, bit1 muzzleFlash
+    uint8_t fuel255 = 0;       // boost fuel / capacity, quantized to 0..255
+    uint8_t regenWait32 = 0;   // regen delay remaining, 1/32 s units
 };
 
 struct ProjectileNet

@@ -466,6 +466,11 @@ void ApplySnapshot(const net::MsgSnapshot& s)
         me.x = own.x; me.z = own.z;
         me.hullYaw = own.hullYaw;
         me.turretYaw = own.turretYaw;
+        // rebase the boost-fuel state too: the replay below re-integrates
+        // drain/regen for the unacked ticks exactly like the host will
+        me.boostFuel = (own.fuel255 / 255.0f)
+                     * me.stats[int(Stat::BoostFuel)];
+        me.boostRegenWait = own.regenWait32 / 32.0f;
         while (!g.pendingInputs.empty() && g.pendingInputs.front().seq <= own.ackSeq)
             g.pendingInputs.erase(g.pendingInputs.begin());
         for (const auto& pi : g.pendingInputs)
@@ -552,6 +557,9 @@ net::MsgSnapshot BuildSnapshot()
         out.health = uint16_t(std::clamp(p.health, 0, 65535));
         out.score = p.score;
         out.money = p.money;
+        float cap = std::max(p.stats[int(Stat::BoostFuel)], 0.01f);
+        out.fuel255 = uint8_t(std::clamp(p.boostFuel / cap, 0.0f, 1.0f) * 255.0f);
+        out.regenWait32 = uint8_t(std::min(p.boostRegenWait * 32.0f, 255.0f));
         for (int s = 0; s < NumOfferSlots; ++s)
         {
             out.offers[s].active = p.offers[s].active;
@@ -705,6 +713,8 @@ InputCmd BuildLocalInput()
         uint32_t t = g.game.tick;
         if (t % 75 < 2)
             in.buttons |= BtnFire;
+        if (t % 220 < 50)              // periodic boost bursts (tests fuel)
+            in.buttons |= BtnBoost;
         in.turretYaw = g.game.players[g.myId].hullYaw + 0.6f * sinf(float(g.time) * 0.7f);
         return in;
     }
@@ -728,6 +738,7 @@ InputCmd BuildLocalInput()
         && g.mouseY <= g.shopPanel[1] + g.shopPanel[3])
         fire = false;
     if (fire) in.buttons |= BtnFire;
+    if (g.keys[VK_SHIFT]) in.buttons |= BtnBoost;   // boost: 2x speed on fuel
     in.turretYaw = g.aimYaw;
     return in;
 }
@@ -1837,6 +1848,18 @@ void BuildHud(FrameData& frame)
     g.ui.Rect(hx, hy - 14, 260, 8, { 0, 0, 0, 0.45f });
     g.ui.Rect(hx + 2, hy - 12, 256 * std::clamp(rf, 0.0f, 1.0f), 4, { 0.95f, 0.9f, 0.5f, 0.9f });
 
+    // fuel bar (SHIFT boost): orange while available, dimmed during the
+    // regen delay; uses the locally predicted fuel so it reacts instantly
+    {
+        float cap = std::max(me.stats[int(Stat::BoostFuel)], 0.01f);
+        float ff = std::clamp(me.boostFuel / cap, 0.0f, 1.0f);
+        bool waiting = me.boostRegenWait > 0.0f && ff < 1.0f;
+        g.ui.Rect(hx, hy - 26, 260, 10, { 0, 0, 0, 0.45f });
+        g.ui.Rect(hx + 2, hy - 24, 256 * ff, 6,
+                  waiting ? UiColor{ 0.9f, 0.45f, 0.15f, 0.45f }
+                          : UiColor{ 1.0f, 0.55f, 0.15f, 0.95f });
+    }
+
     // kill scores on the circle + match timer in its center
     DrawScoreCircle();
 
@@ -1865,7 +1888,7 @@ void BuildHud(FrameData& frame)
     g.ui.Rect(float(g.mouseX) - 1, float(g.mouseY) - 9, 2, 18, { 1, 1, 1, 0.8f });
 
     g.ui.Text(10, float(g.height) - 74, 1.4f, { 1, 1, 1, 0.45f },
-              "WASD drive   mouse aim   LMB/space fire   TAB shop   ESC menu");
+              "WASD drive   SHIFT boost   mouse aim   LMB/space fire   TAB shop   ESC menu");
     if (!g.statusLine.empty())
         g.ui.TextCentered(w * 0.5f, float(g.height) - 30, 1.7f, { 1, 0.8f, 0.4f, 0.95f },
                           g.statusLine);
@@ -3139,6 +3162,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                                                : g.pendingInputs.back().cmd);
                 intensity = std::min(1.0f, sqrtf(li.moveX * li.moveX
                                                  + li.moveZ * li.moveZ));
+                // boosting revs the engine hum
+                if ((li.buttons & BtnBoost) && me.boostFuel > 0.0f)
+                    intensity = std::min(1.0f, intensity * 1.5f);
 
                 // hull rotation rate from the same interpolated yaw the
                 // renderer draws, normalized by the max visual turn speed
