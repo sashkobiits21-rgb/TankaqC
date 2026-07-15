@@ -211,6 +211,9 @@ struct PlayerState
     float lagOneWayMs = 0;                // averaged one-way latency to this player
     float lastInMoveX = 0, lastInMoveZ = 0;
     float catchupX = 0, catchupZ = 0;     // owed pre-travel, drained over ~2 ticks
+
+    // host-only: seconds until the next soldier summon (SOLDIER class)
+    float soldierSpawnWait = 0;
 };
 
 inline int MaxHealthFor(const PlayerState& p)
@@ -242,6 +245,54 @@ struct Obstacle
 constexpr int NumObstacles = 7;
 extern const Obstacle kObstacles[NumObstacles];
 
+// --------------------------------------------------------------- soldiers
+// The SOLDIER class summon: a host-authoritative infantry unit that hides
+// behind obstacles, peeks out by RUNNING to its next cover spot while
+// shooting at enemy tanks, and kites (keeps running + firing) when no spot
+// blocks line of sight to every enemy. Visuals are fire-and-forget: clients
+// drive animation locally from the replicated state, never corrected.
+constexpr int   MaxSoldiers = 12;          // across all players
+constexpr float SoldierRadius = 0.55f;
+constexpr float SoldierFireRange = 15.0f;
+constexpr float SoldierGunY = 1.05f;       // muzzle height for tracers
+constexpr float SoldierDeathTime = 1.1f;   // Death clip before despawn
+constexpr float SoldierCoverPause = 1.5f;  // ducked seconds between peeks
+
+enum : uint8_t
+{
+    SoldierGuard = 0,   // no enemies: loiter near the owner tank
+    SoldierCover,       // ducked behind cover, hidden, holding fire
+    SoldierMove,        // running to the next cover spot, firing on the move
+    SoldierKite,        // no full cover exists: keep running + firing
+    SoldierPeek,        // stepping OUT to a sight-line point for one shot
+    SoldierDying,       // death animation playing, despawns after
+};
+
+struct SoldierState
+{
+    bool active = false;
+    uint8_t owner = 0;
+    uint8_t state = SoldierGuard;
+    uint8_t targetId = 0xFF;      // current enemy tank (0xFF = none)
+    float x = 0, z = 0;
+    float yaw = 0;                // facing (movement direction while running)
+    float health = 0;
+    float stateTimer = 0;         // cover pause / kite re-evaluation
+    float fireCooldown = 0;
+    float coverX = 0, coverZ = 0; // destination cover spot
+    float muzzleFlash = 0;        // seconds of muzzle flash left (visual)
+    float hitFlash = 0;
+    float deathTimer = 0;
+    // baked from the owner's stats at spawn time
+    float speed = 4.0f, damage = 10.0f, fireRate = 1.0f;
+};
+
+// 2D line-of-sight: does the segment cross any obstacle box (expanded by
+// `inflate` -- pass a body radius to test WALKABILITY instead of sight)?
+// Everything relevant flies below the shortest obstacle; height is ignored.
+bool SegmentBlockedByObstacles(float x0, float z0, float x1, float z1,
+                               float inflate = 0.0f);
+
 // One tick of projectile flight: lifetime, movement, and the wall/obstacle
 // ricochet rules (each bounce consumes pr.bounces and multiplies speed and
 // damage by the baked per-bounce stats). Returns false when spent. THE single
@@ -253,6 +304,7 @@ struct GameState
 {
     PlayerState players[MaxPlayers];
     Projectile projectiles[MaxProjectiles];
+    SoldierState soldiers[MaxSoldiers];
     uint32_t tick = 0;
     uint8_t phase = PhaseLobby;
     uint8_t winner = 0xFF;
@@ -286,12 +338,20 @@ struct GameState
     // The offer is marked consumed and its slot is held until the burn
     // animation duration elapses; only then does the conveyor compact.
     bool TryPurchase(int id, int slot);
+    // Host: place a fresh soldier for this owner beside their tank; returns
+    // false when no slot or no clear spawn spot exists.
+    bool SpawnSoldier(int ownerId);
+    // One tick of a soldier's cover-point AI (host authority only).
+    void TickSoldier(SoldierState& s);
     // Roll a fresh random offer. Inserts at slot 0 immediately, or queues it
     // while any burn animation holds the conveyor.
     void GenerateOffer(int id);
     void InsertOffer(int id, const Offer& o);
     bool AnyConsumed(int id) const;
     DirectX::XMFLOAT3 MuzzleWorld(const PlayerState& p) const;
+    // Damage + rewards in one place (rockets and soldier fire): applies the
+    // victim's DamageTaken, pays the shooter, handles kills + overtime.
+    void ApplyDamage(int shooterId, int victimId, int rawDamage, int hitMoney);
 
     uint32_t rngState = 0x9E3779B9u;
     uint32_t NextRand();   // xorshift, host-side offer rolls

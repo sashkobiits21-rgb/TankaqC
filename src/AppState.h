@@ -50,6 +50,7 @@ struct Options
     int quickMatchNeed = 2;      // queue size for --quickmatch
     int readyTest = 0;           // toggle ready once at this frame (testing)
     bool rigTest = false;        // show the animated test rig in the arena
+    bool soldierTest = false;    // solo: grant SOLDIER class + dummy target
 };
 
 constexpr struct { int w, h; } kResolutions[] = {
@@ -111,6 +112,17 @@ struct App
     int texRig = -1;
     float rigScale = 1.0f;
     DirectX::XMFLOAT3 rigPos{ 5.0f, 0.0f, -8.0f };
+
+    // soldier summons: clip handles resolved once at load (loud on miss),
+    // one Animator per sim slot driven from the replicated state, and a
+    // muzzle edge-detector for the fire sound
+    struct SoldierClips { int idle = -1, run = -1, duck = -1, shoot = -1,
+                          death = -1; };
+    SoldierClips soldierClips;
+    Animator soldierAnim[MaxSoldiers];
+    uint8_t soldierAnimState[MaxSoldiers]{};   // last state fed to the animator
+    bool soldierPrevMuzzle[MaxSoldiers]{};
+    int meshTracer = -1;                       // unit box, stretched per shot
 
     // game
     GameState game;

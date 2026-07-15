@@ -142,6 +142,62 @@ int RunClassTest()
         check(out.damage == 115, "RUBBER SHELLS damage applied on bounce");
     }
 
+    // ---- soldier summon: spawn cadence, engagement, death, replacement ----
+    {
+        GameState g2{};
+        g2.SpawnPlayer(0);
+        g2.SpawnPlayer(1);   // enemy tank, parked
+        PlayerState& owner = g2.players[0];
+        owner.owned.push_back(uint8_t(UpgradeId::SoldierClass));
+        g2.RecalcStats(0);
+        g2.phase = PhasePlaying;
+        g2.matchEndTick = g2.tick + 100000000u;
+        InputCmd idle[MaxPlayers]{};
+        auto countMine = [&]()
+        {
+            int n = 0;
+            for (const SoldierState& s : g2.soldiers)
+                if (s.active && s.owner == 0) ++n;
+            return n;
+        };
+
+        g2.Tick(idle);
+        check(countMine() == 1, "soldier spawns immediately after unlock");
+        // 20 s: the worst-case spawn pocket needs a multi-hop detour around
+        // its own obstacle + parked owner tank, then a peek, before the
+        // first shot lands
+        for (int t = 0; t < TickRate * 20; ++t) g2.Tick(idle);
+        check(countMine() == 1, "SoldierMax 1 respected across the cooldown");
+        SoldierState* s0 = nullptr;
+        for (SoldierState& s : g2.soldiers) if (s.active) s0 = &s;
+        check(s0 && fabsf(s0->health - 40.0f) < 1e-3f,
+              "soldier health baked from the owner's stats");
+        check(s0 && fabsf(s0->x) <= ArenaHalf && fabsf(s0->z) <= ArenaHalf,
+              "soldier stayed inside the arena");
+        check(s0 && (s0->state == SoldierCover || s0->state == SoldierMove
+                     || s0->state == SoldierKite),
+              "soldier engaged (cover/move/kite) with an enemy present");
+        bool enemyHurt = g2.players[1].health < MaxHealthFor(g2.players[1])
+                      || owner.score > 0;
+        check(enemyHurt, "soldier fire damaged the enemy tank");
+
+        if (s0)
+        {
+            s0->health = 0;   // execute it
+            g2.Tick(idle);
+            check(s0->state == SoldierDying, "soldier enters dying at 0 hp");
+            for (int t = 0; t < TickRate * 2; ++t) g2.Tick(idle);
+            // the cooldown may already be up, in which case the freed slot is
+            // recycled by a REPLACEMENT within a tick: gone means either an
+            // empty slot or a fresh full-health soldier occupying it
+            bool despawned = !s0->active
+                          || (s0->state != SoldierDying && s0->health >= 39.0f);
+            check(despawned, "dead soldier despawned (slot freed or recycled)");
+            for (int t = 0; t < TickRate * 11; ++t) g2.Tick(idle);
+            check(countMine() == 1, "replacement arrives after the cooldown");
+        }
+    }
+
     Log("classtest done: %d failure(s)", fails);
     return fails;
 }

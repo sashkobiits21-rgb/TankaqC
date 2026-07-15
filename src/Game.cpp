@@ -280,6 +280,8 @@ void GameState::StartMatch()
             SpawnPlayer(id);   // full reset: money, upgrades, score, offers
     for (Projectile& pr : projectiles)
         pr.active = false;
+    for (SoldierState& s : soldiers)
+        s.active = false;
     phase = PhasePlaying;
     winner = 0xFF;
     matchEndTick = tick + MatchDurationTicks;
@@ -301,6 +303,8 @@ void GameState::ToLobby()
         }
     for (Projectile& pr : projectiles)
         pr.active = false;
+    for (SoldierState& s : soldiers)
+        s.active = false;
     phase = PhaseLobby;
 }
 
@@ -581,6 +585,611 @@ bool StepProjectile(Projectile& pr, float dt)
     return true;
 }
 
+// ------------------------------------------------------------- soldiers
+
+static bool SegHitsBox(float x0, float z0, float x1, float z1,
+                       const Obstacle& o, float inflate)
+{
+    // 2D slab test against the box expanded by `inflate`
+    float hx = o.hx + inflate, hz = o.hz + inflate;
+    float dx = x1 - x0, dz = z1 - z0;
+    float tmin = 0.0f, tmax = 1.0f;
+    if (fabsf(dx) < 1e-6f)
+    {
+        if (fabsf(x0 - o.cx) > hx) return false;
+    }
+    else
+    {
+        float inv = 1.0f / dx;
+        float t1 = (o.cx - hx - x0) * inv, t2 = (o.cx + hx - x0) * inv;
+        if (t1 > t2) std::swap(t1, t2);
+        tmin = std::max(tmin, t1); tmax = std::min(tmax, t2);
+        if (tmin > tmax) return false;
+    }
+    if (fabsf(dz) < 1e-6f)
+    {
+        if (fabsf(z0 - o.cz) > hz) return false;
+    }
+    else
+    {
+        float inv = 1.0f / dz;
+        float t1 = (o.cz - hz - z0) * inv, t2 = (o.cz + hz - z0) * inv;
+        if (t1 > t2) std::swap(t1, t2);
+        tmin = std::max(tmin, t1); tmax = std::min(tmax, t2);
+        if (tmin > tmax) return false;
+    }
+    return true;
+}
+
+bool SegmentBlockedByObstacles(float x0, float z0, float x1, float z1,
+                               float inflate)
+{
+    for (const Obstacle& o : kObstacles)
+        if (SegHitsBox(x0, z0, x1, z1, o, inflate))
+            return true;
+    return false;
+}
+
+void GameState::ApplyDamage(int shooterId, int victimId, int rawDamage,
+                            int hitMoney)
+{
+    PlayerState& t = players[victimId];
+    if (!t.active || t.health <= 0)
+        return;
+    int dmg = int(rawDamage * t.stats[int(Stat::DamageTaken)] + 0.5f);
+    t.health -= std::max(1, dmg);
+    t.hitFlash = 0.35f;
+    if (shooterId >= 0 && shooterId < MaxPlayers && players[shooterId].active)
+    {
+        PlayerState& shooter = players[shooterId];
+        shooter.money = uint16_t(std::min(999, shooter.money + hitMoney));
+        if (t.health <= 0)
+        {
+            ++shooter.score;
+            shooter.money = uint16_t(std::min(999, shooter.money + 100));
+            if (phase == PhaseOvertime)   // sudden death: first kill
+            {
+                phase = PhaseEnded;
+                winner = uint8_t(shooterId);
+                endedTick = tick;
+            }
+        }
+    }
+    if (t.health <= 0)
+    {
+        t.health = 0;
+        t.respawnTimer = RespawnTime;
+    }
+}
+
+// Candidate hiding spots: points floated off every obstacle face (three per
+// face). A spot is COVER from an enemy when the spot->enemy segment crosses
+// an obstacle -- i.e. the wall eats the line of sight.
+struct CoverSpot { float x, z; };
+constexpr int MaxCoverSpots = 128;
+static int GatherCoverSpots(CoverSpot* out, int cap)
+{
+    int n = 0;
+    const float off = SoldierRadius + 0.45f;
+    for (const Obstacle& o : kObstacles)
+    {
+        float xs[3] = { o.cx - o.hx * 0.6f, o.cx, o.cx + o.hx * 0.6f };
+        float zs[3] = { o.cz - o.hz * 0.6f, o.cz, o.cz + o.hz * 0.6f };
+        for (int i = 0; i < 3 && n + 4 <= cap; ++i)
+        {
+            out[n++] = { xs[i], o.cz - o.hz - off };
+            out[n++] = { xs[i], o.cz + o.hz + off };
+            out[n++] = { o.cx - o.hx - off, zs[i] };
+            out[n++] = { o.cx + o.hx + off, zs[i] };
+        }
+        // corners: angle cover AND the natural detour waypoints -- a spot
+        // pinned to a face is often only reachable by rounding a corner first
+        if (n + 4 <= cap)
+        {
+            out[n++] = { o.cx - o.hx - off, o.cz - o.hz - off };
+            out[n++] = { o.cx + o.hx + off, o.cz - o.hz - off };
+            out[n++] = { o.cx - o.hx - off, o.cz + o.hz + off };
+            out[n++] = { o.cx + o.hx + off, o.cz + o.hz + off };
+        }
+    }
+    return n;
+}
+
+bool GameState::SpawnSoldier(int ownerId)
+{
+    SoldierState* slot = nullptr;
+    for (SoldierState& s : soldiers)
+        if (!s.active) { slot = &s; break; }
+    if (!slot)
+        return false;
+    const PlayerState& own = players[ownerId];
+    for (int k = 0; k < 8; ++k)   // ring of candidate spots beside the tank
+    {
+        float ang = own.hullYaw + XM_2PI * float(k) / 8.0f + XM_PI * 0.5f;
+        float sx = own.x + sinf(ang) * 2.6f;
+        float sz = own.z + cosf(ang) * 2.6f;
+        if (fabsf(sx) > ArenaHalf - SoldierRadius
+            || fabsf(sz) > ArenaHalf - SoldierRadius
+            || PointHitsObstacle(sx, 0.1f, sz, SoldierRadius))
+            continue;
+        *slot = SoldierState{};
+        slot->active = true;
+        slot->owner = uint8_t(ownerId);
+        slot->state = SoldierGuard;
+        slot->x = sx;
+        slot->z = sz;
+        slot->yaw = own.hullYaw;
+        slot->health = own.stats[int(Stat::SoldierHealth)];
+        slot->speed = own.stats[int(Stat::SoldierSpeed)];
+        slot->damage = own.stats[int(Stat::SoldierDamage)];
+        slot->fireRate = own.stats[int(Stat::SoldierFireRate)];
+        return true;
+    }
+    return false;
+}
+
+// Pick the next cover destination against the current enemies, two passes:
+//   1. the best FULL-cover spot on the map (blocks every enemy's line of
+//      sight), scored toward gun range of the target and away from the
+//      current spot (novelty forces the peek-relocate rhythm);
+//   2. if that goal is not reachable by a straight run (paths are tested
+//      against body-inflated boxes -- greedy steering cannot plan around
+//      geometry), route via a reachable STEPPING-STONE spot that strictly
+//      closes distance to the goal. Multi-hop progression, no pathfinder.
+// Returns false when no full cover exists or the soldier is cornered: kite.
+static bool PickCover(const GameState& gs, SoldierState& s,
+                      const int* enemies, int ne)
+{
+    CoverSpot spots[MaxCoverSpots];
+    int n = GatherCoverSpots(spots, MaxCoverSpots);
+    const float walk = SoldierRadius * 0.8f;
+
+    auto usable = [&](const CoverSpot& c)
+    {
+        if (fabsf(c.x) > ArenaHalf - SoldierRadius
+            || fabsf(c.z) > ArenaHalf - SoldierRadius)
+            return false;
+        // a spot with a tank parked on it is physically unreachable: the
+        // hull push-out keeps the soldier at arm's length forever
+        for (int id = 0; id < MaxPlayers; ++id)
+        {
+            const PlayerState& p = gs.players[id];
+            if (!p.active || p.health <= 0)
+                continue;
+            float dx = c.x - p.x, dz = c.z - p.z;
+            float minD = TankRadius + SoldierRadius + 0.3f;
+            if (dx * dx + dz * dz < minD * minD)
+                return false;
+        }
+        return true;
+    };
+    auto coverInfo = [&](const CoverSpot& c, int& blocked, float& nearestEnemy)
+    {
+        blocked = 0;
+        nearestEnemy = 1e9f;
+        for (int e = 0; e < ne; ++e)
+        {
+            const PlayerState& t = gs.players[enemies[e]];
+            if (SegmentBlockedByObstacles(c.x, c.z, t.x, t.z))
+                ++blocked;
+            float dx = t.x - c.x, dz = t.z - c.z;
+            nearestEnemy = std::min(nearestEnemy, sqrtf(dx * dx + dz * dz));
+        }
+    };
+
+    // pass 1: best full-cover spot anywhere
+    float bestScore = -1e9f;
+    int best = -1;
+    bool bestReachable = false;
+    for (int i = 0; i < n; ++i)
+    {
+        const CoverSpot& c = spots[i];
+        if (!usable(c))
+            continue;
+        int blocked;
+        float nearestEnemy;
+        coverInfo(c, blocked, nearestEnemy);
+        if (blocked < ne)
+            continue;   // only full cover is worth ducking behind
+        float dx = c.x - s.x, dz = c.z - s.z;
+        float score = 4000.0f - sqrtf(dx * dx + dz * dz) * 30.0f;
+        if (nearestEnemy < 6.0f)
+            score -= 600.0f;               // don't hide in the enemy's lap
+        // ADVANCE: cover that leaves the target out of gun range is nearly
+        // worthless -- this pushes the soldier obstacle-to-obstacle toward
+        // the fight (and across open ground, where it shoots)
+        score -= std::max(0.0f, nearestEnemy - SoldierFireRange * 0.85f) * 120.0f;
+        float cx = c.x - s.coverX, cz = c.z - s.coverZ;
+        if (cx * cx + cz * cz < 4.0f)
+            score -= 1200.0f;              // novelty: prefer a NEW spot
+        if (score > bestScore)
+        {
+            bestScore = score;
+            best = i;
+            bestReachable =
+                !SegmentBlockedByObstacles(s.x, s.z, c.x, c.z, walk);
+        }
+    }
+    if (best < 0)
+        return false;                      // no full cover on the map: kite
+    if (bestReachable)
+    {
+        s.coverX = spots[best].x;
+        s.coverZ = spots[best].z;
+        return true;
+    }
+
+    // pass 2: stepping stone toward the (unreachable) goal spot. Stones that
+    // close distance are strongly preferred, but when a blocker (say, a tank
+    // parked in the corridor) rules them all out, a DETOUR stone that moves
+    // away first is still better than giving up -- greedy would trap here.
+    const CoverSpot& goal = spots[best];
+    float gdx = goal.x - s.x, gdz = goal.z - s.z;
+    float dGoal = sqrtf(gdx * gdx + gdz * gdz);
+    float bestStone = -1e9f;
+    int stone = -1;
+    for (int i = 0; i < n; ++i)
+    {
+        const CoverSpot& c = spots[i];
+        if (i == best || !usable(c))
+            continue;
+        float sdx = c.x - s.x, sdz = c.z - s.z;
+        if (sdx * sdx + sdz * sdz < 2.25f)
+            continue;                      // already standing here
+        if (SegmentBlockedByObstacles(s.x, s.z, c.x, c.z, walk))
+            continue;
+        float ddx = goal.x - c.x, ddz = goal.z - c.z;
+        float dCG = sqrtf(ddx * ddx + ddz * ddz);
+        int blocked;
+        float nearestEnemy;
+        coverInfo(c, blocked, nearestEnemy);
+        float sc = -dCG * 30.0f + float(blocked) * 300.0f;
+        if (dCG > dGoal - 0.5f)
+            sc -= 3000.0f;                 // detour: allowed, never preferred
+        float cx = c.x - s.coverX, cz = c.z - s.coverZ;
+        if (cx * cx + cz * cz < 4.0f)
+            sc -= 1200.0f;
+        if (sc > bestStone) { bestStone = sc; stone = i; }
+    }
+    if (stone < 0)
+        return false;                      // cornered: kite
+    s.coverX = spots[stone].x;
+    s.coverZ = spots[stone].z;
+    return true;
+}
+
+// The PEEK: the nearest reachable point that has clear line of sight to the
+// target within gun range. Cover keeps the soldier hidden both ways, so
+// without stepping out it would never shoot a camped enemy -- this is the
+// "walks out, shoots, walks back" of the design. Returns false when no such
+// point exists (relocate instead).
+static bool FindPeek(const GameState& gs, SoldierState& s, int targetId)
+{
+    const PlayerState& t = gs.players[targetId];
+    CoverSpot spots[MaxCoverSpots];
+    int n = GatherCoverSpots(spots, MaxCoverSpots);
+    const float walk = SoldierRadius * 0.8f;
+    float bestD = 1e18f;
+    int best = -1;
+    for (int i = 0; i < n; ++i)
+    {
+        const CoverSpot& c = spots[i];
+        if (fabsf(c.x) > ArenaHalf - SoldierRadius
+            || fabsf(c.z) > ArenaHalf - SoldierRadius)
+            continue;
+        float ex = t.x - c.x, ez = t.z - c.z;
+        if (ex * ex + ez * ez > SoldierFireRange * SoldierFireRange * 0.81f)
+            continue;                       // must end up in gun range
+        // sight line tested with margin: a line grazing a corner by an inch
+        // is not a real peek (the shot check would stay blocked en route)
+        if (SegmentBlockedByObstacles(c.x, c.z, t.x, t.z, 0.35f))
+            continue;
+        if (SegmentBlockedByObstacles(s.x, s.z, c.x, c.z, walk))
+            continue;                       // must be a straight run
+        bool occupied = false;
+        for (int id = 0; id < MaxPlayers && !occupied; ++id)
+        {
+            const PlayerState& p = gs.players[id];
+            if (!p.active || p.health <= 0)
+                continue;
+            float dx = c.x - p.x, dz = c.z - p.z;
+            float minD = TankRadius + SoldierRadius + 0.3f;
+            occupied = dx * dx + dz * dz < minD * minD;
+        }
+        if (occupied)
+            continue;
+        float dx = c.x - s.x, dz = c.z - s.z;
+        float d = dx * dx + dz * dz;
+        if (d > 81.0f)
+            continue;                       // a peek is a step, not a journey
+        if (d < bestD) { bestD = d; best = i; }
+    }
+    if (best < 0)
+        return false;
+    s.coverX = spots[best].x;
+    s.coverZ = spots[best].z;
+    return true;
+}
+
+// Fire at the current target if the reload is ready, it is in range, and
+// line of sight is clear. Hitscan: damage lands immediately; the muzzle
+// flash + facing replicate so clients draw the tracer themselves.
+static void SoldierTryFire(GameState& gs, SoldierState& s)
+{
+    if (s.fireCooldown > 0.0f || s.targetId >= MaxPlayers)
+        return;
+    const PlayerState& t = gs.players[s.targetId];
+    if (!t.active || t.health <= 0)
+        return;
+    float dx = t.x - s.x, dz = t.z - s.z;
+    if (dx * dx + dz * dz > SoldierFireRange * SoldierFireRange)
+        return;
+    if (SegmentBlockedByObstacles(s.x, s.z, t.x, t.z))
+        return;
+    gs.ApplyDamage(s.owner, s.targetId, int(s.damage + 0.5f), 2);
+    s.fireCooldown = 1.0f / std::max(0.1f, s.fireRate);
+    s.muzzleFlash = 0.1f;
+    s.yaw = atan2f(dx, dz);   // square up to the shot
+}
+
+void GameState::TickSoldier(SoldierState& s)
+{
+    s.fireCooldown = std::max(0.0f, s.fireCooldown - TickDt);
+    s.muzzleFlash = std::max(0.0f, s.muzzleFlash - TickDt);
+    s.hitFlash = std::max(0.0f, s.hitFlash - TickDt);
+
+    if (s.state == SoldierDying)
+    {
+        s.deathTimer -= TickDt;
+        if (s.deathTimer <= 0.0f)
+            s.active = false;
+        return;
+    }
+    if (s.health <= 0.0f || !players[s.owner].active)
+    {
+        s.state = SoldierDying;
+        s.deathTimer = SoldierDeathTime;
+        return;
+    }
+
+    // enemies of the owner
+    int enemies[MaxPlayers], ne = 0;
+    int nearest = -1;
+    float nearestD2 = 1e18f;
+    for (int id = 0; id < MaxPlayers; ++id)
+    {
+        const PlayerState& p = players[id];
+        if (!p.active || p.health <= 0 || id == s.owner)
+            continue;
+        enemies[ne++] = id;
+        float dx = p.x - s.x, dz = p.z - s.z;
+        float d2 = dx * dx + dz * dz;
+        if (d2 < nearestD2) { nearestD2 = d2; nearest = id; }
+    }
+
+    float moveX = 0, moveZ = 0;
+    if (ne == 0)
+    {
+        // guard: loiter beside the owner
+        s.state = SoldierGuard;
+        s.targetId = 0xFF;
+        const PlayerState& own = players[s.owner];
+        float gx = own.x + sinf(own.hullYaw + XM_PI * 0.5f) * 2.6f;
+        float gz = own.z + cosf(own.hullYaw + XM_PI * 0.5f) * 2.6f;
+        float dx = gx - s.x, dz = gz - s.z;
+        if (dx * dx + dz * dz > 2.0f) { moveX = dx; moveZ = dz; }
+    }
+    else
+    {
+        s.targetId = uint8_t(nearest);
+        switch (s.state)
+        {
+        case SoldierGuard:
+            // enemies appeared: get behind something
+            if (PickCover(*this, s, enemies, ne))
+            {
+                s.state = SoldierMove;
+                s.stateTimer = 2.0f;   // repath deadline (stall insurance)
+            }
+            else
+            {
+                s.state = SoldierKite;
+                s.stateTimer = 0.6f;
+            }
+            break;
+        case SoldierCover:
+        {
+            // ducked + hidden; face the threat, hold fire, then PEEK if a
+            // sight-line point is in reach, else relocate to fresh cover
+            const PlayerState& t = players[nearest];
+            s.yaw = atan2f(t.x - s.x, t.z - s.z);
+            s.stateTimer -= TickDt;
+            if (s.stateTimer <= 0.0f)
+            {
+                if (s.fireCooldown <= 0.0f && FindPeek(*this, s, nearest))
+                {
+                    s.state = SoldierPeek;
+                    s.stateTimer = 3.0f;   // give up the peek eventually
+                }
+                else if (PickCover(*this, s, enemies, ne))
+                {
+                    s.state = SoldierMove;
+                    s.stateTimer = 2.0f;
+                }
+                else
+                {
+                    s.state = SoldierKite;
+                    s.stateTimer = 0.6f;
+                }
+            }
+            break;
+        }
+        case SoldierPeek:
+        {
+            // run out toward the sight line, shooting the moment it opens;
+            // at the peek point HOLD until the shot lands (or the timer says
+            // this peek is a dud) -- one landed shot sends it back to cover
+            float cdBefore = s.fireCooldown;
+            SoldierTryFire(*this, s);
+            bool fired = s.fireCooldown > cdBefore;
+            float dx = s.coverX - s.x, dz = s.coverZ - s.z;
+            if (dx * dx + dz * dz > 0.16f)   // still approaching
+            {
+                moveX = dx; moveZ = dz;
+            }
+            s.stateTimer -= TickDt;
+            if (fired || s.stateTimer <= 0.0f)
+            {
+                if (PickCover(*this, s, enemies, ne))
+                {
+                    s.state = SoldierMove;
+                    s.stateTimer = 2.0f;
+                }
+                else
+                {
+                    s.state = SoldierKite;
+                    s.stateTimer = 0.6f;
+                }
+            }
+            break;
+        }
+        case SoldierMove:
+        {
+            float dx = s.coverX - s.x, dz = s.coverZ - s.z;
+            if (dx * dx + dz * dz < 0.16f)
+            {
+                s.state = SoldierCover;
+                s.stateTimer = SoldierCoverPause;
+            }
+            else
+            {
+                moveX = dx; moveZ = dz;
+                SoldierTryFire(*this, s);   // shoot while running
+                // taking too long (blocked, target moved...): pick again --
+                // the novelty penalty steers away from the stuck spot
+                s.stateTimer -= TickDt;
+                if (s.stateTimer <= 0.0f)
+                {
+                    if (!PickCover(*this, s, enemies, ne))
+                        s.state = SoldierKite;
+                    s.stateTimer = SoldierMove == s.state ? 2.0f : 0.6f;
+                }
+            }
+            break;
+        }
+        case SoldierKite:
+        {
+            // no full cover: keep running (away + tangent) and shooting
+            const PlayerState& t = players[nearest];
+            float ax = s.x - t.x, az = s.z - t.z;
+            float len = std::max(0.001f, sqrtf(ax * ax + az * az));
+            ax /= len; az /= len;
+            moveX = ax + az * 0.65f;    // slide sideways while backing off
+            moveZ = az - ax * 0.65f;
+            SoldierTryFire(*this, s);
+            s.stateTimer -= TickDt;
+            if (s.stateTimer <= 0.0f)
+            {
+                if (PickCover(*this, s, enemies, ne))
+                    s.state = SoldierMove;
+                s.stateTimer = 0.6f;
+            }
+            break;
+        }
+        default:
+            s.state = SoldierGuard;
+            break;
+        }
+    }
+
+    // steer around tanks (including the owner's): repulsion within a body
+    // length blends with the goal direction into a tangential slide, so a
+    // parked hull can't deadlock the push-out against the goal
+    if (moveX != 0.0f || moveZ != 0.0f)
+    {
+        float gl = sqrtf(moveX * moveX + moveZ * moveZ);
+        moveX /= gl; moveZ /= gl;
+        const float avoid = TankRadius + SoldierRadius + 1.3f;
+        for (int id = 0; id < MaxPlayers; ++id)
+        {
+            const PlayerState& p = players[id];
+            if (!p.active || p.health <= 0)
+                continue;
+            float rx = s.x - p.x, rz = s.z - p.z;
+            float d2 = rx * rx + rz * rz;
+            if (d2 < avoid * avoid && d2 > 1e-6f)
+            {
+                float d = sqrtf(d2);
+                float w = (avoid - d) / avoid;
+                moveX += rx / d * w * 2.2f;
+                moveZ += rz / d * w * 2.2f;
+            }
+        }
+        // ...and around obstacle boxes (repulsion from the nearest point on
+        // the box + the goal direction = a slide along the wall)
+        for (const Obstacle& o : kObstacles)
+        {
+            float px = std::clamp(s.x, o.cx - o.hx, o.cx + o.hx);
+            float pz = std::clamp(s.z, o.cz - o.hz, o.cz + o.hz);
+            float rx = s.x - px, rz = s.z - pz;
+            float d2 = rx * rx + rz * rz;
+            // must stay below the spots' face offset (1.0) or the wall
+            // repulsion fights the soldier's own arrivals
+            const float avoidBox = SoldierRadius + 0.5f;
+            if (d2 < avoidBox * avoidBox && d2 > 1e-6f)
+            {
+                float d = sqrtf(d2);
+                float w = (avoidBox - d) / avoidBox;
+                moveX += rx / d * w * 1.8f;
+                moveZ += rz / d * w * 1.8f;
+            }
+        }
+    }
+
+    // movement + collision (soldiers never block tanks -- tanks push them)
+    float ml2 = moveX * moveX + moveZ * moveZ;
+    if (ml2 > 1e-6f)
+    {
+        float inv = 1.0f / sqrtf(ml2);
+        s.x += moveX * inv * s.speed * TickDt;
+        s.z += moveZ * inv * s.speed * TickDt;
+        s.yaw = atan2f(moveX, moveZ);
+    }
+    s.x = std::clamp(s.x, -ArenaHalf + SoldierRadius, ArenaHalf - SoldierRadius);
+    s.z = std::clamp(s.z, -ArenaHalf + SoldierRadius, ArenaHalf - SoldierRadius);
+    CollideCircleObstacles(s.x, s.z, SoldierRadius);
+    for (int id = 0; id < MaxPlayers; ++id)   // tanks shove soldiers aside
+    {
+        const PlayerState& p = players[id];
+        if (!p.active || p.health <= 0)
+            continue;
+        float dx = s.x - p.x, dz = s.z - p.z;
+        float d2 = dx * dx + dz * dz;
+        float minD = TankRadius + SoldierRadius;
+        if (d2 < minD * minD && d2 > 1e-6f)
+        {
+            float d = sqrtf(d2);
+            s.x += dx / d * (minD - d);
+            s.z += dz / d * (minD - d);
+        }
+    }
+    for (SoldierState& o : soldiers)          // light mutual separation
+    {
+        if (!o.active || &o == &s)
+            continue;
+        float dx = s.x - o.x, dz = s.z - o.z;
+        float d2 = dx * dx + dz * dz;
+        float minD = SoldierRadius * 2.0f;
+        if (d2 < minD * minD && d2 > 1e-6f)
+        {
+            float d = sqrtf(d2);
+            float push = (minD - d) * 0.5f;
+            s.x += dx / d * push;
+            s.z += dz / d * push;
+        }
+    }
+}
+
 // Screen-relative movement: W/S/A/D push the tank up/down/left/right on
 // screen. The camera sits at -Z looking toward +Z with a right-handed
 // view, which makes screen-right equal world -X (and screen-up +Z).
@@ -775,6 +1384,22 @@ void GameState::Tick(const InputCmd* inputs)
         if (tick % TickRate == 0 && p.money < 999)
             ++p.money;
 
+        // SOLDIER class summon: a fresh soldier every SoldierCooldown while
+        // below the owner's SoldierMax (the first arrives immediately after
+        // buying the card -- spawnWait starts at zero)
+        if (HasClass(p, ClassSoldier))
+        {
+            p.soldierSpawnWait = std::max(0.0f, p.soldierSpawnWait - TickDt);
+            int mine = 0;
+            for (const SoldierState& s : soldiers)
+                if (s.active && s.owner == id)
+                    ++mine;
+            if (p.soldierSpawnWait <= 0.0f
+                && mine < int(p.stats[int(Stat::SoldierMax)] + 0.5f)
+                && SpawnSoldier(id))
+                p.soldierSpawnWait = p.stats[int(Stat::SoldierCooldown)];
+        }
+
         const InputCmd& in = inputs[id];
 
         // Server-side lag compensation: a freshly received direction change is
@@ -849,7 +1474,8 @@ void GameState::Tick(const InputCmd* inputs)
             pr.active = false;
             continue;
         }
-        for (int id = 0; id < MaxPlayers; ++id)
+        bool spent = false;
+        for (int id = 0; id < MaxPlayers && !spent; ++id)
         {
             PlayerState& t = players[id];
             if (!t.active || t.health <= 0 || id == pr.owner)
@@ -857,35 +1483,38 @@ void GameState::Tick(const InputCmd* inputs)
             float dx = pr.x - t.x, dz = pr.z - t.z;
             if (dx * dx + dz * dz < TankRadius * TankRadius && pr.y < 2.2f)
             {
-                int dmg = int(pr.damage * t.stats[int(Stat::DamageTaken)] + 0.5f);
-                t.health -= std::max(1, dmg);
-                t.hitFlash = 0.35f;
+                ApplyDamage(pr.owner, id, pr.damage, 5);
                 pr.active = false;
-                if (pr.owner < MaxPlayers && players[pr.owner].active)
-                {
-                    PlayerState& shooter = players[pr.owner];
-                    shooter.money = uint16_t(std::min(999, shooter.money + 5));
-                    if (t.health <= 0)
-                    {
-                        ++shooter.score;
-                        shooter.money = uint16_t(std::min(999, shooter.money + 100));
-                        if (phase == PhaseOvertime)   // sudden death: first kill
-                        {
-                            phase = PhaseEnded;
-                            winner = pr.owner;
-                            endedTick = tick;
-                        }
-                    }
-                }
-                if (t.health <= 0)
-                {
-                    t.health = 0;
-                    t.respawnTimer = RespawnTime;
-                }
+                spent = true;
+            }
+        }
+        // rockets also detonate on enemy soldiers (never the owner's own);
+        // a soldier kill pays a small bounty, no score
+        for (SoldierState& s : soldiers)
+        {
+            if (spent)
                 break;
+            if (!s.active || s.state == SoldierDying || s.owner == pr.owner)
+                continue;
+            float dx = pr.x - s.x, dz = pr.z - s.z;
+            float r = SoldierRadius + ProjectileRadius;
+            if (dx * dx + dz * dz < r * r && pr.y < 2.2f)
+            {
+                s.health -= float(pr.damage);
+                s.hitFlash = 0.3f;
+                if (s.health <= 0.0f && pr.owner < MaxPlayers
+                    && players[pr.owner].active)
+                    players[pr.owner].money =
+                        uint16_t(std::min(999, players[pr.owner].money + 10));
+                pr.active = false;
+                spent = true;
             }
         }
     }
+
+    for (SoldierState& s : soldiers)
+        if (s.active)
+            TickSoldier(s);
 }
 
 } // namespace tankaq

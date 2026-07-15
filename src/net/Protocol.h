@@ -14,7 +14,9 @@ namespace tankaq::net
 // v11: class system -- no wire change, but upgrade indices remap (soldier +
 // bouncy families), and upgrades replicate by pool index, so mixed-version
 // peers must be rejected.
-constexpr uint8_t ProtocolVersion = 11;
+// v12: soldier summons -- SoldierNet array in snapshots. Clients drive the
+// animation/tracers locally from this state (fire-and-forget visuals).
+constexpr uint8_t ProtocolVersion = 12;
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t
@@ -149,6 +151,18 @@ struct ProjectileNet
     float yaw = 0;
 };
 
+struct SoldierNet
+{
+    uint8_t active = 0;
+    uint8_t owner = 0;
+    uint8_t state = 0;        // SoldierGuard/Cover/Move/Kite/Dying
+    uint8_t targetId = 0xFF;  // aimed-at tank (drives the client aim pose)
+    uint8_t health = 0;       // clamped to 255 for the wire
+    uint8_t flags = 0;        // bit0 muzzleFlash, bit1 hitFlash
+    float x = 0, z = 0;
+    float yaw = 0;
+};
+
 struct MsgSnapshot
 {
     uint8_t type = uint8_t(MsgType::Snapshot);
@@ -159,6 +173,7 @@ struct MsgSnapshot
     uint32_t matchEndTick = 0;
     PlayerNet players[MaxPlayers];
     ProjectileNet projectiles[MaxProjectiles];
+    SoldierNet soldiers[MaxSoldiers];
 };
 
 #pragma pack(pop)

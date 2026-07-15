@@ -125,6 +125,16 @@ Drive the hull with WASD, aim the turret with the mouse, shoot your friends.
   Not found: you become the host and a public lobby advertises your game (player
   count + phase kept fresh, closed on leave). The Steam lobby is a directory
   entry only -- nobody joins it, so no membership bookkeeping. No servers, $0.
+- **Soldier summons** — the SOLDIER class spawns host-authoritative infantry
+  (protocol v12): cover-point AI scores obstacle-face spots by line-of-sight
+  blockage against every enemy, advances obstacle-to-obstacle via reachable
+  stepping stones (paths tested against body-inflated boxes), PEEKS out to a
+  sight-line point for one hitscan shot and tucks back, and kites (runs +
+  shoots) when no full cover exists. Deaths, bounties and kill credit flow
+  through the same ApplyDamage as rockets. Clients drive the skinned
+  animation (duck / run + gun-up torso / death), torso aim constraint and
+  tracers locally from replicated state -- fire-and-forget, no corrections.
+  `--soldiertest` grants the class solo against a parked dummy.
 - **Skinned meshes / rigs** — glTF/GLB skins + animations (Blender exports drop
   in): up to 64 bones, 4 influences, multi-part characters with material
   colors, CPU clip sampling with crossfades, GPU palette skinning on both

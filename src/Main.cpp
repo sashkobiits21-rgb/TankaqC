@@ -154,6 +154,7 @@ Options ParseOptions(const std::string& cmd)
     if (!(v = GetArg(cmd, "--bounces=")).empty()) gDebugBounces = atoi(v.c_str());
     o.rigTest = cmd.find("--rigtest") != std::string::npos;
     o.classTest = cmd.find("--classtest") != std::string::npos;
+    o.soldierTest = cmd.find("--soldiertest") != std::string::npos;
     if (!(v = GetArg(cmd, "--winsize=")).empty())
         sscanf_s(v.c_str(), "%dx%d", &o.winW, &o.winH);
     return o;
@@ -213,6 +214,27 @@ void ApplySnapshot(const net::MsgSnapshot& s)
             p.hullYaw = in.hullYaw;
             p.turretYaw = in.turretYaw;
         }
+    }
+
+    // soldiers: adopt the authoritative state wholesale; rendering
+    // interpolates positions from the snapPrev/snapCurr pair and drives
+    // animation locally from `state` (fire-and-forget -- no corrections)
+    for (int i = 0; i < MaxSoldiers; ++i)
+    {
+        const net::SoldierNet& in = s.soldiers[i];
+        SoldierState& sl = g.game.soldiers[i];
+        sl.active = in.active != 0;
+        if (!sl.active)
+            continue;
+        sl.owner = in.owner;
+        sl.state = in.state;
+        sl.targetId = in.targetId;
+        sl.health = float(in.health);
+        sl.x = in.x; sl.z = in.z; sl.yaw = in.yaw;
+        sl.muzzleFlash = (in.flags & 1) ? 0.10f
+                                        : std::max(0.0f, sl.muzzleFlash - TickDt);
+        sl.hitFlash = (in.flags & 2) ? 0.25f
+                                     : std::max(0.0f, sl.hitFlash - TickDt);
     }
 
     // Reconciliation: adopt the authoritative state for our own tank, then
@@ -342,6 +364,19 @@ net::MsgSnapshot BuildSnapshot()
         net::ProjectileNet& out = s.projectiles[i];
         out.active = pr.active ? 1 : 0;
         out.x = pr.x; out.y = pr.y; out.z = pr.z; out.yaw = pr.yaw;
+    }
+    for (int i = 0; i < MaxSoldiers; ++i)
+    {
+        const SoldierState& sl = g.game.soldiers[i];
+        net::SoldierNet& out = s.soldiers[i];
+        out.active = sl.active ? 1 : 0;
+        out.owner = sl.owner;
+        out.state = sl.state;
+        out.targetId = sl.targetId;
+        out.health = uint8_t(std::clamp(sl.health, 0.0f, 255.0f));
+        out.flags = uint8_t((sl.muzzleFlash > 0 ? 1 : 0)
+                          | (sl.hitFlash > 0 ? 2 : 0));
+        out.x = sl.x; out.z = sl.z; out.yaw = sl.yaw;
     }
     return s;
 }
@@ -665,6 +700,13 @@ void StartSolo()
     SetPlayerName(0, "YOU");
     if (g.opt.rich || g.opt.shopTest)
         g.game.players[0].money = 500;
+    if (g.opt.soldierTest)
+    {
+        // a parked target so the soldiers have someone to fight
+        g.game.SpawnPlayer(1);
+        SetPlayerName(1, "DUMMY");
+        g.game.players[1].ready = 1;
+    }
     g.screen = Screen::InGame;
     g.sessionActive = true;
     g.statusLine.clear();
@@ -919,9 +961,144 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
         frame.objects.push_back(ro);
     }
 
+    // soldier summons: skinned, animated locally from the replicated state
+    // (fire-and-forget visuals -- the host only ships position/state/flags)
+    if (!g.meshRigParts.empty() && g.rigModel.valid)
+    {
+        for (int i = 0; i < MaxSoldiers; ++i)
+        {
+            const SoldierState& s = g.game.soldiers[i];
+            if (!s.active)
+                continue;
+
+            // position/yaw interpolation, same pattern as the projectiles
+            float sx = s.x, sz = s.z, syaw = s.yaw;
+            if (clientMode)
+            {
+                if (g.haveTwoSnaps && g.snapPrev.soldiers[i].active
+                    && g.snapCurr.soldiers[i].active)
+                {
+                    const net::SoldierNet& a = g.snapPrev.soldiers[i];
+                    const net::SoldierNet& b = g.snapCurr.soldiers[i];
+                    float t = std::clamp(float((g.time - g.snapCurrTime)
+                                               / (SnapshotEveryTicks * TickDt)),
+                                         0.0f, 1.0f);
+                    sx = a.x + (b.x - a.x) * t;
+                    sz = a.z + (b.z - a.z) * t;
+                    syaw = LerpAngle(a.yaw, b.yaw, t);
+                }
+            }
+            else if (g.prevTick.soldiers[i].active)
+            {
+                const SoldierState& a = g.prevTick.soldiers[i];
+                sx = a.x + (s.x - a.x) * g.tickAlpha;
+                sz = a.z + (s.z - a.z) * g.tickAlpha;
+                syaw = LerpAngle(a.yaw, s.yaw, g.tickAlpha);
+            }
+
+            // drive the animator from the replicated state (transitions only)
+            Animator& an = g.soldierAnim[i];
+            const App::SoldierClips& sc = g.soldierClips;
+            if (g.soldierAnimState[i] != s.state || an.layers[0].clip < 0)
+            {
+                g.soldierAnimState[i] = s.state;
+                an.layers[1].targetWeight = 0;
+                switch (s.state)
+                {
+                case SoldierCover:
+                    if (sc.duck >= 0) an.PlayLayer(0, sc.duck, true, 1.0f);
+                    break;
+                case SoldierMove:
+                case SoldierKite:
+                case SoldierPeek:
+                    if (sc.run >= 0) an.PlayLayer(0, sc.run, true, 1.0f);
+                    if (sc.shoot >= 0)
+                    {
+                        // gun-up torso layered over the running legs
+                        an.PlayLayer(1, sc.shoot, true, 1.0f);
+                        an.layers[1].mask = MaskSubtree(g.rigModel, "Torso");
+                    }
+                    break;
+                case SoldierDying:
+                    if (sc.death >= 0)
+                        an.PlayLayer(0, sc.death, false, 1.0f, true);
+                    break;
+                default:   // guard
+                    if (sc.idle >= 0) an.PlayLayer(0, sc.idle, true, 1.0f);
+                    break;
+                }
+            }
+
+            // torso aim at the target tank while peeking/kiting
+            bool aiming = (s.state == SoldierMove || s.state == SoldierKite
+                           || s.state == SoldierPeek)
+                       && s.targetId < MaxPlayers
+                       && g.game.players[s.targetId].active;
+            an.aim.active = aiming;
+            if (aiming)
+            {
+                const PlayerState& t = g.game.players[s.targetId];
+                // world -> soldier model space (inverse of RotY(yaw)+T)
+                float dx = t.x - sx, dz = t.z - sz;
+                float cy = cosf(syaw), sy = sinf(syaw);
+                an.aim.target = XMFLOAT3(dx * cy - dz * sy, 1.2f,
+                                         dz * cy + dx * sy);
+            }
+
+            an.Update(g.frameDt);
+            frame.palettes.emplace_back();
+            an.Pose(frame.palettes.back());
+            int paletteIdx = int(frame.palettes.size()) - 1;
+
+            XMMATRIX world = XMMatrixRotationY(syaw)
+                           * XMMatrixTranslation(sx, 0.0f, sz);
+            for (size_t p = 0; p < g.meshRigParts.size(); ++p)
+            {
+                if (!g.rigPartVisible[p])
+                    continue;
+                const XMFLOAT4& c = g.rigPartColors[p];
+                XMFLOAT4 tint{ c.x, c.y, c.z, 0 };
+                if (s.hitFlash > 0)
+                    tint = { 1.0f, 0.3f, 0.25f, 0.35f };
+                RenderObject ro{ g.meshRigParts[p],
+                                 g.texRig >= 0 ? g.texRig : g.texWhite,
+                                 Store(world), tint, true };
+                ro.paletteIndex = paletteIdx;
+                frame.objects.push_back(ro);
+            }
+
+            // muzzle flash + hitscan tracer toward the target
+            if (s.muzzleFlash > 0 && s.state != SoldierDying)
+            {
+                float gx = sx + sinf(syaw) * 0.7f;
+                float gz = sz + cosf(syaw) * 0.7f;
+                float fs = 0.25f + 2.2f * s.muzzleFlash;
+                frame.objects.push_back({ g.meshFlash, g.texWhite,
+                    Store(XMMatrixScaling(fs, fs, fs)
+                          * XMMatrixTranslation(gx, SoldierGunY, gz)),
+                    { 1.0f, 0.85f, 0.3f, 1.0f }, true });
+                if (s.targetId < MaxPlayers && g.game.players[s.targetId].active)
+                {
+                    const PlayerState& t = g.game.players[s.targetId];
+                    float dx = t.x - gx, dz = t.z - gz;
+                    float len = std::max(0.0f, sqrtf(dx * dx + dz * dz) - 1.2f);
+                    if (len > 0.5f)
+                    {
+                        XMMATRIX tm = XMMatrixScaling(0.05f, 0.05f, len)
+                                    * XMMatrixRotationY(atan2f(dx, dz))
+                                    * XMMatrixTranslation(gx + dx * 0.5f, 0.95f,
+                                                          gz + dz * 0.5f);
+                        frame.objects.push_back({ g.meshTracer, g.texWhite,
+                            Store(tm), { 1.0f, 0.9f, 0.45f, 0.85f }, true });
+                    }
+                }
+            }
+        }
+    }
+
     // animated test rig (--rigtest): posed once on the CPU, all parts share
     // the palette and carry their material base colors
-    if (!g.meshRigParts.empty() && g.rigModel.valid)
+    if (g.opt.rigTest && !g.meshRigParts.empty() && g.rigModel.valid)
     {
         // live constraint targets, world -> the soldier's model space
         {
@@ -1454,9 +1631,17 @@ bool CreateAssets()
     ImageData icons = MakeIconAtlas(32, UpgradeCount);
     g.texIconAtlas = r->CreateTexture(icons.rgba.data(), icons.width, icons.height);
 
-    // skinned test rig (also the template for future rigged units): prefer
-    // the soldier if present, else the generated test column
-    if (g.opt.rigTest)
+    // tracer: a unit cube stretched into a thin beam per soldier shot
+    {
+        MeshData tracer = MakeBox(0.5f, 0.5f, 0.5f, 1.0f);
+        ComputeTangents(tracer);
+        g.meshTracer = r->CreateMesh(tracer.verts.data(), tracer.verts.size(),
+                                     tracer.indices.data(), tracer.indices.size());
+    }
+
+    // The soldier rig is GAMEPLAY now (summons), not just the --rigtest demo:
+    // always load it, resolve the clips the summon needs BY NAME (loud on
+    // miss), and pre-configure one Animator per soldier slot.
     {
         g.rigModel = LoadSkinnedGLB("assets/soldier.glb");
         g.rigScale = 1.0f;
@@ -1494,58 +1679,79 @@ bool CreateAssets()
                     g.rigModel.jointNames[j].c_str(),
                     g.rigModel.joints[j].parent);
 
-            // full animation system demo: run legs + shoot torso (masked
-            // layer) + aim constraint at the player tank + left-hand two-bone
-            // IK onto an orbiting marker, weight ramping in and out
-            Animator& an = g.rigAnimator;
-            an.model = &g.rigModel;
             // All rig references resolve BY NAME, once, right here -- and
             // every miss logs. Raw indices are per-export and a re-exported
             // GLB would silently bend the wrong bone.
             auto clip = [&](const char* n)
             {
                 int c = g.rigModel.FindClip(n);
-                if (c < 0) Log("rigtest: clip '%s' not in model", n);
+                if (c < 0) Log("rig: clip '%s' not in model", n);
                 return c;
             };
             auto joint = [&](const char* n)
             {
                 int j = FindJoint(g.rigModel, n);
-                if (j < 0) Log("rigtest: joint '%s' not in skeleton", n);
+                if (j < 0) Log("rig: joint '%s' not in skeleton", n);
                 return j;
             };
-            int run = clip("Run");
-            int shoot = g.rigModel.FindClip("Idle_Shoot");
-            if (shoot < 0) shoot = clip("Shoot");   // log only if both miss
-            if (run >= 0)
-                an.PlayLayer(0, run, true, 1.0f);
-            if (shoot >= 0)
+
+            // clips the soldier summon runs on
+            g.soldierClips.idle = clip("Idle");
+            g.soldierClips.run = clip("Run");
+            g.soldierClips.duck = clip("Duck");
+            g.soldierClips.shoot = g.rigModel.FindClip("Idle_Shoot");
+            if (g.soldierClips.shoot < 0) g.soldierClips.shoot = clip("Shoot");
+            g.soldierClips.death = clip("Death");
+
+            // shared aim chain (torso twist toward the target)
+            int aimChain[2] = { joint("Abdomen"), joint("Torso") };
+            for (Animator& an : g.soldierAnim)
             {
-                an.PlayLayer(1, shoot, true, 1.0f);
-                an.layers[1].mask = MaskSubtree(g.rigModel, "Torso");
+                an.model = &g.rigModel;
+                an.aim.chainCount = 0;
+                for (int j : aimChain)
+                    if (j >= 0 && an.aim.chainCount < 4)
+                        an.aim.chain[an.aim.chainCount++] = j;
+                an.aim.forward = XMFLOAT3(0, 0, 1);
+                an.aim.maxAngle = 1.2f;
             }
-            an.aim.active = true;
-            an.aim.chainCount = 0;
-            for (const char* n : { "Abdomen", "Torso" })
+
+            if (g.opt.rigTest)
             {
-                int j = joint(n);
-                if (j >= 0 && an.aim.chainCount < 4)
-                    an.aim.chain[an.aim.chainCount++] = j;
+                // full animation system demo: run legs + shoot torso (masked
+                // layer) + aim constraint at the player tank + left-hand
+                // two-bone IK onto an orbiting marker, weight ramping in/out
+                Animator& an = g.rigAnimator;
+                an.model = &g.rigModel;
+                if (g.soldierClips.run >= 0)
+                    an.PlayLayer(0, g.soldierClips.run, true, 1.0f);
+                if (g.soldierClips.shoot >= 0)
+                {
+                    an.PlayLayer(1, g.soldierClips.shoot, true, 1.0f);
+                    an.layers[1].mask = MaskSubtree(g.rigModel, "Torso");
+                }
+                an.aim.active = true;
+                an.aim.chainCount = 0;
+                for (int j : aimChain)
+                    if (j >= 0 && an.aim.chainCount < 4)
+                        an.aim.chain[an.aim.chainCount++] = j;
+                an.aim.forward = XMFLOAT3(0, 0, 1);
+                an.aim.maxAngle = 1.2f;
+                int ua = joint("UpperArm.L");
+                int la = joint("LowerArm.L");
+                int ha = FindJoint(g.rigModel, "Hand.L");
+                if (ha < 0) ha = joint("Index1.L");   // log only if both miss
+                if (ua >= 0 && la >= 0 && ha >= 0)
+                {
+                    an.ik[0].active = true;
+                    an.ik[0].a = ua; an.ik[0].b = la; an.ik[0].c = ha;
+                }
+                else
+                    Log("rigtest: IK chain incomplete, hand IK disabled");
             }
-            an.aim.forward = XMFLOAT3(0, 0, 1);
-            an.aim.maxAngle = 1.2f;
-            int ua = joint("UpperArm.L");
-            int la = joint("LowerArm.L");
-            int ha = FindJoint(g.rigModel, "Hand.L");
-            if (ha < 0) ha = joint("Index1.L");     // log only if both miss
-            if (ua >= 0 && la >= 0 && ha >= 0)
-            {
-                an.ik[0].active = true;
-                an.ik[0].a = ua; an.ik[0].b = la; an.ik[0].c = ha;
-            }
-            else
-                Log("rigtest: IK chain incomplete, hand IK disabled");
         }
+        else
+            Log("Assets: no soldier rig -- summons will be invisible");
     }
     return g.meshHull >= 0 && g.meshTurret >= 0 && g.texPalette >= 0;
 }
@@ -2234,8 +2440,21 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                     g.net.BroadcastOwnedReset();
                 if (g.opt.rich || g.opt.shopTest)
                     g.game.players[g.myId].money = 500;
+                if (g.opt.soldierTest)
+                {
+                    // grant AFTER the match wipe: SOLDIER class + PLATOON
+                    PlayerState& me = g.game.players[g.myId];
+                    me.owned.push_back(uint8_t(UpgradeId::SoldierClass));
+                    me.owned.push_back(uint8_t(UpgradeId::Recruiter));
+                    me.owned.push_back(uint8_t(UpgradeId::Platoon));
+                    g.game.RecalcStats(g.myId);
+                    Log("soldiertest: granted SOLDIER class (max %d, cooldown %.2f)",
+                        int(me.stats[int(Stat::SoldierMax)] + 0.5f),
+                        me.stats[int(Stat::SoldierCooldown)]);
+                }
             }
-            if ((g.opt.shopTest || g.opt.autoDrive) && g.screen == Screen::InGame
+            if ((g.opt.shopTest || g.opt.autoDrive || g.opt.soldierTest)
+                && g.screen == Screen::InGame
                 && ph == PhaseLobby && !g.game.players[g.myId].ready)
                 ToggleReady();
             g.prevPhase = ph;
@@ -2386,6 +2605,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                 snd::Play(snd::Sfx::Hover, 0.22f, SndJitter(0.08f));
             g.hoverKeyPrev = g.hoverKeyNow;
             g.hoverKeyNow = 0;
+
+            // soldier fire: rising muzzle edge -> a lighter, snappier crack
+            for (int i = 0; i < MaxSoldiers; ++i)
+            {
+                const SoldierState& s = g.game.soldiers[i];
+                bool muzzle = s.active && s.muzzleFlash > 0;
+                if (muzzle && !g.soldierPrevMuzzle[i])
+                    snd::Play(snd::Sfx::Shoot,
+                              SndDistVol(s.x, s.z, 0.30f),
+                              1.55f * SndJitter(0.10f));
+                g.soldierPrevMuzzle[i] = muzzle;
+            }
 
             float intensity = 0.0f;
             float turn = 0.0f;
