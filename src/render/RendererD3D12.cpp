@@ -1233,9 +1233,11 @@ private:
         sh.PS = {};
         sh.NumRenderTargets = 0;
         sh.RTVFormats[0] = sh.RTVFormats[1] = sh.RTVFormats[2] = DXGI_FORMAT_UNKNOWN;
+        // no hardware bias: the receiver-side +z bias in the shader handles
+        // it; deepening stored backfaces would re-open the contact strip
         sh.RasterizerState.CullMode = D3D12_CULL_MODE_FRONT;
-        sh.RasterizerState.DepthBias = 250;
-        sh.RasterizerState.SlopeScaledDepthBias = 0.75f;
+        sh.RasterizerState.DepthBias = 0;
+        sh.RasterizerState.SlopeScaledDepthBias = 0.0f;
         if (FAILED(m_device->CreateGraphicsPipelineState(&sh, IID_PPV_ARGS(&m_psoShadow))))
         { error = "shadow PSO failed"; return false; }
 

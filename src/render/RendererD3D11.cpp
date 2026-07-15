@@ -884,9 +884,10 @@ private:
         // shadow. The up-facing ground quad drops out of the shadow map
         // automatically (it only receives).
         rd.CullMode = D3D11_CULL_FRONT;
-        rd.DepthBias = 250;                 // backface acne guard
-        rd.SlopeScaledDepthBias = 0.75f;
-        m_device->CreateRasterizerState(&rd, &m_rasterShadow);
+        rd.DepthBias = 0;      // bias lives on the receiver side (shader, +z):
+        rd.SlopeScaledDepthBias = 0.0f;   // pushing stored backfaces deeper
+        m_device->CreateRasterizerState(&rd, &m_rasterShadow);   // would re-open
+        // the lit contact strip at coplanar box bottoms
         rd.DepthBias = 0;
         rd.SlopeScaledDepthBias = 0.0f;
         rd.CullMode = D3D11_CULL_NONE;      // UI + fullscreen passes

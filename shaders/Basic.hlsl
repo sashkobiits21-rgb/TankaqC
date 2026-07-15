@@ -69,10 +69,14 @@ float SampleShadow(float3 wpos, float ndl)
     float2 uv = float2(lc.x * 0.5 + 0.5, 0.5 - lc.y * 0.5);
     if (any(uv < 0.0) || any(uv > 1.0) || lc.z <= 0.0 || lc.z >= 1.0)
         return 1.0;
-    // tiny bias: the shadow map holds caster BACKFACES, so depth error pushes
-    // into the caster's interior rather than detaching contact shadows
+    // The shadow map holds caster BACKFACES, so the receiver bias must push
+    // the compared depth AWAY from the light (z + bias): box bottom faces are
+    // coplanar with the ground, and a subtractive bias would flip those
+    // contact texels to lit (a bright strip hugging every wall base). The
+    // magnitude stays well under the light-depth thickness of the thinnest
+    // caster (the barrel) so lit sides never self-shadow.
     float bias = max(0.00008, 0.0003 * (1.0 - ndl));
-    float z = lc.z - bias;
+    float z = lc.z + bias;
     float t = gScreen.z;   // shadow map texel size
     if (mode == 1)
         return gShadowMap.SampleCmpLevelZero(gShadowSampler, uv, z);
