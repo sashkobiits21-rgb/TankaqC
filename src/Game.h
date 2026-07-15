@@ -30,8 +30,8 @@ constexpr float TankSpeed = 7.0f;            // units/s
 constexpr float HullFaceSpeed = 7.5f;        // rad/s, visual hull turn toward travel dir
 constexpr float TurretTurnSpeed = 5.0f;      // rad/s
 constexpr float TankRadius = 1.7f;           // collision circle
-constexpr float ProjectileSpeed = 22.0f;
-constexpr float ProjectileLife = 2.5f;
+constexpr float ProjectileSpeed = 15.0f;   // slower: squish/spring readable
+constexpr float ProjectileLife = 3.4f;     // range kept ~= speed * life
 constexpr float ProjectileRadius = 0.25f;
 constexpr float FireCooldown = 0.9f;
 constexpr int   MaxHealth = 100;

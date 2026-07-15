@@ -53,25 +53,27 @@ VsOut VSMesh(VsIn i)
     {
         float d = gMisc.y;
         float age = gMisc.z;
-        float zExit = 0.5 - d;
+        // the exit plane sweeps slower than travel (x0.6) so the extrusion
+        // reads as jello squeezing out over ~1.7 rocket lengths
+        float zExit = 0.5 - d * 0.6;
 
-        // jello out of a pipe: the part still inside is squeezed to the
-        // bore, with a soft bulge right where it is squeezing out
-        float emerging = 1.0 - smoothstep(0.9, 1.15, d);
-        float inside = (1.0 - smoothstep(zExit - 0.10, zExit + 0.06, p.z))
+        // jello out of a pipe: the part still inside is squeezed hard to the
+        // bore, with a pronounced bulge right where it is squeezing out
+        float emerging = 1.0 - smoothstep(1.45, 1.75, d);
+        float inside = (1.0 - smoothstep(zExit - 0.12, zExit + 0.08, p.z))
                      * emerging;
-        float radial = lerp(1.0, 0.60, inside);
-        radial *= 1.0 + exp(-abs(p.z - zExit) * 8.0) * 0.35
+        float radial = lerp(1.0, 0.45, inside);
+        radial *= 1.0 + exp(-abs(p.z - zExit) * 6.0) * 0.55
                         * step(0.02, d) * emerging;
 
         // longitudinally compressed in proportion to how much is unexited
         float fin = saturate(zExit + 0.5);
-        float squash = 1.0 - 0.30 * fin;
+        float squash = 1.0 - 0.42 * fin;
 
         // spring: once free, a decaying stretch/compress ring-down along the
         // travel axis, radially counter-scaled like a squeezed spring
-        float freed = smoothstep(0.85, 1.25, d);
-        float osc = sin(age * 26.0) * exp(-age * 5.0) * 0.30 * freed;
+        float freed = smoothstep(1.5, 1.9, d);
+        float osc = sin(age * 18.0) * exp(-age * 3.5) * 0.45 * freed;
 
         float sz = squash * (1.0 + osc);
         float sr = radial * (1.0 - 0.55 * osc);

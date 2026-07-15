@@ -985,7 +985,12 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
             py = a.y + (pr.y - a.y) * g.tickAlpha;
             pz = a.z + (pr.z - a.z) * g.tickAlpha;
         }
-        XMMATRIX m = XMMatrixRotationY(pr.yaw)
+        // rockets render 1.35x their sim size for readability; the deform
+        // shader works in local units, so distance is mapped back through
+        // the scale (the "pipe" grows with the rocket)
+        const float kRocketScale = 1.35f;
+        XMMATRIX m = XMMatrixScaling(kRocketScale, kRocketScale, kRocketScale)
+                   * XMMatrixRotationY(pr.yaw)
                    * XMMatrixTranslation(px, py, pz);
         RenderObject ro{ g.meshProj, g.texWhite, Store(m),
                          { 0.16f, 0.14f, 0.11f, 0.30f }, true };
@@ -993,7 +998,7 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
         // position and seconds since fired (see UpdateVfxFromSim tracking)
         float sdx = px - g.projSpawnPos[i].x;
         float sdz = pz - g.projSpawnPos[i].z;
-        ro.deformDist = sqrtf(sdx * sdx + sdz * sdz);
+        ro.deformDist = sqrtf(sdx * sdx + sdz * sdz) / kRocketScale;
         ro.deformAge = float(g.time - g.projSpawnTime[i]);
         frame.objects.push_back(ro);
     }
