@@ -106,6 +106,11 @@ Drive the hull with WASD, aim the turret with the mouse, shoot your friends.
 - **Camera lean** — strafing tilts the camera slightly around Y, forward/back
   pitches around its local X; dt-exponential smoothing with epsilon snaps, targets
   only from held input, so no twitching at rest or near-target.
+- **Sound** — XAudio2, zero assets: every effect is synthesized at startup
+  (square/saw/noise + envelopes + a bitcrush for the low-bit techno style).
+  Deep bass shoot + explosion, fire-crackle purchase burn, glass-shard slat
+  break, hover/click blips, and a quiet seamless-loop engine hum that follows
+  movement input (volume + pitch), tuned to never mask the effects.
 
 ## Controls
 

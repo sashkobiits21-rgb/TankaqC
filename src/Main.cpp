@@ -16,6 +16,7 @@
 #include "Ui.h"
 #include "render/IRenderer.h"
 #include "net/Net.h"
+#include "Sound.h"
 
 using namespace DirectX;
 using namespace tankaq;
@@ -87,6 +88,10 @@ struct App
     GameState game;
     InputCmd inputs[MaxPlayers]{};
     net::Net net;
+    // hover-sound edge detection: a stable id for whatever clickable thing the
+    // mouse is over this frame (0 = nothing); play a blip when it changes
+    int hoverKeyNow = 0;
+    int hoverKeyPrev = 0;
     Screen screen = Screen::MainMenu;
     Screen settingsReturn = Screen::MainMenu;   // where BACK leads
     bool sessionActive = false;  // a game session exists (pause overlays it)
@@ -180,6 +185,21 @@ bool InSession()
     return g.sessionActive
         && (g.screen == Screen::InGame || g.screen == Screen::Paused
             || g.screen == Screen::Settings);
+}
+
+// small random pitch wobble so repeated sounds don't machine-gun identically
+float SndJitter(float spread)
+{
+    static uint32_t r = 0xBEEF1234u;
+    r ^= r << 13; r ^= r >> 17; r ^= r << 5;
+    return 1.0f + (float(r >> 8) * (1.0f / 16777216.0f) - 0.5f) * spread;
+}
+
+// distance attenuation for world-space events, measured from the camera focus
+float SndDistVol(float x, float z, float base)
+{
+    float dx = x - g.camFocus.x, dz = z - g.camFocus.z;
+    return base / (1.0f + sqrtf(dx * dx + dz * dz) * 0.045f);
 }
 
 bool CreateAssets();
@@ -569,6 +589,9 @@ void SpawnExplosion(const XMFLOAT3& raw)
     if (g.scorches.size() >= 16)
         g.scorches.erase(g.scorches.begin());
     g.scorches.push_back({ raw, g.time });   // the burn mark stays at the impact
+
+    // narrow jitter: pitching bass up too far would thin it out
+    snd::Play(snd::Sfx::Explosion, SndDistVol(p.x, p.z, 0.9f), SndJitter(0.08f));
 }
 
 // Spawn VFX whenever a projectile slot flips active -> inactive. This works
@@ -580,6 +603,9 @@ void UpdateVfxFromSim()
         const Projectile& pr = g.game.projectiles[i];
         if (g.prevProjActive[i] && !pr.active && InSession())
             SpawnExplosion(g.prevProjPos[i]);
+        if (!g.prevProjActive[i] && pr.active && InSession())
+            snd::Play(snd::Sfx::Shoot, SndDistVol(pr.x, pr.z, 0.6f),
+                      SndJitter(0.07f));
         g.prevProjActive[i] = pr.active;
         if (pr.active)
             g.prevProjPos[i] = XMFLOAT3(pr.x, pr.y, pr.z);
@@ -639,6 +665,7 @@ void ToggleReady()
 {
     if (g.screen != Screen::InGame || g.game.phase != PhaseLobby)
         return;
+    snd::Play(snd::Sfx::Click, 0.5f, SndJitter(0.06f));
     PlayerState& me = g.game.players[g.myId];
     bool want = !me.ready;
     if (!g.online || g.isHost)
@@ -973,6 +1000,7 @@ void BreakSlats()
     if (g.slatsBroken)
         return;   // already open: the card flies through the existing hole
     g.slatsBroken = true;
+    snd::Play(snd::Sfx::Glass, 0.7f, SndJitter(0.10f));
     float px = g.shopPanel[0], pw = g.shopPanel[2], py = g.shopPanel[1],
           ph = g.shopPanel[3];
     float hatchTop = py + kShopHeader + kCardGap + 2 * (kCardH + kCardGap);
@@ -1073,6 +1101,7 @@ void BuildShop(FrameData& frame)
                                     g.time, kUpgradePool[o.type].icon,
                                     kUpgradePool[o.type].rarity };
                 g.shopBurnFx.push_back(fx);
+                snd::Play(snd::Sfx::Burn, 0.55f, SndJitter(0.10f));
                 if (mine)
                     g.lastClickedOfferId = 0;
             }
@@ -1084,7 +1113,11 @@ void BuildShop(FrameData& frame)
         bool afford = me.money >= o.cost;
         bool hover = float(g.mouseX) >= anim->x && float(g.mouseX) <= anim->x + kCardW
                   && float(g.mouseY) >= anim->y && float(g.mouseY) <= anim->y + kCardH;
-        if (hover) { hoverSlot = s; hoverX = anim->x; hoverY = anim->y; }
+        if (hover)
+        {
+            hoverSlot = s; hoverX = anim->x; hoverY = anim->y;
+            g.hoverKeyNow = 1000 + o.id;
+        }
 
         UiColor bgDraw = bg;
         if (hover) { bgDraw.r *= 1.3f; bgDraw.g *= 1.3f; bgDraw.b *= 1.3f; }
@@ -1120,6 +1153,7 @@ void BuildShop(FrameData& frame)
                                 g.lastClickX, g.lastClickY, g.time,
                                 g.lastClickedIcon, g.lastClickedRarity };
             g.shopBurnFx.push_back(fx);
+            snd::Play(snd::Sfx::Burn, 0.55f, SndJitter(0.10f));
             g.lastClickedOfferId = 0;
         }
         else if (anim.lastSlot == NumOfferSlots - 1)
@@ -1259,6 +1293,7 @@ void HandleShopClick(float mx, float my)
         if (mx < c.x || mx > c.x + kCardW || my < c.y || my > c.y + kCardH)
             continue;
         const Offer& o = me.offers[c.slot];
+        snd::Play(snd::Sfx::Click, 0.45f, SndJitter(0.06f));
         if (o.active != OfferActive || o.id != c.id || me.money < o.cost)
             return;
         // Capture the card's identity BEFORE purchasing: TryPurchase compacts
@@ -1376,7 +1411,10 @@ void BuildLobbyUi(FrameData& frame)
                   me.ready ? "UNREADY" : "READY UP" };
     g.readyRect[0] = btn.x; g.readyRect[1] = btn.y;
     g.readyRect[2] = btn.w; g.readyRect[3] = btn.h;
-    DrawButton(g.ui, btn, btn.Contains(float(g.mouseX), float(g.mouseY)));
+    bool readyHov = btn.Contains(float(g.mouseX), float(g.mouseY));
+    if (readyHov)
+        g.hoverKeyNow = 3001;
+    DrawButton(g.ui, btn, readyHov);
     g.ui.TextCentered(w * 0.5f, h - 62, 1.4f, { 1, 1, 1, 0.5f },
                       "R toggles ready - match starts when everyone is ready");
 }
@@ -1419,6 +1457,8 @@ void BuildHud(FrameData& frame)
                   && float(g.mouseX) <= g.codeRect[0] + g.codeRect[2]
                   && float(g.mouseY) >= g.codeRect[1]
                   && float(g.mouseY) <= g.codeRect[1] + g.codeRect[3];
+        if (hover)
+            g.hoverKeyNow = 3002;
         g.ui.Rect(g.codeRect[0], g.codeRect[1], g.codeRect[2], g.codeRect[3],
                   hover ? UiColor{ 0.12f, 0.16f, 0.1f, 0.8f } : UiColor{ 0, 0, 0, 0.55f });
         g.ui.TextCentered(w * 0.5f, 12, 2.0f,
@@ -1645,8 +1685,13 @@ void BuildMenu()
         g.ui.TextCentered(w * 0.5f, h * 0.33f, 1.8f, { 1, 0.7f, 0.5f, 1 }, g.statusLine);
 
     auto buttons = MenuButtons();
-    for (const UiButton& b : buttons)
-        DrawButton(g.ui, b, b.Contains(float(g.mouseX), float(g.mouseY)));
+    for (size_t i = 0; i < buttons.size(); ++i)
+    {
+        bool hov = buttons[i].Contains(float(g.mouseX), float(g.mouseY));
+        if (hov)
+            g.hoverKeyNow = 100 + int(g.screen) * 32 + int(i);
+        DrawButton(g.ui, buttons[i], hov);
+    }
 }
 
 void HandleMenuClick()
@@ -1656,6 +1701,7 @@ void HandleMenuClick()
     {
         if (!b.Contains(float(g.mouseX), float(g.mouseY)))
             continue;
+        snd::Play(snd::Sfx::Click, 0.5f, SndJitter(0.06f));
         if (b.label == "PLAY SOLO") StartSolo();
         else if (b.label == "HOST GAME") StartHost();
         else if (b.label == "JOIN GAME") { g.screen = Screen::JoinEntry; g.statusLine.clear(); }
@@ -1857,7 +1903,8 @@ bool CreateAssets()
     g.meshTurret = r->CreateMesh(g.tank.turret.verts.data(), g.tank.turret.verts.size(),
                                  g.tank.turret.indices.data(), g.tank.turret.indices.size());
 
-    MeshData ground = MakeGroundPlane(ArenaHalf, 30.0f);
+    // 2x the arena so the straight-down camera never sees past the floor edge
+    MeshData ground = MakeGroundPlane(ArenaHalf * 2.0f, 60.0f);
     g.meshGround = r->CreateMesh(ground.verts.data(), ground.verts.size(),
                                  ground.indices.data(), ground.indices.size());
     MeshData proj = MakeSphere(0.16f, 12, 8);
@@ -2068,6 +2115,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                     L"Tankaq", MB_ICONERROR);
         return 1;
     }
+
+    if (!snd::Init())
+        Log("Audio init failed - continuing silent");
 
     // Apply CLI render-setting overrides.
     if (g.opt.gi >= 0) g.post.giEnabled = g.opt.gi != 0;
@@ -2320,12 +2370,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         }
         else
         {
-            // top-down battle camera: steeper and further out
-            g.camPos = XMFLOAT3(g.camFocus.x, 27.0f, g.camFocus.z - 8.0f);
+            // true top-down battle camera: directly above the tank, facing -Y.
+            // Up = +Z keeps screen-up = world +Z and screen-right = world -X,
+            // so the screen-relative WASD mapping is unchanged.
+            g.camPos = XMFLOAT3(g.camFocus.x, 27.0f, g.camFocus.z);
             view = XMMatrixLookAtRH(
                 XMVectorSet(g.camPos.x, g.camPos.y, g.camPos.z, 1),
-                XMVectorSet(g.camFocus.x, 0, g.camFocus.z + 0.5f, 1),
-                XMVectorSet(0, 1, 0, 0));
+                XMVectorSet(g.camFocus.x, 0, g.camFocus.z, 1),
+                XMVectorSet(0, 0, 1, 0));
             // apply the movement lean in view space (local axes)
             view = view * XMMatrixRotationY(g.camYawLean)
                         * XMMatrixRotationX(g.camPitchLean);
@@ -2401,6 +2453,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                      && g.mouseY >= g.codeRect[1]
                      && g.mouseY <= g.codeRect[1] + g.codeRect[3])
             {
+                snd::Play(snd::Sfx::Click, 0.5f, SndJitter(0.06f));
                 CopyTextToClipboard(g.net.joinCode());
                 g.codeCopiedAt = g.time;
             }
@@ -2447,6 +2500,33 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             BuildMenu();
         }
         frame.ui = g.ui.vertices();
+
+        // audio bookkeeping: hover-blip edge detection (UI passes above set
+        // hoverKeyNow) and the engine hum following local movement input
+        {
+            if (g.hoverKeyNow != g.hoverKeyPrev && g.hoverKeyNow != 0)
+                snd::Play(snd::Sfx::Hover, 0.22f, SndJitter(0.08f));
+            g.hoverKeyPrev = g.hoverKeyNow;
+            g.hoverKeyNow = 0;
+
+            float intensity = 0.0f;
+            const PlayerState& me = g.game.players[g.myId];
+            bool playing = g.game.phase == PhasePlaying
+                        || g.game.phase == PhaseOvertime;
+            if (g.screen == Screen::InGame && playing && me.active
+                && me.health > 0)
+            {
+                const InputCmd& li = g.isHost
+                    ? g.inputs[g.myId]
+                    : (g.pendingInputs.empty() ? InputCmd{}
+                                               : g.pendingInputs.back().cmd);
+                intensity = std::min(1.0f, sqrtf(li.moveX * li.moveX
+                                                 + li.moveZ * li.moveZ));
+            }
+            snd::SetEngine(intensity);
+            snd::Update(g.frameDt);
+        }
+
         g.renderer->RenderFrame(frame);
         ++g.frameCounter;
 
@@ -2460,6 +2540,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         }
     }
 
+    snd::Shutdown();
     g.net.Shutdown();
     delete g.renderer;
     Log("Tankaq exiting cleanly");

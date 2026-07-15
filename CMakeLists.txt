@@ -14,6 +14,7 @@ add_executable(TankaqClient WIN32
   src/Game.cpp
   src/GpuDetect.cpp
   src/AssetLoad.cpp
+  src/Sound.cpp
   src/Ui.cpp
   src/net/Net.cpp
   src/render/RendererD3D11.cpp
@@ -28,7 +29,7 @@ target_include_directories(TankaqClient PRIVATE
   "${STEAM_SDK}/public"
 )
 target_link_libraries(TankaqClient PRIVATE
-  d3d11 d3d12 dxgi d3dcompiler dxguid user32 delayimp
+  d3d11 d3d12 dxgi d3dcompiler dxguid user32 delayimp xaudio2 ole32
   "${STEAM_SDK}/redistributable_bin/win64/steam_api64.lib"
 )
 # D3D12 is delay-loaded so machines without d3d12.dll can still start (D3D11 path).
