@@ -36,7 +36,8 @@ const float kBaseStats[StatCount] = {
     2.0f,               // PossessDuration: 2 s base
     3.5f,               // RadarRange
     0.6f,               // RadarLock: seconds inside a ring to trigger
-    12.0f,              // RadarDamage: root circle (halves per tree level)
+    0.0f,               // RadarDamage: BONUS on the root circle -- the base
+                        // is the rocket's own damage (halves per tree level)
     1.0f,               // RadarRings: one packed circle by default
 };
 
@@ -299,7 +300,7 @@ void GameState::RecalcStats(int id)
     p.stats[int(Stat::PossessDuration)] = std::max(0.3f, p.stats[int(Stat::PossessDuration)]);
     p.stats[int(Stat::RadarRange)] = std::max(1.0f, p.stats[int(Stat::RadarRange)]);
     p.stats[int(Stat::RadarLock)] = std::max(0.15f, p.stats[int(Stat::RadarLock)]);
-    p.stats[int(Stat::RadarDamage)] = std::max(1.0f, p.stats[int(Stat::RadarDamage)]);
+    p.stats[int(Stat::RadarDamage)] = std::max(0.0f, p.stats[int(Stat::RadarDamage)]);
     p.stats[int(Stat::RadarRings)] = std::clamp(p.stats[int(Stat::RadarRings)],
                                                 0.0f, float(MaxRadarExtra));
 }
@@ -988,6 +989,9 @@ static void TickRadar(GameState& gs, Projectile& pr)
     if (pr.radarLock < pr.radarLockNeed)
         return;
 
+    // the root circle hits like the rocket itself; PAYLOAD adds on top,
+    // and every tree level below halves the value
+    float rootDmg = float(pr.damage) + pr.radarDamage;
     float ox[MaxRadarNodes], oz[MaxRadarNodes], rad[MaxRadarNodes];
     int dep[MaxRadarNodes];
     int n = RadarTreeLayout(pr.radarRange, pr.radarRings, pr.yaw,
@@ -1003,7 +1007,7 @@ static void TickRadar(GameState& gs, Projectile& pr)
             float dx = p.x - (pr.x + ox[k]), dz = p.z - (pr.z + oz[k]);
             float rr = rad[k] + TankRadius * 0.5f;
             if (dx * dx + dz * dz < rr * rr)
-                sum += pr.radarDamage / float(1 << dep[k]);
+                sum += rootDmg / float(1 << dep[k]);
         }
         if (sum > 0.0f)
             gs.ApplyDamage(pr.owner, id, int(sum + 0.5f), 5);
@@ -1018,7 +1022,7 @@ static void TickRadar(GameState& gs, Projectile& pr)
             float dx = s.x - (pr.x + ox[k]), dz = s.z - (pr.z + oz[k]);
             float rr = rad[k] + SoldierRadius;
             if (dx * dx + dz * dz < rr * rr)
-                sum += pr.radarDamage / float(1 << dep[k]);
+                sum += rootDmg / float(1 << dep[k]);
         }
         if (sum > 0.0f)
             s.health -= sum;

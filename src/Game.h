@@ -98,7 +98,8 @@ enum class Stat : uint8_t
     // RADAR class: rockets carry a TREE of detection circles
     RadarRange,       // root circle radius around the rocket
     RadarLock,        // seconds an enemy must stay inside to trigger
-    RadarDamage,      // root-circle damage (halves per tree level)
+    RadarDamage,      // BONUS on the root circle (base = rocket damage;
+                      // halves per tree level)
     RadarRings,       // extra circles packed inside (3 slots per parent)
     Count
 };

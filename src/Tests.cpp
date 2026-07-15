@@ -317,11 +317,12 @@ int RunClassTest()
             detonated = !g4.projectiles[0].active;
         }
         check(detonated, "radar rocket detonated from ring lock (no contact)");
-        check(tgt.health == hp0 - 12, "root-only victim takes root damage");
+        check(tgt.health == hp0 - 34,
+              "root-only victim takes the rocket's own damage");
 
         // a rocket parked 1.8 away with ONE packed circle (which centers
-        // on its parent): the victim sits inside root (12) AND the child
-        // (half depth = 6) -- tree damage stacks to 18
+        // on its parent): the victim sits inside root (34) AND the child
+        // (half depth = 17) -- tree damage stacks to 51
         hp0 = tgt.health;
         {
             Projectile pr{};
@@ -347,8 +348,8 @@ int RunClassTest()
             detonated = !g4.projectiles[0].active;
         }
         check(detonated, "nested radar rocket detonated");
-        check(tgt.health == hp0 - 18,
-              "tree damage: root 12 + half-depth child 6");
+        check(tgt.health == hp0 - 51,
+              "tree damage: rocket 34 + half-depth child 17");
     }
 
     Log("classtest done: %d failure(s)", fails);

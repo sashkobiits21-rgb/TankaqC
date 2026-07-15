@@ -24,7 +24,9 @@ namespace tankaq::net
 // v15: SkullDamage stat, radar circles become a packed TREE (rings field =
 // extra circle count), skull contact damage -- derived-stat contract change.
 // v16: radar lock progress byte per projectile (countdown fill visual).
-constexpr uint8_t ProtocolVersion = 16;
+// v17: radar root damage = the rocket's own damage (+ RadarDamage bonus,
+// base 0) -- derived-stat contract change.
+constexpr uint8_t ProtocolVersion = 17;
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t
