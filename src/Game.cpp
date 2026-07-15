@@ -1,5 +1,6 @@
 #include "Game.h"
 #include <cmath>
+#include <cstring>
 #include <algorithm>
 
 using namespace DirectX;
@@ -34,77 +35,114 @@ int gDebugBounces = 0;   // --bounces=N dev knob (added on top of the stat)
 // The pool: mods may mix additive and multiplicative parts, and one upgrade
 // can touch several stats (including tradeoffs).
 //
-// Class-locked entries carry classReq and are only offered to players who own
-// that class's card. Buying a card unlocks the family and immediately grants
-// its base upgrade (grantUpgrade -- keep these indices in sync with the pool).
-constexpr int kIdxRicochet = 12;
-constexpr int kIdxRecruiter = 21;
+// Every entry names its UpgradeId first; ValidateUpgradePool() proves at
+// startup that entry order matches the enum, that grants point at real
+// family members, and that class cards are well-formed. Icon atlas slot ==
+// pool index (no separate icon field to keep in sync).
 #define S(x) Stat::x
-const UpgradeType kUpgradePool[] = {
-    { "ENGINE",    "+5% MOVE SPEED",                  0, 30, 0,
+#define U(x) UpgradeId::x
+const UpgradeType kUpgradePool[UpgradeCount] = {
+    { U(Engine),       "ENGINE",    "+5% MOVE SPEED",                  0, 30,
       { { S(MoveSpeed), 0, 1.05f } }, 1 },
-    { "TURBO",     "+0.5 MOVE SPEED",                 1, 40, 1,
+    { U(Turbo),        "TURBO",     "+0.5 MOVE SPEED",                 1, 40,
       { { S(MoveSpeed), 0.5f, 1 } }, 1 },
-    { "AP ROUNDS", "+20% SHELL DAMAGE",               2, 55, 2,
+    { U(ApRounds),     "AP ROUNDS", "+20% SHELL DAMAGE",               2, 55,
       { { S(Damage), 0, 1.20f } }, 1 },
-    { "HEAVY SHELLS", "+12 DAMAGE, -10% SHELL SPEED", 2, 50, 3,
+    { U(HeavyShells),  "HEAVY SHELLS", "+12 DAMAGE, -10% SHELL SPEED", 2, 50,
       { { S(Damage), 12, 1 }, { S(ProjSpeed), 0, 0.90f } }, 2 },
-    { "AUTOLOADER", "-15% RELOAD TIME",               2, 55, 4,
+    { U(Autoloader),   "AUTOLOADER", "-15% RELOAD TIME",               2, 55,
       { { S(ReloadTime), 0, 0.85f } }, 1 },
-    { "GREASED BREECH", "-0.1s RELOAD",               0, 25, 5,
+    { U(GreasedBreech), "GREASED BREECH", "-0.1s RELOAD",              0, 25,
       { { S(ReloadTime), -0.1f, 1 } }, 1 },
-    { "PLATING",   "+30 MAX HEALTH",                  1, 40, 6,
+    { U(Plating),      "PLATING",   "+30 MAX HEALTH",                  1, 40,
       { { S(MaxHealth), 30, 1 } }, 1 },
-    { "COMPOSITE", "+20% MAX HP, -5% SPEED",          3, 70, 7,
+    { U(Composite),    "COMPOSITE", "+20% MAX HP, -5% SPEED",          3, 70,
       { { S(MaxHealth), 0, 1.20f }, { S(MoveSpeed), 0, 0.95f } }, 2 },
-    { "GYRO",      "+15% SHELL SPEED",                3, 60, 8,
+    { U(Gyro),         "GYRO",      "+15% SHELL SPEED",                3, 60,
       { { S(ProjSpeed), 0, 1.15f } }, 1 },
-    { "REACTIVE ARMOR", "-10% DAMAGE TAKEN",          4, 85, 9,
+    { U(ReactiveArmor), "REACTIVE ARMOR", "-10% DAMAGE TAKEN",         4, 85,
       { { S(DamageTaken), 0, 0.90f } }, 1 },
-    { "OVERDRIVE", "+8% SPEED, +10% DMG TAKEN",       4, 90, 10,
+    { U(Overdrive),    "OVERDRIVE", "+8% SPEED, +10% DMG TAKEN",       4, 90,
       { { S(MoveSpeed), 0, 1.08f }, { S(DamageTaken), 0, 1.10f } }, 2 },
-    { "FIELD KIT", "+15 MAX HP, +0.15 SPEED",         0, 35, 11,
+    { U(FieldKit),     "FIELD KIT", "+15 MAX HP, +0.15 SPEED",         0, 35,
       { { S(MaxHealth), 15, 1 }, { S(MoveSpeed), 0.15f, 1 } }, 2 },
-    { "RICOCHET",  "+1 WALL BOUNCE",                  2, 55, 12,
+    { U(Ricochet),     "RICOCHET",  "+1 WALL BOUNCE",                  2, 55,
       { { S(Bounces), 1, 1 } }, 1, ClassBouncy },
-    { "SUPERBALL", "+2 WALL BOUNCES, -15% DAMAGE",    4, 90, 13,
+    { U(Superball),    "SUPERBALL", "+2 WALL BOUNCES, -15% DAMAGE",    4, 90,
       { { S(Bounces), 2, 1 }, { S(Damage), 0, 0.85f } }, 2, ClassBouncy },
-    { "NITRO TANK", "+0.5s BOOST FUEL",               2, 55, 14,
+    { U(NitroTank),    "NITRO TANK", "+0.5s BOOST FUEL",               2, 55,
       { { S(BoostFuel), 0.5f, 1 } }, 1 },
-    { "AFTERBURNER", "+20% BOOST SPEED",              3, 70, 15,
+    { U(Afterburner),  "AFTERBURNER", "+20% BOOST SPEED",              3, 70,
       { { S(BoostSpeed), 0, 1.20f } }, 1 },
-    { "QUICK PUMP", "+0.3/s FUEL REGEN",              1, 40, 16,
+    { U(QuickPump),    "QUICK PUMP", "+0.3/s FUEL REGEN",              1, 40,
       { { S(BoostRegen), 0.3f, 1 } }, 1 },
-    { "PIT CREW",  "-0.4s REGEN DELAY",               0, 30, 17,
+    { U(PitCrew),      "PIT CREW",  "-0.4s REGEN DELAY",               0, 30,
       { { S(BoostRegenDelay), -0.4f, 1 } }, 1 },
-    { "FUEL INJECTION", "+25% FUEL REGEN",            2, 55, 18,
+    { U(FuelInjection), "FUEL INJECTION", "+25% FUEL REGEN",           2, 55,
       { { S(BoostRegen), 0, 1.25f } }, 1 },
     // class cards: no mods of their own -- the granted base upgrade carries
     // the stats, the card itself is the unlock marker in `owned`
-    { "SOLDIER CLASS", "UNLOCK SOLDIERS +RECRUITER",  RarityClass, 80, 19,
-      {}, 0, ClassNone, ClassSoldier, kIdxRecruiter },
-    { "BOUNCY CLASS", "UNLOCK BOUNCES +RICOCHET",     RarityClass, 80, 20,
-      {}, 0, ClassNone, ClassBouncy, kIdxRicochet },
+    { U(SoldierClass), "SOLDIER CLASS", "UNLOCK SOLDIERS +RECRUITER",
+      RarityClass, 80, {}, 0, ClassNone, ClassSoldier, U(Recruiter) },
+    { U(BouncyClass),  "BOUNCY CLASS", "UNLOCK BOUNCES +RICOCHET",
+      RarityClass, 80, {}, 0, ClassNone, ClassBouncy, U(Ricochet) },
     // SOLDIER family
-    { "RECRUITER", "-0.2s & -10% SPAWN TIME",         2, 55, 21,
+    { U(Recruiter),    "RECRUITER", "-0.2s & -10% SPAWN TIME",         2, 55,
       { { S(SoldierCooldown), -0.2f, 0.90f } }, 1, ClassSoldier },
-    { "DOUBLE TIME", "+15% SOLDIER SPEED",            1, 40, 22,
+    { U(DoubleTime),   "DOUBLE TIME", "+15% SOLDIER SPEED",            1, 40,
       { { S(SoldierSpeed), 0, 1.15f } }, 1, ClassSoldier },
-    { "FLAK VEST", "+15 SOLDIER HEALTH",              1, 40, 23,
+    { U(FlakVest),     "FLAK VEST", "+15 SOLDIER HEALTH",              1, 40,
       { { S(SoldierHealth), 15, 1 } }, 1, ClassSoldier },
-    { "HOLLOW POINTS", "+25% SOLDIER DAMAGE",         2, 55, 24,
+    { U(HollowPoints), "HOLLOW POINTS", "+25% SOLDIER DAMAGE",         2, 55,
       { { S(SoldierDamage), 0, 1.25f } }, 1, ClassSoldier },
-    { "RAPID FIRE", "+15% SOLDIER FIRE RATE",         2, 55, 25,
+    { U(RapidFire),    "RAPID FIRE", "+15% SOLDIER FIRE RATE",         2, 55,
       { { S(SoldierFireRate), 0, 1.15f } }, 1, ClassSoldier },
-    { "PLATOON",   "+1 MAX SOLDIERS",                 4, 95, 26,
+    { U(Platoon),      "PLATOON",   "+1 MAX SOLDIERS",                 4, 95,
       { { S(SoldierMax), 1, 1 } }, 1, ClassSoldier },
     // BOUNCY family (per-ricochet multipliers, multiplicative only)
-    { "RUBBER SHELLS", "+15% DAMAGE PER BOUNCE",      2, 55, 27,
+    { U(RubberShells), "RUBBER SHELLS", "+15% DAMAGE PER BOUNCE",      2, 55,
       { { S(BounceDamage), 0, 1.15f } }, 1, ClassBouncy },
-    { "SLINGSHOT", "+12% SPEED PER BOUNCE",           2, 55, 28,
+    { U(Slingshot),    "SLINGSHOT", "+12% SPEED PER BOUNCE",           2, 55,
       { { S(BounceSpeed), 0, 1.12f } }, 1, ClassBouncy },
 };
 #undef S
+#undef U
+
+const char* ValidateUpgradePool()
+{
+    for (int i = 0; i < UpgradeCount; ++i)
+    {
+        const UpgradeType& u = kUpgradePool[i];
+        if (int(u.id) != i)
+            return "pool order does not match the UpgradeId enum";
+        if (!u.name || !u.desc || !u.name[0])
+            return "entry missing name/desc (enum grew past the pool?)";
+        if (strlen(u.name) > 15 || strlen(u.desc) > 34)
+            return "name/desc too long for the card/tooltip";
+        bool isCard = u.classGrant != ClassNone;
+        if (isCard != (u.rarity == RarityClass))
+            return "class cards (and only cards) use the CLASS rarity";
+        if (!isCard && (u.rarity < 0 || u.rarity > 4))
+            return "bad rarity";
+        if (u.baseCost <= 0 || u.modCount < 0 || u.modCount > MaxModsPerUpgrade)
+            return "bad cost/modCount";
+        if (u.classReq != ClassNone && u.classReq >= ClassCount)
+            return "classReq is not a real class";
+        if (isCard)
+        {
+            if (u.classGrant >= ClassCount) return "classGrant is not a real class";
+            if (u.classReq != ClassNone) return "class card must not be class-locked";
+            if (u.modCount != 0) return "class cards carry no mods of their own";
+            if (u.grant == UpgradeId::Count) return "class card missing its base grant";
+            const UpgradeType& gr = UpgradeDef(u.grant);
+            if (gr.classGrant != ClassNone) return "grant target is itself a class card";
+            if (gr.classReq != u.classGrant) return "grant target is not in the granted class";
+        }
+        else if (u.grant != UpgradeId::Count)
+            return "only class cards grant extra upgrades";
+    }
+    return nullptr;
+}
 
 bool HasClass(const PlayerState& p, uint8_t cls)
 {
@@ -122,7 +160,6 @@ int CountClasses(const PlayerState& p)
             ++n;
     return n;
 }
-const int UpgradePoolSize = int(sizeof(kUpgradePool) / sizeof(kUpgradePool[0]));
 
 const Obstacle kObstacles[NumObstacles] = {
     {   0.0f,   0.0f, 3.0f, 3.0f, 2.6f },   // center block
@@ -317,12 +354,12 @@ void GameState::GenerateOffer(int id)
     // uniform pick among eligible pool entries of that rarity; an empty class
     // band (both classes taken) degrades to rare, any other empty band falls
     // back to a uniform pick over everything eligible
-    int candidates[32];
+    int candidates[UpgradeCount];
     int n = 0;
     auto gather = [&](int band)
     {
         n = 0;
-        for (int i = 0; i < UpgradePoolSize && n < 32; ++i)
+        for (int i = 0; i < UpgradeCount; ++i)
             if (kUpgradePool[i].rarity == band && eligible(i))
                 candidates[n++] = i;
     };
@@ -330,11 +367,11 @@ void GameState::GenerateOffer(int id)
     if (n == 0 && rarity == RarityClass)
         gather(2);
     if (n == 0)
-        for (int i = 0; i < UpgradePoolSize && n < 32; ++i)
+        for (int i = 0; i < UpgradeCount; ++i)
             if (eligible(i))
                 candidates[n++] = i;
     int type = (n > 0) ? candidates[NextRand() % n]
-                       : int(NextRand() % UpgradePoolSize);
+                       : int(NextRand() % UpgradeCount);
 
     // cost grows 25% per copy of the same type already owned (no level cap)
     int copies = 0;
@@ -368,6 +405,18 @@ bool GameState::TryPurchase(int id, int slot)
     if (!p.active || p.offers[slot].active != OfferActive)
         return false;
     const Offer& o = p.offers[slot];
+    const UpgradeType& u = kUpgradePool[o.type];
+    // A class card can go stale while sitting on the conveyor (its class
+    // bought from another slot, or the cap reached), so eligibility is
+    // re-validated at purchase time, not just at roll time.
+    if (u.classGrant != ClassNone)
+    {
+        if (CountClasses(p) >= kMaxClasses)
+            return false;
+        for (uint8_t t : p.owned)
+            if (t == o.type)
+                return false;
+    }
     if (p.money < o.cost)
         return false;
     p.money = uint16_t(p.money - o.cost);
@@ -375,9 +424,8 @@ bool GameState::TryPurchase(int id, int slot)
     // class cards also grant their base upgrade as a real owned copy (it
     // stacks and prices like any other; the host broadcasts it as a second
     // upgrade event so client owned lists stay identical)
-    int grant = kUpgradePool[o.type].grantUpgrade;
-    if (grant >= 0)
-        p.owned.push_back(uint8_t(grant));
+    if (u.grant != UpgradeId::Count)
+        p.owned.push_back(uint8_t(u.grant));
 
     int prevMax = MaxHealthFor(p);
     RecalcStats(id);
@@ -390,6 +438,26 @@ bool GameState::TryPurchase(int id, int slot)
     // only when it expires (see Tick), so the UI and array stay in agreement.
     p.offers[slot].active = OfferConsumed;
     p.offers[slot].consumedTick = tick + OfferBurnTicks;
+
+    // Buying a class card burns every other class card on the conveyor and
+    // drops any still queued: duplicates are dead after this purchase and at
+    // the cap they all are. Consuming the slot plays the client's normal
+    // burn animation for free.
+    if (u.classGrant != ClassNone)
+    {
+        for (int s = 0; s < NumOfferSlots; ++s)
+            if (s != slot && p.offers[s].active == OfferActive
+                && kUpgradePool[p.offers[s].type].classGrant != ClassNone)
+            {
+                p.offers[s].active = OfferConsumed;
+                p.offers[s].consumedTick = tick + OfferBurnTicks;
+            }
+        p.pendingOffers.erase(
+            std::remove_if(p.pendingOffers.begin(), p.pendingOffers.end(),
+                           [](const Offer& q)
+                           { return kUpgradePool[q.type].classGrant != ClassNone; }),
+            p.pendingOffers.end());
+    }
     return true;
 }
 
@@ -440,6 +508,77 @@ static bool PointHitsObstacle(float x, float y, float z, float radius)
             return true;
     }
     return false;
+}
+
+// Walls and obstacle boxes ricochet while bounces remain, else the rocket is
+// spent. Everything is axis-aligned, so a bounce mirrors one direction
+// component: dir = (sin yaw, cos yaw), X-face hit -> yaw = -yaw, Z-face hit
+// -> yaw = pi - yaw. Tank hits never bounce -- the host's hit loop detonates
+// on contact. This is the ONLY copy of these rules: host projectiles and the
+// client's provisional (predicted) rockets both step through here.
+bool StepProjectile(Projectile& pr, float dt)
+{
+    pr.life -= dt;
+    pr.x += sinf(pr.yaw) * pr.speed * dt;
+    pr.z += cosf(pr.yaw) * pr.speed * dt;
+    if (pr.life <= 0.0f)
+        return false;
+
+    const float r = ProjectileRadius;
+    // BOUNCY class: every ricochet multiplies the rocket's damage and speed
+    // by the owner's per-bounce stats (baked at fire time)
+    auto onBounce = [&pr]()
+    {
+        pr.speed *= pr.bounceSpd;
+        pr.damage = int(float(pr.damage) * pr.bounceDmg + 0.5f);
+    };
+
+    if (fabsf(pr.x) > ArenaHalf - r)
+    {
+        if (pr.bounces-- <= 0)
+            return false;
+        float lim = (pr.x > 0) ? ArenaHalf - r : r - ArenaHalf;
+        pr.x = 2.0f * lim - pr.x;          // reflect off the face
+        pr.yaw = WrapAngle(-pr.yaw);
+        onBounce();
+    }
+    if (fabsf(pr.z) > ArenaHalf - r)
+    {
+        if (pr.bounces-- <= 0)
+            return false;
+        float lim = (pr.z > 0) ? ArenaHalf - r : r - ArenaHalf;
+        pr.z = 2.0f * lim - pr.z;
+        pr.yaw = WrapAngle(XM_PI - pr.yaw);
+        onBounce();
+    }
+    for (const Obstacle& o : kObstacles)
+    {
+        if (pr.y > o.height)
+            continue;
+        float dx = pr.x - o.cx, dz = pr.z - o.cz;
+        float ex = o.hx + r, ez = o.hz + r;
+        if (fabsf(dx) >= ex || fabsf(dz) >= ez)
+            continue;
+        if (pr.bounces-- <= 0)
+            return false;
+        // resolve along the shallower penetration axis and mirror that
+        // direction component
+        float penX = ex - fabsf(dx);
+        float penZ = ez - fabsf(dz);
+        if (penX < penZ)
+        {
+            pr.x += (dx > 0 ? penX : -penX);
+            pr.yaw = WrapAngle(-pr.yaw);
+        }
+        else
+        {
+            pr.z += (dz > 0 ? penZ : -penZ);
+            pr.yaw = WrapAngle(XM_PI - pr.yaw);
+        }
+        onBounce();
+        break;
+    }
+    return true;
 }
 
 // Screen-relative movement: W/S/A/D push the tank up/down/left/right on
@@ -705,90 +844,10 @@ void GameState::Tick(const InputCmd* inputs)
     {
         if (!pr.active)
             continue;
-        pr.life -= TickDt;
-        pr.x += sinf(pr.yaw) * pr.speed * TickDt;
-        pr.z += cosf(pr.yaw) * pr.speed * TickDt;
-        if (pr.life <= 0.0f)
+        if (!StepProjectile(pr, TickDt))
         {
             pr.active = false;
             continue;
-        }
-
-        // Walls and obstacle boxes ricochet while bounces remain, else the
-        // rocket detonates. Everything is axis-aligned, so a bounce mirrors
-        // one direction component: dir = (sin yaw, cos yaw), X-face hit ->
-        // yaw = -yaw, Z-face hit -> yaw = pi - yaw. Tanks never bounce --
-        // the hit loop below always detonates on contact.
-        {
-            const float r = ProjectileRadius;
-            bool dead = false;
-            // BOUNCY class: every ricochet multiplies the rocket's damage and
-            // speed by the owner's per-bounce stats (baked at fire time)
-            auto onBounce = [&pr]()
-            {
-                pr.speed *= pr.bounceSpd;
-                pr.damage = int(float(pr.damage) * pr.bounceDmg + 0.5f);
-            };
-
-            if (fabsf(pr.x) > ArenaHalf - r)
-            {
-                if (pr.bounces-- > 0)
-                {
-                    float lim = (pr.x > 0) ? ArenaHalf - r : r - ArenaHalf;
-                    pr.x = 2.0f * lim - pr.x;      // reflect off the face
-                    pr.yaw = WrapAngle(-pr.yaw);
-                    onBounce();
-                }
-                else dead = true;
-            }
-            if (!dead && fabsf(pr.z) > ArenaHalf - r)
-            {
-                if (pr.bounces-- > 0)
-                {
-                    float lim = (pr.z > 0) ? ArenaHalf - r : r - ArenaHalf;
-                    pr.z = 2.0f * lim - pr.z;
-                    pr.yaw = WrapAngle(XM_PI - pr.yaw);
-                    onBounce();
-                }
-                else dead = true;
-            }
-            if (!dead)
-            {
-                for (const Obstacle& o : kObstacles)
-                {
-                    if (pr.y > o.height)
-                        continue;
-                    float dx = pr.x - o.cx, dz = pr.z - o.cz;
-                    float ex = o.hx + r, ez = o.hz + r;
-                    if (fabsf(dx) >= ex || fabsf(dz) >= ez)
-                        continue;
-                    if (pr.bounces-- > 0)
-                    {
-                        // resolve along the shallower penetration axis and
-                        // mirror that direction component
-                        float penX = ex - fabsf(dx);
-                        float penZ = ez - fabsf(dz);
-                        if (penX < penZ)
-                        {
-                            pr.x += (dx > 0 ? penX : -penX);
-                            pr.yaw = WrapAngle(-pr.yaw);
-                        }
-                        else
-                        {
-                            pr.z += (dz > 0 ? penZ : -penZ);
-                            pr.yaw = WrapAngle(XM_PI - pr.yaw);
-                        }
-                        onBounce();
-                    }
-                    else dead = true;
-                    break;
-                }
-            }
-            if (dead)
-            {
-                pr.active = false;
-                continue;
-            }
         }
         for (int id = 0; id < MaxPlayers; ++id)
         {

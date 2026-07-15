@@ -113,23 +113,47 @@ enum : uint8_t { ClassSoldier = 0, ClassBouncy, ClassCount };
 constexpr int kMaxClasses = 2;
 constexpr int RarityClass = 5;    // rolled between rare and epic
 
+// Stable identity for every upgrade. The wire sends these as uint8 pool
+// indices, so ORDER IS THE PROTOCOL: append new entries before Count, never
+// reorder (reordering = ProtocolVersion bump). kUpgradePool is declared with
+// this exact size and ValidateUpgradePool() checks pool[i].id == i at
+// startup, so an enum/pool mismatch fails loudly instead of shipping
+// swapped upgrades.
+enum class UpgradeId : uint8_t
+{
+    Engine = 0, Turbo, ApRounds, HeavyShells, Autoloader, GreasedBreech,
+    Plating, Composite, Gyro, ReactiveArmor, Overdrive, FieldKit,
+    Ricochet, Superball, NitroTank, Afterburner, QuickPump, PitCrew,
+    FuelInjection, SoldierClass, BouncyClass, Recruiter, DoubleTime,
+    FlakVest, HollowPoints, RapidFire, Platoon, RubberShells, Slingshot,
+    Count
+};
+constexpr int UpgradeCount = int(UpgradeId::Count);
+static_assert(UpgradeCount <= 256, "upgrade type is a uint8 on the wire");
+
 constexpr int MaxModsPerUpgrade = 3;
 struct UpgradeType
 {
+    UpgradeId id;      // must equal this entry's pool position (validated)
     const char* name;
     const char* desc;
     int rarity;        // 0 common, 1 uncommon, 2 rare, 3 epic, 4 legendary,
-                       // 5 class card
+                       // 5 class card (cards only, enforced)
     int baseCost;      // grows per owned copy of the same type
-    int icon;          // index into the icon atlas
     StatMod mods[MaxModsPerUpgrade];
     int modCount;
-    uint8_t classReq = ClassNone;    // offered only if the class is owned
-    uint8_t classGrant = ClassNone;  // buying this card unlocks the class
-    int grantUpgrade = -1;           // extra upgrade granted with this card
+    uint8_t classReq = ClassNone;        // offered only if the class is owned
+    uint8_t classGrant = ClassNone;      // buying this card unlocks the class
+    UpgradeId grant = UpgradeId::Count;  // base upgrade granted by this card
 };
-extern const UpgradeType kUpgradePool[];
-extern const int UpgradePoolSize;
+// Sized by the enum: a new UpgradeId without a pool entry leaves a null-named
+// hole that validation rejects; an extra pool entry fails to compile.
+// The icon atlas slot for an upgrade is simply its pool index.
+extern const UpgradeType kUpgradePool[UpgradeCount];
+inline const UpgradeType& UpgradeDef(UpgradeId id) { return kUpgradePool[int(id)]; }
+// Returns nullptr when the pool is consistent, else a description of the
+// first violation. Called at startup (fatal) and by --classtest.
+const char* ValidateUpgradePool();
 
 struct PlayerState;
 bool HasClass(const PlayerState& p, uint8_t cls);
@@ -217,6 +241,13 @@ struct Obstacle
 
 constexpr int NumObstacles = 7;
 extern const Obstacle kObstacles[NumObstacles];
+
+// One tick of projectile flight: lifetime, movement, and the wall/obstacle
+// ricochet rules (each bounce consumes pr.bounces and multiplies speed and
+// damage by the baked per-bounce stats). Returns false when spent. THE single
+// copy of these rules: the host simulation and the client's provisional
+// (predicted) rockets both call this, so they can never drift apart.
+bool StepProjectile(Projectile& pr, float dt);
 
 struct GameState
 {

@@ -1213,7 +1213,7 @@ ImageData MakeIconAtlas(int iconSize, int count)
             continue;
         }
         IconCanvas canvas{ &atlas, i * iconSize, iconSize };
-        DrawIconGlyph(canvas, kUpgradePool[i].icon);
+        DrawIconGlyph(canvas, i);   // icon atlas slot == pool index
     }
     return atlas;
 }

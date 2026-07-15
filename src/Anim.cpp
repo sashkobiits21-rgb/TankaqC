@@ -1,4 +1,5 @@
 #include "Anim.h"
+#include "Log.h"
 #include <algorithm>
 #include <cmath>
 
@@ -159,7 +160,12 @@ JointMask MaskSubtree(const SkinnedModel& model, const char* rootJointName,
     JointMask m(model.joints.size(), outW);
     int root = FindJoint(model, rootJointName);
     if (root < 0)
+    {
+        // a silent all-outW mask would make the layer invisibly wrong
+        Log("Anim: MaskSubtree root joint '%s' not in skeleton (%zu joints)",
+            rootJointName, model.joints.size());
         return m;
+    }
     for (size_t j = 0; j < model.joints.size(); ++j)
     {
         int p = int(j);
@@ -326,6 +332,17 @@ void Animator::PlayLayer(int layer, int clip, bool loop, float targetWeight,
     if (layer < 0 || layer >= MaxLayers)
         return;
     Layer& l = layers[layer];
+    // Reject bad clip handles loudly: a -1 from a failed FindClip silently
+    // playing clip 0 (or indexing out of range) is the classic
+    // wrong-animation-no-error bug after a model re-export.
+    if (clip < 0 || (model && clip >= int(model->clips.size())))
+    {
+        Log("Anim: PlayLayer(%d) invalid clip %d (model has %zu clips)",
+            layer, clip, model ? model->clips.size() : size_t(0));
+        l.clip = -1;
+        l.targetWeight = 0;
+        return;
+    }
     if (l.clip != clip || restart)
         l.time = 0;
     l.clip = clip;

@@ -10,234 +10,19 @@
 #include <DirectXMath.h>
 
 #include "Log.h"
-#include "Game.h"
-#include "GpuDetect.h"
-#include "AssetLoad.h"
-#include "Ui.h"
-#include "render/IRenderer.h"
-#include "net/Net.h"
+#include "AppState.h"
 #include "Sound.h"
-#include "Anim.h"
 #include <deque>
 
 using namespace DirectX;
 using namespace tankaq;
 
-namespace
+// App state, Options, the Screen enum and the UiHot click registry live in
+// AppState.h; the supply-line/owned-strip UI is UiShop.cpp, the in-game HUD
+// is UiHud.cpp, headless tests are Tests.cpp. This file owns the window,
+// frame loop, rendering glue, prediction and session/net wiring.
+namespace tankaq
 {
-
-struct Options
-{
-    std::string renderer;        // "", "d3d11", "d3d12"
-    bool host = false;
-    bool solo = false;
-    std::string join;            // code or ip[:port]
-    uint16_t port = net::DefaultPort;
-    int screenshotAfterFrames = 0;
-    std::string screenshotPath;
-    bool autoDrive = false;
-    bool vsync = true;
-    int winX = CW_USEDEFAULT, winY = CW_USEDEFAULT;
-    int winW = 0, winH = 0;
-    int gi = -1, ao = -1, giRays = -1, temporal = -1;   // -1 = default
-    int giHalf = -1;                                    // -1 default, 0 full, 1 half
-    int shadows = -1;
-    int shadowRes = -1;
-    int shadowFilter = -1;
-    int aa = -1;
-    int lagComp = -1;
-    bool boom = false;                                  // periodic test explosions
-    bool fullscreen = false;
-    bool rich = false;                                  // start with 500 credits
-    bool shopTest = false;                              // auto-open + auto-buy (testing)
-    bool classTest = false;                             // headless class-rule test
-    int pauseTest = 0;           // 1 = force-pause at frame 200, 2 = + settings
-    bool quickMatch = false;     // auto-click FIND MATCH at startup (testing)
-    int quickMatchNeed = 2;      // queue size for --quickmatch
-    int readyTest = 0;           // toggle ready once at this frame (testing)
-    bool rigTest = false;        // show the animated test rig in the arena
-};
-
-const struct { int w, h; } kResolutions[] = {
-    { 1280, 720 }, { 1600, 900 }, { 1920, 1080 }, { 2560, 1440 }
-};
-
-enum class Screen { MainMenu, JoinEntry, Connecting, InGame, Settings, Paused,
-                    MatchSize };
-
-struct App
-{
-    Options opt;
-    HWND hwnd{};
-    int width = 1280, height = 720;
-    IRenderer* renderer = nullptr;
-    GpuInfo gpu;
-    Backend currentBackend = Backend::D3D11;
-    bool vsyncOn = true;
-    bool fullscreen = false;
-    RECT windowedRect{};
-    int resIndex = 0;
-
-    // input
-    bool keys[256]{};
-    bool mouseDown = false;
-    int mouseX = 0, mouseY = 0;
-    bool wantQuit = false;
-    bool clicked = false;        // one-shot left click this frame
-
-    // assets / gpu handles
-    TankModel tank;
-    int meshHull = -1, meshTurret = -1, meshGround = -1, meshProj = -1, meshFlash = -1;
-    std::vector<int> meshObstacles;
-    std::vector<int> meshWalls;
-    int texPalette = -1, texGround = -1, texWall = -1, texWhite = -1;
-    // NRA material maps (normal rgb + roughness a)
-    int texFlatNRA = -1, texWallNRA = -1, texGroundNRA = -1;
-    // skinned test rig (--rigtest; the same path future rigged units use)
-    SkinnedModel rigModel;
-    Animator rigAnimator;
-    std::vector<int> meshRigParts;          // one GPU mesh per skinned part
-    std::vector<XMFLOAT4> rigPartColors;    // material base color per part
-    std::vector<bool> rigPartVisible;       // weapon toggling
-    int texRig = -1;
-    float rigScale = 1.0f;
-    XMFLOAT3 rigPos{ 5.0f, 0.0f, -8.0f };
-
-    // game
-    GameState game;
-    InputCmd inputs[MaxPlayers]{};
-    net::Net net;
-    // hover-sound edge detection: a stable id for whatever clickable thing the
-    // mouse is over this frame (0 = nothing); play a blip when it changes
-    int hoverKeyNow = 0;
-    int hoverKeyPrev = 0;
-    // hull angular velocity for the rotation sound layer
-    float sndPrevHullYaw = 0;
-    bool sndHullYawValid = false;
-    // frame spike diagnostics
-    bool dbgSnapThisFrame = false;       // a snapshot applied this frame
-    // per-slot rocket birth records (drive the squish/spring shader)
-    XMFLOAT3 projSpawnPos[MaxProjectiles]{};
-    double projSpawnTime[MaxProjectiles]{};
-    // client-predicted firing: provisional rockets spawn the moment fire is
-    // pressed; when the server's rocket shows up in a snapshot it adopts the
-    // provisional's spawn record and a decaying render offset hides the seam
-    struct ProvRocket
-    {
-        bool active = false;
-        float x = 0, y = 0, z = 0, yaw = 0, speed = 0, life = 0;
-        float bounceSpd = 1.0f;   // per-ricochet speed multiplier (baked)
-        int bounces = 0;
-        int matchedSlot = -1;   // confirmed server twin (veiled while we live)
-        double born = 0;
-        XMFLOAT3 spawn{};
-    };
-    ProvRocket provRockets[8];
-    float predCooldown = 0;                    // client-side reload prediction
-    // Own rockets render 100% locally for their whole flight: the confirmed
-    // server twin is VEILED (never drawn) and only supplies authority -- when
-    // it dies, the provisional dies and the explosion plays. No corrections.
-    int projVeiledBy[MaxProjectiles];          // provisional index or -1
-    bool projMatchedProv[MaxProjectiles]{};    // skip double sound/record
-    // quick match state
-    bool searching = false;              // lobby search in flight
-    int searchNeed = 2;                  // chosen queue size (FIND MATCH)
-    int lastAdvertPlayers = -1;          // last values pushed to the Steam
-    int lastAdvertPhase = -1;            //  lobby advert (push on change only)
-    float mmToggleRect[4]{};             // MATCHMAKING ON/OFF button (host)
-    Screen screen = Screen::MainMenu;
-    Screen settingsReturn = Screen::MainMenu;   // where BACK leads
-    bool sessionActive = false;  // a game session exists (pause overlays it)
-    int myId = 0;
-    bool isHost = false;
-    bool online = false;         // false in solo
-    std::string statusLine;
-    std::string joinText;
-    double connectStart = 0;
-    PostSettings post;           // GI / SSAO / shadow settings
-    float aimYaw = 0;
-
-    // fixed-tick render interpolation + client prediction
-    GameState prevTick;                     // host/solo: state before latest tick
-    float tickAlpha = 0;                    // fraction of a tick for rendering
-    net::MsgSnapshot snapPrev{}, snapCurr{};// client: remote interpolation pair
-    double snapCurrTime = 0;
-    bool haveSnap = false, haveTwoSnaps = false;
-    uint32_t inputSeq = 0;                  // client: next input sequence number
-    struct PendingInput { uint32_t seq; InputCmd cmd; };
-    std::vector<PendingInput> pendingInputs;
-    PlayerState predPrev{}, predCurr{};     // client: local tank tick pair
-    uint32_t inputSeqs[MaxPlayers]{};       // host: last input seq SIMULATED
-    // host: per-client input jitter buffer -- exactly one input is consumed
-    // per tick, in order, so no client input is ever duplicated or skipped
-    // by arrival-timing jitter (that was a steady source of prediction drift)
-    std::deque<net::MsgInput> inputQueue[MaxPlayers];
-    // client: reconciliation corrections become a render-space offset that
-    // decays over ~80 ms instead of snapping the visual (freeze + teleport)
-    float predErrX = 0, predErrZ = 0, predErrYaw = 0;
-
-    // game-code click-to-copy
-    float codeRect[4]{};                    // x, y, w, h
-    double codeCopiedAt = -10;
-
-    // vfx
-    struct Burst { XMFLOAT3 pos; double t0; };
-    struct Scorch { XMFLOAT3 pos; double t0; };
-    std::vector<Burst> bursts;
-    std::vector<Scorch> scorches;
-    bool prevProjActive[MaxProjectiles]{};
-    XMFLOAT3 prevProjPos[MaxProjectiles]{};
-    double lastBoom = 0;
-    XMFLOAT3 camPos{ 0, 18, -16 };
-    XMFLOAT3 camFocus{ 0, 0, 0 };
-    bool camFocusValid = false;
-    float frameDt = 0;
-    double time = 0;
-
-    // upgrade shop (conveyor)
-    bool shopOpen = false;
-    struct CardAnim { uint8_t id = 0; float x = 0, y = 0; int lastSlot = 0;
-                      bool active = false; bool burned = false; };
-    CardAnim cardAnims[12]{};
-    struct ShopBurnFx { float x, y, w, h; float ox, oy; double t0; int icon; int rarity; };
-    std::vector<ShopBurnFx> shopBurnFx;
-    struct EjectFx { int icon, rarity; float x, y, vx, vy, ang, angVel; bool bounced; };
-    std::vector<EjectFx> ejectFx;
-    struct DebrisFx { float x, y, w, h; float vx, vy, ang, angVel; double t0; };
-    std::vector<DebrisFx> debrisFx;
-    bool slatsBroken = false;   // restored only when the shop is reopened
-    float shopPanel[4]{};                   // x, y, w, h
-    struct DrawnCard { uint8_t id; int slot; float x, y; };
-    DrawnCard drawnCards[NumOfferSlots]{};
-    int drawnCardCount = 0;
-    uint8_t lastClickedOfferId = 0;
-    float lastClickX = 0, lastClickY = 0;
-    int lastClickedIcon = -1;
-    int lastClickedRarity = 0;
-    float readyRect[4]{};
-    uint8_t prevPhase = PhaseLobby;
-
-    // lag compensation (toggleable): server input catch-up + client-side
-    // extrapolation of remote tanks with a 10 ms correction lerp
-    bool lagComp = true;
-    struct RemoteDisplay { float x, z, hullYaw, turretYaw; bool valid; };
-    RemoteDisplay remoteDisplay[MaxPlayers]{};
-    int lastTailIcon = 0, lastTailRarity = 0;
-    double shopTestBuyAt = 0, shopTestNextOffer = 0;
-    int shopTestOffersForced = 0;
-    int texIconAtlas = -1;
-
-    // owned-items strip (right edge): half-transparent, collapsible
-    bool ownedRowHidden = false;
-    float ownedArrowRect[4]{};   // x, y, w, h (w = 0 when not drawn)
-
-    // camera lean (movement game feel)
-    float camYawLean = 0, camPitchLean = 0;
-    uint64_t frameCounter = 0;
-    float fps = 0;
-
-    UiBuilder ui;
-};
 
 App g;
 
@@ -249,53 +34,6 @@ bool InSession()
     return g.sessionActive
         && (g.screen == Screen::InGame || g.screen == Screen::Paused
             || g.screen == Screen::Settings);
-}
-
-// One tick of provisional-rocket flight: movement + the same wall/obstacle
-// ricochet rules as GameState::Tick (duplicated deliberately -- provisionals
-// are visual-only, never damage, and vanish when their server twin appears).
-// Returns false when the rocket is spent.
-bool AdvanceProvRocket(App::ProvRocket& pr)
-{
-    pr.life -= TickDt;
-    pr.x += sinf(pr.yaw) * pr.speed * TickDt;
-    pr.z += cosf(pr.yaw) * pr.speed * TickDt;
-    if (pr.life <= 0.0f)
-        return false;
-    const float r = ProjectileRadius;
-    if (fabsf(pr.x) > ArenaHalf - r)
-    {
-        if (pr.bounces-- <= 0) return false;
-        float lim = (pr.x > 0) ? ArenaHalf - r : r - ArenaHalf;
-        pr.x = 2.0f * lim - pr.x;
-        pr.yaw = WrapAngle(-pr.yaw);
-        pr.speed *= pr.bounceSpd;   // BOUNCY: mirror the host's per-bounce speed
-    }
-    if (fabsf(pr.z) > ArenaHalf - r)
-    {
-        if (pr.bounces-- <= 0) return false;
-        float lim = (pr.z > 0) ? ArenaHalf - r : r - ArenaHalf;
-        pr.z = 2.0f * lim - pr.z;
-        pr.yaw = WrapAngle(XM_PI - pr.yaw);
-        pr.speed *= pr.bounceSpd;
-    }
-    for (const Obstacle& o : kObstacles)
-    {
-        if (pr.y > o.height)
-            continue;
-        float dx = pr.x - o.cx, dz = pr.z - o.cz;
-        float ex = o.hx + r, ez = o.hz + r;
-        if (fabsf(dx) >= ex || fabsf(dz) >= ez)
-            continue;
-        if (pr.bounces-- <= 0) return false;
-        float penX = ex - fabsf(dx);
-        float penZ = ez - fabsf(dz);
-        if (penX < penZ) { pr.x += (dx > 0 ? penX : -penX); pr.yaw = WrapAngle(-pr.yaw); }
-        else { pr.z += (dz > 0 ? penZ : -penZ); pr.yaw = WrapAngle(XM_PI - pr.yaw); }
-        pr.speed *= pr.bounceSpd;
-        break;
-    }
-    return true;
 }
 
 // small random pitch wobble so repeated sounds don't machine-gun identically
@@ -357,7 +95,7 @@ static const XMFLOAT4 kPlayerTint[MaxLobbyPlayers] = {
     { 0.72f, 0.88f, 1.20f, 0 },   // P3 blue
     { 1.15f, 1.05f, 0.60f, 0 },   // P4 yellow
 };
-static const UiColor kPlayerUiCol[MaxLobbyPlayers] = {
+const UiColor kPlayerUiCol[MaxLobbyPlayers] = {
     { 0.45f, 0.80f, 0.45f, 1 },
     { 0.85f, 0.40f, 0.38f, 1 },
     { 0.42f, 0.60f, 0.90f, 1 },
@@ -419,132 +157,6 @@ Options ParseOptions(const std::string& cmd)
     if (!(v = GetArg(cmd, "--winsize=")).empty())
         sscanf_s(v.c_str(), "%dx%d", &o.winW, &o.winH);
     return o;
-}
-
-// --classtest: deterministic, headless exercise of the class-card rules
-// against the raw sim (no window, no RNG luck). Logs PASS/FAIL per rule.
-int RunClassTest()
-{
-    GameState gs{};
-    gs.SpawnPlayer(0);
-    PlayerState& p = gs.players[0];
-    int fails = 0;
-    auto check = [&](bool ok, const char* what)
-    {
-        Log("classtest %s: %s", ok ? "PASS" : "FAIL", what);
-        if (!ok) ++fails;
-    };
-    auto freeConveyor = [&]()   // clear burn holds so offers insert directly
-    {
-        for (Offer& o : p.offers) o = Offer{};
-        p.pendingOffers.clear();
-    };
-    auto rollTypes = [&](int rolls, bool& lockedSeen, bool& cardSeen,
-                         bool& demoLockedSeen)
-    {
-        lockedSeen = cardSeen = demoLockedSeen = false;
-        for (int i = 0; i < rolls; ++i)
-        {
-            freeConveyor();
-            gs.GenerateOffer(0);
-            const UpgradeType& u = kUpgradePool[p.offers[0].type];
-            if (u.classReq != ClassNone && !HasClass(p, u.classReq))
-                lockedSeen = true;
-            if (u.classReq == ClassBouncy)
-                demoLockedSeen = true;
-            if (u.classGrant != ClassNone)
-                cardSeen = true;
-        }
-    };
-
-    bool locked, card, demo;
-    rollTypes(400, locked, card, demo);
-    check(!locked, "no class-locked upgrade offered before owning a class");
-    check(card, "class cards do appear in the offer stream");
-
-    // buy the SOLDIER card through the real purchase path
-    int soldierIdx = -1, bouncyIdx = -1;
-    for (int i = 0; i < UpgradePoolSize; ++i)
-    {
-        if (kUpgradePool[i].classGrant == ClassSoldier) soldierIdx = i;
-        if (kUpgradePool[i].classGrant == ClassBouncy) bouncyIdx = i;
-    }
-    freeConveyor();
-    p.money = 999;
-    Offer o;
-    o.active = OfferActive; o.id = 1; o.type = uint8_t(soldierIdx); o.cost = 80;
-    gs.InsertOffer(0, o);
-    check(gs.TryPurchase(0, 0), "SOLDIER card purchase succeeds");
-    check(p.owned.size() == 2, "card grants its base upgrade (owned == 2)");
-    check(fabsf(p.stats[int(Stat::SoldierCooldown)] - 8.82f) < 1e-3f,
-          "granted RECRUITER applied add-first-mult-last ((10-0.2)*0.9)");
-    check(HasClass(p, ClassSoldier) && CountClasses(p) == 1,
-          "class ownership derived from owned list");
-
-    // soldier-locked upgrades now offered; bouncy still locked; the owned
-    // card never re-offered
-    bool soldierSeen = false, cardAgain = false;
-    for (int i = 0; i < 600; ++i)
-    {
-        freeConveyor();
-        gs.GenerateOffer(0);
-        const UpgradeType& u = kUpgradePool[p.offers[0].type];
-        if (u.classReq == ClassSoldier) soldierSeen = true;
-        if (u.classReq == ClassBouncy && !HasClass(p, ClassBouncy))
-            demo = true;
-        if (p.offers[0].type == soldierIdx) cardAgain = true;
-    }
-    check(soldierSeen, "soldier-locked upgrades offered after unlock");
-    check(!demo, "bouncy-locked upgrades still gated");
-    check(!cardAgain, "owned class card never re-offered");
-
-    // second class, then the cap: no class card may ever appear again
-    freeConveyor();
-    p.money = 999;
-    o.id = 2; o.type = uint8_t(bouncyIdx);
-    gs.InsertOffer(0, o);
-    check(gs.TryPurchase(0, 0), "BOUNCY card purchase succeeds");
-    check(fabsf(p.stats[int(Stat::Bounces)] - 1.0f) < 1e-4f,
-          "granted RICOCHET applied (1 bounce)");
-    check(CountClasses(p) == kMaxClasses, "two classes owned");
-    bool cardAfterCap = false, bouncySeen = false;
-    for (int i = 0; i < 600; ++i)
-    {
-        freeConveyor();
-        gs.GenerateOffer(0);
-        const UpgradeType& u = kUpgradePool[p.offers[0].type];
-        if (u.classGrant != ClassNone) cardAfterCap = true;
-        if (u.classReq == ClassBouncy) bouncySeen = true;
-    }
-    check(!cardAfterCap, "no class card offered at the 2-class cap");
-    check(bouncySeen, "bouncy-locked upgrades offered after unlock");
-
-    // per-bounce multipliers: a fired rocket ricochets once and both its
-    // speed and damage scale by the baked stats
-    {
-        p.owned.push_back(27);   // RUBBER SHELLS x1.15 dmg per bounce
-        p.owned.push_back(28);   // SLINGSHOT     x1.12 spd per bounce
-        gs.RecalcStats(0);
-        Projectile pr{};
-        pr.active = true; pr.owner = 0;
-        pr.x = ArenaHalf - 0.2f; pr.z = 0; pr.y = 0.17f;
-        pr.yaw = XM_PI * 0.5f;   // heading +X into the wall
-        pr.life = 1.0f; pr.speed = 10.0f; pr.damage = 100; pr.bounces = 1;
-        pr.bounceDmg = p.stats[int(Stat::BounceDamage)];
-        pr.bounceSpd = p.stats[int(Stat::BounceSpeed)];
-        gs.projectiles[0] = pr;
-        gs.phase = PhasePlaying;
-        gs.matchEndTick = gs.tick + 100000;
-        InputCmd idle[MaxPlayers]{};
-        for (int t = 0; t < 8; ++t) gs.Tick(idle);
-        const Projectile& out = gs.projectiles[0];
-        check(out.active && out.bounces == 0, "test rocket ricocheted once");
-        check(fabsf(out.speed - 11.2f) < 1e-3f, "SLINGSHOT speed applied on bounce");
-        check(out.damage == 115, "RUBBER SHELLS damage applied on bounce");
-    }
-
-    Log("classtest done: %d failure(s)", fails);
-    return fails;
 }
 
 void ApplySnapshot(const net::MsgSnapshot& s)
@@ -673,12 +285,12 @@ void ApplySnapshot(const net::MsgSnapshot& s)
         for (int pv = 0; pv < 8; ++pv)
         {
             App::ProvRocket& p = g.provRockets[pv];
-            if (!p.active || p.matchedSlot >= 0)
+            if (!p.sim.active || p.matchedSlot >= 0)
                 continue;
-            float dx = p.x - s.projectiles[i].x;
-            float dz = p.z - s.projectiles[i].z;
+            float dx = p.sim.x - s.projectiles[i].x;
+            float dz = p.sim.z - s.projectiles[i].z;
             if (dx * dx + dz * dz > 9.0f
-                || fabsf(WrapAngle(p.yaw - s.projectiles[i].yaw)) > 0.5f)
+                || fabsf(WrapAngle(p.sim.yaw - s.projectiles[i].yaw)) > 0.5f)
                 continue;
             p.matchedSlot = i;
             g.projVeiledBy[i] = pv;
@@ -882,17 +494,10 @@ InputCmd BuildLocalInput()
     if (len > 1.0f) { in.moveX /= len; in.moveZ /= len; }
 
     bool fire = g.mouseDown || g.keys[VK_SPACE];
-    // don't fire while clicking inside the open shop panel
-    if (g.shopOpen && g.mouseX >= g.shopPanel[0]
-        && g.mouseX <= g.shopPanel[0] + g.shopPanel[2]
-        && g.mouseY >= g.shopPanel[1]
-        && g.mouseY <= g.shopPanel[1] + g.shopPanel[3])
-        fire = false;
-    // ...or on the owned-strip collapse arrow
-    if (g.ownedArrowRect[2] > 0 && g.mouseX >= g.ownedArrowRect[0]
-        && g.mouseX <= g.ownedArrowRect[0] + g.ownedArrowRect[2]
-        && g.mouseY >= g.ownedArrowRect[1]
-        && g.mouseY <= g.ownedArrowRect[1] + g.ownedArrowRect[3])
+    // never fire through UI: the cursor over ANY registered clickable (shop
+    // panel, owned-strip arrow, code banner, ...) suppresses the trigger --
+    // one rule instead of a per-widget suppression list
+    if (UiHotContains(float(g.mouseX), float(g.mouseY)))
         fire = false;
     if (fire) in.buttons |= BtnFire;
     if (g.keys[VK_SHIFT]) in.buttons |= BtnBoost;   // boost: 2x speed on fuel
@@ -946,7 +551,7 @@ void UpdateVfxFromSim()
             // provisional dies with it (the explosion above is the boom)
             if (g.projVeiledBy[i] >= 0)
             {
-                g.provRockets[g.projVeiledBy[i]].active = false;
+                g.provRockets[g.projVeiledBy[i]].sim.active = false;
                 g.projVeiledBy[i] = -1;
             }
         }
@@ -1004,7 +609,7 @@ void ResetNetSimState()
     g.predErrX = g.predErrZ = g.predErrYaw = 0.0f;
     g.predPrev = g.predCurr = PlayerState{};
     g.predCooldown = 0;
-    for (auto& pv : g.provRockets) pv.active = false;
+    for (auto& pv : g.provRockets) pv.sim.active = false;
     for (int i = 0; i < MaxProjectiles; ++i)
     {
         g.projVeiledBy[i] = -1;
@@ -1367,482 +972,20 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
     // twin adopts their spawn record on arrival so the deform is continuous
     for (const auto& pv : g.provRockets)
     {
-        if (!pv.active)
+        if (!pv.sim.active)
             continue;
         const float kRocketScale = 1.6f;
         const float kRocketLenScale = kRocketScale * 0.9f;
         XMMATRIX m = XMMatrixScaling(kRocketScale, kRocketScale, kRocketLenScale)
-                   * XMMatrixRotationY(pv.yaw)
-                   * XMMatrixTranslation(pv.x, pv.y, pv.z);
+                   * XMMatrixRotationY(pv.sim.yaw)
+                   * XMMatrixTranslation(pv.sim.x, pv.sim.y, pv.sim.z);
         RenderObject ro{ g.meshProj, g.texWhite, Store(m),
                          { 0.16f, 0.14f, 0.11f, 0.30f }, true };
-        float sdx = pv.x - pv.spawn.x;
-        float sdz = pv.z - pv.spawn.z;
+        float sdx = pv.sim.x - pv.spawn.x;
+        float sdz = pv.sim.z - pv.spawn.z;
         ro.deformDist = sqrtf(sdx * sdx + sdz * sdz) / kRocketLenScale;
         ro.deformAge = float(g.time - pv.born);
         frame.objects.push_back(ro);
-    }
-}
-
-void OpenShop()
-{
-    g.shopOpen = true;
-    // fresh entrance: existing offers slide in from off-screen again,
-    // and the broken exit hatch is whole again
-    for (auto& a : g.cardAnims)
-        a.active = false;
-    g.slatsBroken = false;
-}
-
-// ---- shop drawing helpers (rotated quads share the plain triangle paths) ----
-
-void RotatedRect(float cx, float cy, float w, float h, float ang, UiColor c)
-{
-    float ca = cosf(ang), sa = sinf(ang);
-    float hx = w * 0.5f, hy = h * 0.5f;
-    float xs[4] = { -hx, hx, hx, -hx };
-    float ys[4] = { -hy, -hy, hy, hy };
-    float px[4], py[4];
-    for (int i = 0; i < 4; ++i)
-    {
-        px[i] = cx + xs[i] * ca - ys[i] * sa;
-        py[i] = cy + xs[i] * sa + ys[i] * ca;
-    }
-    g.ui.Tri(px[0], py[0], px[1], py[1], px[2], py[2], c);
-    g.ui.Tri(px[0], py[0], px[2], py[2], px[3], py[3], c);
-}
-
-void IconUv(int icon, float& u0, float& u1)
-{
-    u0 = float(icon) / float(UpgradePoolSize);
-    u1 = float(icon + 1) / float(UpgradePoolSize);
-}
-
-void AddIconQuad(FrameData& frame, int icon, float cx, float cy, float half,
-                 float alpha, float ang = 0.0f)
-{
-    float u0, u1;
-    IconUv(icon, u0, u1);
-    float ca = cosf(ang), sa = sinf(ang);
-    float xs[4] = { -half, half, half, -half };
-    float ys[4] = { -half, -half, half, half };
-    float us[4] = { u0, u1, u1, u0 };
-    float vs[4] = { 0, 0, 1, 1 };
-    UiTexVertex v[4];
-    for (int i = 0; i < 4; ++i)
-        v[i] = { cx + xs[i] * ca - ys[i] * sa, cy + xs[i] * sa + ys[i] * ca,
-                 us[i], vs[i], 1, 1, 1, alpha };
-    frame.uiTex.push_back(v[0]); frame.uiTex.push_back(v[1]); frame.uiTex.push_back(v[2]);
-    frame.uiTex.push_back(v[0]); frame.uiTex.push_back(v[2]); frame.uiTex.push_back(v[3]);
-}
-
-static const UiColor kRarityCol[6] = {
-    { 0.35f, 0.37f, 0.35f, 0.96f },   // common
-    { 0.15f, 0.40f, 0.20f, 0.96f },   // uncommon
-    { 0.14f, 0.28f, 0.55f, 0.96f },   // rare
-    { 0.40f, 0.17f, 0.52f, 0.96f },   // epic
-    { 0.62f, 0.35f, 0.10f, 0.96f },   // legendary
-    { 0.07f, 0.44f, 0.47f, 0.96f },   // class card (teal)
-};
-
-constexpr float kCardW = 150, kCardH = 96, kCardGap = 10, kShopHeader = 34;
-constexpr int kNumSlats = 4;
-
-void SlotCell(int slot, float& x, float& y)
-{
-    int col = slot % 2, row = slot / 2;
-    x = g.shopPanel[0] + kCardGap + col * (kCardW + kCardGap);
-    y = g.shopPanel[1] + kShopHeader + kCardGap + row * (kCardH + kCardGap);
-}
-
-// Panel outline where the lower-right border is a set of breakable vertical
-// slats: the conveyor's exit hatch. While broken, the slats are absent (their
-// debris is flying around instead).
-void DrawShopFrame()
-{
-    float px = g.shopPanel[0], py = g.shopPanel[1];
-    float pw = g.shopPanel[2], ph = g.shopPanel[3];
-    UiColor frameCol{ 0.5f, 0.58f, 0.42f, 1 };
-    g.ui.Rect(px, py, pw, 2, frameCol);                       // top
-    g.ui.Rect(px, py + ph - 2, pw, 2, frameCol);              // bottom
-    g.ui.Rect(px, py + 2, 2, ph - 4, frameCol);               // left
-    float hatchTop = py + kShopHeader + kCardGap + 2 * (kCardH + kCardGap);
-    float hatchBottom = py + ph - 2;
-    g.ui.Rect(px + pw - 2, py + 2, 2, hatchTop - (py + 2), frameCol);  // right, upper
-    if (!g.slatsBroken)
-    {
-        // contiguous segments: together they form one whole border line,
-        // but they break apart into individual pieces on ejection
-        float span = hatchBottom - hatchTop;
-        for (int s = 0; s < kNumSlats; ++s)
-            g.ui.Rect(px + pw - 2, hatchTop + span * float(s) / kNumSlats,
-                      2, span / kNumSlats, frameCol);
-    }
-}
-
-void BreakSlats()
-{
-    if (g.slatsBroken)
-        return;   // already open: the card flies through the existing hole
-    g.slatsBroken = true;
-    snd::Play(snd::Sfx::Glass, 0.7f, SndJitter(0.10f));
-    float px = g.shopPanel[0], pw = g.shopPanel[2], py = g.shopPanel[1],
-          ph = g.shopPanel[3];
-    float hatchTop = py + kShopHeader + kCardGap + 2 * (kCardH + kCardGap);
-    float span = (py + ph - 2) - hatchTop;
-    for (int s = 0; s < kNumSlats; ++s)
-    {
-        App::DebrisFx d{};
-        d.x = px + pw - 1;
-        d.y = hatchTop + span * (s + 0.5f) / kNumSlats;
-        d.w = 3;
-        d.h = span / kNumSlats;
-        uint32_t r = uint32_t(s * 2654435761u + uint32_t(g.time * 977.0));
-        auto rnd = [&r]() { r ^= r << 13; r ^= r >> 17; r ^= r << 5;
-                            return float(r & 0xFFFF) / 65535.0f; };
-        d.vx = 350.0f + 650.0f * rnd();
-        d.vy = -420.0f + 300.0f * rnd();
-        d.angVel = (rnd() - 0.5f) * 16.0f;
-        d.ang = 0;
-        d.t0 = g.time;
-        g.debrisFx.push_back(d);
-    }
-}
-
-void BuildShop(FrameData& frame)
-{
-    const PlayerState& me = g.game.players[g.myId];
-    float panelW = kCardGap * 3 + kCardW * 2;
-    float panelH = kShopHeader + kCardGap + 3 * kCardH + 2 * kCardGap + kCardGap;
-    float px = 14;
-    float py = (float(g.height) - panelH) * 0.5f;
-    g.shopPanel[0] = px; g.shopPanel[1] = py;
-    g.shopPanel[2] = panelW; g.shopPanel[3] = panelH;
-
-    g.ui.Rect(px, py, panelW, panelH, { 0.07f, 0.09f, 0.07f, 0.85f });
-    DrawShopFrame();
-    char buf[96];
-    sprintf_s(buf, "SUPPLY LINE   $ %u", unsigned(me.money));
-    g.ui.Text(px + 10, py + 9, 2.2f, { 1, 0.95f, 0.6f, 1 }, buf);
-
-    // empty sockets
-    for (int s = 0; s < NumOfferSlots; ++s)
-    {
-        float sx, sy;
-        SlotCell(s, sx, sy);
-        g.ui.Rect(sx, sy, kCardW, kCardH, { 0, 0, 0, 0.30f });
-        g.ui.RectOutline(sx, sy, kCardW, kCardH, 1, { 1, 1, 1, 0.08f });
-    }
-
-    // ---- conveyor: match offers to card animations by rolling id ----
-    float k = 1.0f - expf(-g.frameDt * 10.0f);
-    g.drawnCardCount = 0;
-    bool offerSeen[12]{};
-    int hoverSlot = -1;
-    float hoverX = 0, hoverY = 0;
-
-    for (int s = 0; s < NumOfferSlots; ++s)
-    {
-        const Offer& o = me.offers[s];
-        if (!o.active)
-            continue;
-        float tx, ty;
-        SlotCell(s, tx, ty);
-
-        // find or create this offer's animation entry
-        App::CardAnim* anim = nullptr;
-        for (auto& a : g.cardAnims)
-            if (a.active && a.id == o.id) { anim = &a; break; }
-        if (!anim)
-        {
-            for (auto& a : g.cardAnims)
-                if (!a.active) { anim = &a; break; }
-            if (!anim) anim = &g.cardAnims[0];
-            *anim = { o.id, -220.0f, ty, s, true };   // enter from off-screen left
-        }
-        for (auto& a : g.cardAnims)
-            if (&a == anim)
-            {
-                float ex = tx - a.x, ey = ty - a.y;
-                if (ex * ex + ey * ey < 0.25f) { a.x = tx; a.y = ty; }
-                else { a.x += ex * k; a.y += ey * k; }
-                a.lastSlot = s;
-            }
-        offerSeen[anim - g.cardAnims] = true;
-
-        const UpgradeType& def = kUpgradePool[o.type];
-
-        // consumed = purchased, burn playing while the slot is held: spawn the
-        // fx once at this card's settled position, then draw nothing normal
-        if (o.active == OfferConsumed)
-        {
-            if (!anim->burned)
-            {
-                anim->burned = true;
-                bool mine = (o.id == g.lastClickedOfferId);
-                App::ShopBurnFx fx{ anim->x, anim->y, kCardW, kCardH,
-                                    mine ? g.lastClickX : anim->x + kCardW * 0.5f,
-                                    mine ? g.lastClickY : anim->y + kCardH * 0.5f,
-                                    g.time, kUpgradePool[o.type].icon,
-                                    kUpgradePool[o.type].rarity };
-                g.shopBurnFx.push_back(fx);
-                snd::Play(snd::Sfx::Burn, 0.55f, SndJitter(0.10f));
-                if (mine)
-                    g.lastClickedOfferId = 0;
-            }
-            continue;
-        }
-        anim->burned = false;
-
-        UiColor bg = kRarityCol[def.rarity];
-        bool afford = me.money >= o.cost;
-        bool hover = float(g.mouseX) >= anim->x && float(g.mouseX) <= anim->x + kCardW
-                  && float(g.mouseY) >= anim->y && float(g.mouseY) <= anim->y + kCardH;
-        if (hover)
-        {
-            hoverSlot = s; hoverX = anim->x; hoverY = anim->y;
-            g.hoverKeyNow = 1000 + o.id;
-        }
-
-        UiColor bgDraw = bg;
-        if (hover) { bgDraw.r *= 1.3f; bgDraw.g *= 1.3f; bgDraw.b *= 1.3f; }
-        g.ui.Rect(anim->x, anim->y, kCardW, kCardH, bgDraw);
-        g.ui.RectOutline(anim->x, anim->y, kCardW, kCardH, 2,
-                         hover ? UiColor{ 1, 1, 0.85f, 1 }
-                               : UiColor{ 0.08f, 0.08f, 0.08f, 0.9f });
-        AddIconQuad(frame, def.icon, anim->x + kCardW * 0.5f, anim->y + 34, 20, 1.0f);
-        g.ui.TextCentered(anim->x + kCardW * 0.5f, anim->y + 62, 1.6f,
-                          { 1, 1, 1, 0.95f }, def.name);
-        if (!afford)
-            g.ui.Rect(anim->x, anim->y, kCardW, kCardH, { 0, 0, 0, 0.38f });
-
-        g.drawnCards[g.drawnCardCount++] = { o.id, s, anim->x, anim->y };
-    }
-
-    // stale animations = offers that vanished: purchased -> burn from the
-    // click point; pushed off the tail -> physical ejection through the hatch
-    for (int a = 0; a < 12; ++a)
-    {
-        App::CardAnim& anim = g.cardAnims[a];
-        if (!anim.active || offerSeen[a])
-            continue;
-        if (anim.burned)
-        {
-            anim.active = false;   // burn already played; host compacted
-            continue;
-        }
-        if (anim.id == g.lastClickedOfferId)
-        {
-            // client fallback: consumed state never arrived (edge case)
-            App::ShopBurnFx fx{ anim.x, anim.y, kCardW, kCardH,
-                                g.lastClickX, g.lastClickY, g.time,
-                                g.lastClickedIcon, g.lastClickedRarity };
-            g.shopBurnFx.push_back(fx);
-            snd::Play(snd::Sfx::Burn, 0.55f, SndJitter(0.10f));
-            g.lastClickedOfferId = 0;
-        }
-        else if (anim.lastSlot == NumOfferSlots - 1)
-        {
-            App::EjectFx e{};
-            e.icon = g.lastTailIcon;
-            e.rarity = g.lastTailRarity;
-            e.x = anim.x + kCardW * 0.5f;
-            e.y = anim.y + kCardH * 0.5f;
-            e.vx = 2300.0f;
-            e.vy = -140.0f;
-            e.ang = 0;
-            e.angVel = 1.1f;
-            e.bounced = false;
-            g.ejectFx.push_back(e);
-            BreakSlats();
-        }
-        anim.active = false;
-    }
-    // remember the tail card's look while it still exists (for ejection)
-    if (me.offers[NumOfferSlots - 1].active == OfferActive)
-    {
-        g.lastTailIcon = kUpgradePool[me.offers[NumOfferSlots - 1].type].icon;
-        g.lastTailRarity = kUpgradePool[me.offers[NumOfferSlots - 1].type].rarity;
-    }
-
-    // ---- burn effects (purchases) ----
-    for (size_t i = 0; i < g.shopBurnFx.size();)
-    {
-        App::ShopBurnFx& fx = g.shopBurnFx[i];
-        float progress = float((g.time - fx.t0) / 0.55);
-        if (progress >= 1.0f)
-        {
-            g.shopBurnFx.erase(g.shopBurnFx.begin() + i);
-            continue;
-        }
-        float dx = std::max(fx.ox - fx.x, fx.x + fx.w - fx.ox);
-        float dy = std::max(fx.oy - fx.y, fx.y + fx.h - fx.oy);
-        float maxR = sqrtf(dx * dx + dy * dy) + 8.0f;
-        UiColor bg = kRarityCol[std::clamp(fx.rarity, 0, 5)];
-        UiBurnQuad q{ fx.x, fx.y, fx.w, fx.h, bg.r, bg.g, bg.b, bg.a,
-                      fx.ox, fx.oy, progress, maxR };
-        frame.uiBurn.push_back(q);
-        if (fx.icon >= 0)
-        {
-            float u0, u1;
-            IconUv(fx.icon, u0, u1);
-            UiBurnQuad iq{ fx.x + fx.w * 0.5f - 20, fx.y + 14, 40, 40,
-                           1, 1, 1, 1, fx.ox, fx.oy, progress, maxR,
-                           u0, 0, u1, 1 };
-            frame.uiBurn.push_back(iq);
-        }
-        ++i;
-    }
-
-    // ---- ejection physics (overflow) ----
-    for (size_t i = 0; i < g.ejectFx.size();)
-    {
-        App::EjectFx& e = g.ejectFx[i];
-        e.vy += 2400.0f * g.frameDt;            // gravity
-        e.x += e.vx * g.frameDt;
-        e.y += e.vy * g.frameDt;
-        e.ang += e.angVel * g.frameDt;
-        if (!e.bounced && e.x + kCardW * 0.5f >= float(g.width))
-        {
-            e.x = float(g.width) - kCardW * 0.5f;
-            float impact = e.vx;
-            e.vx = -impact * 0.38f;             // punched back, velocity-scaled
-            e.vy -= 160.0f;                     // pop upward a little
-            e.angVel = -impact * 0.004f;        // spin from the impact
-            e.bounced = true;
-        }
-        if (e.y > float(g.height) + 220.0f)
-        {
-            g.ejectFx.erase(g.ejectFx.begin() + i);
-            continue;
-        }
-        UiColor bg = kRarityCol[e.rarity];
-        RotatedRect(e.x, e.y, kCardW + 4, kCardH + 4, e.ang,
-                    { 0.08f, 0.08f, 0.08f, 0.35f });   // shadow first
-        RotatedRect(e.x, e.y, kCardW, kCardH, e.ang, bg);
-        AddIconQuad(frame, e.icon, e.x, e.y, 22, 1.0f, e.ang);
-        ++i;
-    }
-
-    // ---- border debris (broken slats) ----
-    for (size_t i = 0; i < g.debrisFx.size();)
-    {
-        App::DebrisFx& d = g.debrisFx[i];
-        d.vy += 2000.0f * g.frameDt;
-        d.x += d.vx * g.frameDt;
-        d.y += d.vy * g.frameDt;
-        d.ang += d.angVel * g.frameDt;
-        float age = float(g.time - d.t0);
-        if (age > 1.4f || d.y > float(g.height) + 60.0f)
-        {
-            g.debrisFx.erase(g.debrisFx.begin() + i);
-            continue;
-        }
-        float alpha = 1.0f - age / 1.4f;
-        RotatedRect(d.x, d.y, d.w, d.h, d.ang, { 0.5f, 0.58f, 0.42f, alpha });
-        ++i;
-    }
-
-    // ---- hover tooltip: description + cost ----
-    if (hoverSlot >= 0 && me.offers[hoverSlot].active)
-    {
-        const Offer& o = me.offers[hoverSlot];
-        const UpgradeType& def = kUpgradePool[o.type];
-        float tx = px + panelW + 10;
-        float ty = hoverY;
-        g.ui.Rect(tx, ty, 260, 92, { 0.05f, 0.06f, 0.05f, 0.94f });
-        g.ui.RectOutline(tx, ty, 260, 92, 2, kRarityCol[def.rarity]);
-        g.ui.Text(tx + 10, ty + 10, 2.0f, { 1, 1, 1, 1 }, def.name);
-        g.ui.Text(tx + 10, ty + 32, 1.5f, { 0.85f, 0.9f, 0.85f, 1 }, def.desc);
-        char tip[64];
-        sprintf_s(tip, "COST $ %u", unsigned(o.cost));
-        bool afford = me.money >= o.cost;
-        g.ui.Text(tx + 10, ty + 56, 1.8f,
-                  afford ? UiColor{ 0.55f, 1, 0.55f, 1 }
-                         : UiColor{ 1, 0.45f, 0.4f, 1 }, tip);
-        int copies = 0;   // owned copies are host-side; show rarity instead
-        (void)copies;
-        static const char* rarityNames[6] = { "COMMON", "UNCOMMON", "RARE",
-                                              "EPIC", "LEGENDARY", "CLASS" };
-        g.ui.Text(tx + 10, ty + 74, 1.4f, { 1, 1, 1, 0.6f },
-                  rarityNames[std::clamp(def.rarity, 0, 5)]);
-    }
-}
-
-// Owned-items strip: a half-transparent horizontal row of everything bought,
-// anchored to the right screen edge. Icons are deduped with an xN count,
-// hovering shows the card's description, and the (also half-transparent)
-// arrow at the far right collapses the row.
-void BuildOwnedRow(FrameData& frame)
-{
-    g.ownedArrowRect[2] = 0;
-    if (!InSession())
-        return;
-    const PlayerState& me = g.game.players[g.myId];
-    if (me.owned.empty())
-        return;
-
-    // dedupe by type, first-purchase order
-    uint8_t types[64];
-    int counts[64], n = 0;
-    for (uint8_t t : me.owned)
-    {
-        int f = -1;
-        for (int i = 0; i < n; ++i)
-            if (types[i] == t) { f = i; break; }
-        if (f >= 0) ++counts[f];
-        else if (n < 64) { types[n] = t; counts[n] = 1; ++n; }
-    }
-
-    const float tile = 36, gap = 5, arrowW = 16, y = 12;
-    float ax = float(g.width) - 10 - arrowW;
-    g.ownedArrowRect[0] = ax; g.ownedArrowRect[1] = y;
-    g.ownedArrowRect[2] = arrowW; g.ownedArrowRect[3] = tile;
-    bool ah = float(g.mouseX) >= ax && float(g.mouseX) <= ax + arrowW
-           && float(g.mouseY) >= y && float(g.mouseY) <= y + tile;
-    g.ui.Rect(ax, y, arrowW, tile, { 0.10f, 0.12f, 0.10f, ah ? 0.8f : 0.5f });
-    g.ui.Text(ax + 5, y + tile * 0.5f - 6, 1.6f, { 1, 1, 1, ah ? 0.95f : 0.5f },
-              g.ownedRowHidden ? "<" : ">");
-    if (g.ownedRowHidden)
-        return;
-
-    int hoverIdx = -1;
-    float hoverX = 0;
-    float x = ax - gap - tile;
-    for (int i = 0; i < n; ++i, x -= tile + gap)
-    {
-        const UpgradeType& u = kUpgradePool[types[i]];
-        bool hov = float(g.mouseX) >= x && float(g.mouseX) <= x + tile
-                && float(g.mouseY) >= y && float(g.mouseY) <= y + tile;
-        UiColor bg = kRarityCol[std::clamp(u.rarity, 0, 5)];
-        bg.a = hov ? 0.85f : 0.5f;
-        g.ui.Rect(x, y, tile, tile, bg);
-        AddIconQuad(frame, u.icon, x + tile * 0.5f, y + tile * 0.5f, 12,
-                    hov ? 1.0f : 0.55f);
-        if (counts[i] > 1)
-        {
-            char b[8];
-            sprintf_s(b, "x%d", counts[i]);
-            g.ui.Text(x + 2, y + tile - 10, 1.2f,
-                      { 1, 1, 1, hov ? 0.95f : 0.6f }, b);
-        }
-        if (hov) { hoverIdx = i; hoverX = x; }
-    }
-
-    if (hoverIdx >= 0)   // description tooltip under the strip
-    {
-        const UpgradeType& u = kUpgradePool[types[hoverIdx]];
-        const float tw = 250, th = 66;
-        float tx = std::min(hoverX, float(g.width) - tw - 8);
-        float ty = y + tile + 6;
-        g.ui.Rect(tx, ty, tw, th, { 0.05f, 0.06f, 0.05f, 0.94f });
-        g.ui.RectOutline(tx, ty, tw, th, 2,
-                         kRarityCol[std::clamp(u.rarity, 0, 5)]);
-        g.ui.Text(tx + 8, ty + 8, 1.8f, { 1, 1, 1, 1 }, u.name);
-        g.ui.Text(tx + 8, ty + 28, 1.4f, { 0.85f, 0.9f, 0.85f, 1 }, u.desc);
-        char own[24];
-        sprintf_s(own, "OWNED x%d", counts[hoverIdx]);
-        g.ui.Text(tx + 8, ty + 46, 1.3f, { 1, 1, 1, 0.6f }, own);
     }
 }
 
@@ -1863,336 +1006,11 @@ bool HostPurchase(int pid, int slot)
         // Class cards also granted their base upgrade inside TryPurchase;
         // replicate it as a second plain upgrade event so every client's
         // owned list (and its RecalcStats) matches the host exactly.
-        int grant = kUpgradePool[type].grantUpgrade;
-        if (grant >= 0)
+        UpgradeId grant = kUpgradePool[type].grant;
+        if (grant != UpgradeId::Count)
             g.net.BroadcastUpgrade(pid, uint8_t(grant));
     }
     return true;
-}
-
-void HandleShopClick(float mx, float my)
-{
-    const PlayerState& me = g.game.players[g.myId];
-    for (int i = 0; i < g.drawnCardCount; ++i)
-    {
-        const App::DrawnCard& c = g.drawnCards[i];
-        if (mx < c.x || mx > c.x + kCardW || my < c.y || my > c.y + kCardH)
-            continue;
-        const Offer& o = me.offers[c.slot];
-        snd::Play(snd::Sfx::Click, 0.45f, SndJitter(0.06f));
-        if (o.active != OfferActive || o.id != c.id || me.money < o.cost)
-            return;
-        // Capture the card's identity BEFORE purchasing: TryPurchase compacts
-        // the offers array in place, so `o` would afterwards alias the next
-        // card that shifted into this slot (the icon-swap bug).
-        g.lastClickedOfferId = o.id;
-        g.lastClickedIcon = kUpgradePool[o.type].icon;
-        g.lastClickedRarity = kUpgradePool[o.type].rarity;
-        g.lastClickX = mx;
-        g.lastClickY = my;
-        if (!g.online || g.isHost)
-            HostPurchase(g.myId, c.slot);
-        else
-            g.net.SendPurchaseToHost(c.slot);   // optimistic; host validates
-        return;
-    }
-}
-
-// Score squares arranged on a circle (2pi / player count). The layout
-// degenerates nicely: 2 players = left/right, 3 = triangle, 4 = rotated
-// square; the match timer sits in the circle's center.
-void DrawScoreCircle()
-{
-    int ids[MaxLobbyPlayers];
-    int n = 0;
-    for (int i = 0; i < MaxPlayers && n < MaxLobbyPlayers; ++i)
-        if (g.game.players[i].active)
-            ids[n++] = i;
-    if (n == 0)
-        return;
-    float cx = float(g.width) * 0.5f, cy = 86.0f;
-    float radius = 60.0f;
-    char buf[32];
-
-    for (int k = 0; k < n; ++k)
-    {
-        float ang = (n == 1) ? XM_PI
-                  : (n == 2) ? (k == 0 ? XM_PI : 0.0f)
-                             : (-XM_PI * 0.5f + XM_2PI * float(k) / float(n));
-        float x = cx + cosf(ang) * radius;
-        float y = cy + sinf(ang) * radius;
-        const PlayerState& p = g.game.players[ids[k]];
-        UiColor col = kPlayerUiCol[ids[k] % MaxLobbyPlayers];
-        g.ui.Rect(x - 21, y - 21, 42, 42, { col.r * 0.55f, col.g * 0.55f,
-                                            col.b * 0.55f, 0.92f });
-        g.ui.RectOutline(x - 21, y - 21, 42, 42, 2,
-                         ids[k] == g.myId ? UiColor{ 1, 1, 1, 1 } : col);
-        sprintf_s(buf, "%u", unsigned(p.score));
-        g.ui.TextCentered(x, y - 9, 2.6f, { 1, 1, 1, 1 }, buf);
-        std::string nm(p.name);
-        if (nm.size() > 10) nm.resize(10);
-        g.ui.TextCentered(x, y + 26, 1.3f, { 1, 1, 1, 0.75f }, nm);
-    }
-
-    if (g.game.phase == PhaseOvertime)
-    {
-        float pulse = 0.6f + 0.4f * sinf(float(g.time) * 6.0f);
-        g.ui.TextCentered(cx, cy - 10, 2.8f, { 1, 0.35f, 0.3f, pulse }, "OT");
-        g.ui.TextCentered(cx, cy + 14, 1.3f, { 1, 0.6f, 0.5f, 0.9f }, "FIRST KILL WINS");
-    }
-    else if (g.game.phase == PhasePlaying)
-    {
-        uint32_t left = g.game.matchEndTick > g.game.tick
-                            ? g.game.matchEndTick - g.game.tick : 0;
-        int secs = int(left / TickRate);
-        sprintf_s(buf, "%d:%02d", secs / 60, secs % 60);
-        g.ui.TextCentered(cx, cy - 10, 2.6f,
-                          secs <= 30 ? UiColor{ 1, 0.5f, 0.4f, 1 }
-                                     : UiColor{ 1, 1, 1, 0.95f }, buf);
-    }
-}
-
-// Host-only MATCHMAKING ON/OFF toggle: is this game advertised to searchers?
-void DrawMatchmakingToggle(float x, float y, float bw, float bh)
-{
-    UiButton btn{ x, y, bw, bh,
-                  g.net.hasPublicLobby() ? "MATCHMAKING: ON"
-                                         : "MATCHMAKING: OFF" };
-    g.mmToggleRect[0] = btn.x; g.mmToggleRect[1] = btn.y;
-    g.mmToggleRect[2] = btn.w; g.mmToggleRect[3] = btn.h;
-    bool hov = btn.Contains(float(g.mouseX), float(g.mouseY));
-    if (hov)
-        g.hoverKeyNow = 3003;
-    DrawButton(g.ui, btn, hov);
-}
-
-// Quick-match queue: the ready-up lobby stays hidden until the queue fills.
-void BuildGatheringUi()
-{
-    float w = float(g.width), h = float(g.height);
-    g.ui.Rect(0, 0, w, h, { 0.05f, 0.07f, 0.05f, 0.45f });
-
-    int active = 0;
-    for (int i = 0; i < MaxPlayers; ++i)
-        if (g.game.players[i].active)
-            ++active;
-    int need = g.game.targetPlayers > 0 ? g.game.targetPlayers
-                                        : int(MaxLobbyPlayers);
-    char buf[96];
-    int dots = 1 + int(fmod(g.time, 3.0));
-    sprintf_s(buf, "FINDING PLAYERS  %d / %d %.*s", active, need, dots, "...");
-    g.ui.TextCentered(w * 0.5f, h * 0.34f, 3.2f, { 0.9f, 1, 0.85f, 1 }, buf);
-    g.ui.TextCentered(w * 0.5f, h * 0.34f + 44, 1.7f, { 1, 1, 1, 0.6f },
-                      "the lobby opens when everyone is here");
-
-    if (g.isHost && g.online)
-    {
-        DrawMatchmakingToggle(w * 0.5f - 140, h * 0.52f, 280, 50);
-        g.ui.TextCentered(w * 0.5f, h * 0.52f + 60, 1.4f, { 1, 1, 1, 0.5f },
-                          "matchmaking off = invite-only (share the game code)");
-    }
-    g.ui.TextCentered(w * 0.5f, h - 40, 1.5f, { 1, 1, 1, 0.5f },
-                      "ESC  menu");
-}
-
-void BuildLobbyUi(FrameData& frame)
-{
-    float w = float(g.width), h = float(g.height);
-    char buf[96];
-    int active = 0, ready = 0;
-    for (int i = 0; i < MaxPlayers; ++i)
-        if (g.game.players[i].active)
-        {
-            ++active;
-            if (g.game.players[i].ready) ++ready;
-        }
-    int cap = g.game.targetPlayers > 0 ? g.game.targetPlayers
-                                       : int(MaxLobbyPlayers);
-    sprintf_s(buf, "LOBBY  %d / %d PLAYERS   %d READY", active, cap, ready);
-    g.ui.TextCentered(w * 0.5f, 84, 2.4f, { 0.9f, 1, 0.85f, 1 }, buf);
-    if (g.net.hasPublicLobby())
-        g.ui.TextCentered(w * 0.5f, 112, 1.5f, { 0.7f, 0.95f, 1, 0.8f },
-                          "PUBLIC MATCH - players can find this game");
-
-    // name + ready tag floating above each tank in the lineup
-    for (int i = 0; i < MaxPlayers; ++i)
-    {
-        const PlayerState& p = g.game.players[i];
-        if (!p.active)
-            continue;
-        float lx, lz, lyaw;
-        LobbySpot(i, lx, lz, lyaw);
-        float sx, sy;
-        if (!WorldToScreen(XMFLOAT3(lx, 3.4f, lz), frame.viewProj, sx, sy))
-            continue;
-        UiColor col = kPlayerUiCol[i % MaxLobbyPlayers];
-        std::string nm(p.name);
-        if (nm.size() > 12) nm.resize(12);
-        float tw = g.ui.TextWidth(1.9f, nm) + 20;
-        g.ui.Rect(sx - tw * 0.5f, sy - 14, tw, 26, { 0, 0, 0, 0.55f });
-        g.ui.TextCentered(sx, sy - 8, 1.9f, col, nm);
-        g.ui.TextCentered(sx, sy + 18, 1.5f,
-                          p.ready ? UiColor{ 0.5f, 1, 0.5f, 1 }
-                                  : UiColor{ 1, 1, 1, 0.45f },
-                          p.ready ? "READY" : "NOT READY");
-        if (i == g.myId)
-            g.ui.TextCentered(sx, sy + 36, 1.3f, { 1, 1, 1, 0.5f }, "(you)");
-    }
-
-    // ready button
-    const PlayerState& me = g.game.players[g.myId];
-    UiButton btn{ w * 0.5f - 140, h - 128, 280, 56,
-                  me.ready ? "UNREADY" : "READY UP" };
-    g.readyRect[0] = btn.x; g.readyRect[1] = btn.y;
-    g.readyRect[2] = btn.w; g.readyRect[3] = btn.h;
-    bool readyHov = btn.Contains(float(g.mouseX), float(g.mouseY));
-    if (readyHov)
-        g.hoverKeyNow = 3001;
-    DrawButton(g.ui, btn, readyHov);
-    if (g.isHost && g.online)
-        DrawMatchmakingToggle(w * 0.5f + 160, h - 128, 260, 56);
-    g.ui.TextCentered(w * 0.5f, h - 62, 1.4f, { 1, 1, 1, 0.5f },
-                      "R toggles ready - match starts when everyone is ready");
-}
-
-void BuildHud(FrameData& frame)
-{
-    const PlayerState& me = g.game.players[g.myId];
-    float w = float(g.width);
-    g.mmToggleRect[2] = 0;   // only clickable on frames where it's drawn
-
-    char buf[256];
-    sprintf_s(buf, "%s  |  %s  |  %.0f FPS", g.renderer->Name(), g.gpu.name.c_str(), g.fps);
-    g.ui.Text(10, 10, 1.6f, { 1, 1, 1, 0.75f }, buf);
-    if (g.online && !g.isHost)
-    {
-        int ping = 0;
-        std::string route;
-        if (g.net.clientConnectionStatus(ping, route))
-        {
-            sprintf_s(buf, "PING %d ms   %s", ping, route.c_str());
-            g.ui.Text(10, 46, 1.4f, { 0.75f, 0.95f, 0.75f, 0.8f }, buf);
-        }
-    }
-    sprintf_s(buf, "GI %s %s (%d rays x %d temporal = %d eff)  SSAO %s  SHADOWS %s   [F5/F6/F7]",
-              g.post.giEnabled ? "ON" : "OFF", g.post.giHalfRes ? "HALF-RES" : "FULL-RES",
-              g.post.giRays, g.post.temporalSamples,
-              g.post.giRays * g.post.temporalSamples, g.post.aoEnabled ? "ON" : "OFF",
-              g.post.shadowsEnabled ? "ON" : "OFF");
-    g.ui.Text(10, 28, 1.4f, { 1, 1, 1, 0.55f }, buf);
-
-    if (g.isHost && g.online)
-    {
-        std::string code = "GAME CODE: " + g.net.joinCode();
-        float tw = g.ui.TextWidth(2.0f, code);
-        bool justCopied = g.time - g.codeCopiedAt < 1.5;
-        g.codeRect[0] = w * 0.5f - tw * 0.5f - 12;
-        g.codeRect[1] = 6;
-        g.codeRect[2] = tw + 24;
-        g.codeRect[3] = 28;
-        bool hover = float(g.mouseX) >= g.codeRect[0]
-                  && float(g.mouseX) <= g.codeRect[0] + g.codeRect[2]
-                  && float(g.mouseY) >= g.codeRect[1]
-                  && float(g.mouseY) <= g.codeRect[1] + g.codeRect[3];
-        if (hover)
-            g.hoverKeyNow = 3002;
-        g.ui.Rect(g.codeRect[0], g.codeRect[1], g.codeRect[2], g.codeRect[3],
-                  hover ? UiColor{ 0.12f, 0.16f, 0.1f, 0.8f } : UiColor{ 0, 0, 0, 0.55f });
-        g.ui.TextCentered(w * 0.5f, 12, 2.0f,
-                          justCopied ? UiColor{ 0.6f, 1.0f, 0.6f, 1 }
-                                     : UiColor{ 1, 0.95f, 0.6f, 1 }, code);
-        g.ui.TextCentered(w * 0.5f, 38, 1.5f, { 1, 1, 1, 0.7f },
-                          justCopied ? "COPIED TO CLIPBOARD"
-                                     : "click the code to copy it");
-        sprintf_s(buf, "players connected: %d", g.net.connectedClients() + 1);
-        g.ui.TextCentered(w * 0.5f, 56, 1.5f, { 1, 1, 1, 0.7f }, buf);
-    }
-
-    if (g.game.phase == PhaseGathering)
-    {
-        BuildGatheringUi();
-        if (!g.statusLine.empty())
-            g.ui.TextCentered(w * 0.5f, float(g.height) - 66, 1.7f,
-                              { 1, 0.8f, 0.4f, 0.95f }, g.statusLine);
-        return;
-    }
-    if (g.game.phase == PhaseLobby)
-    {
-        BuildLobbyUi(frame);
-        if (!g.statusLine.empty())
-            g.ui.TextCentered(w * 0.5f, float(g.height) - 30, 1.7f,
-                              { 1, 0.8f, 0.4f, 0.95f }, g.statusLine);
-        return;
-    }
-
-    // health bar + credits
-    float hx = 10, hy = float(g.height) - 46;
-    g.ui.Rect(hx, hy, 260, 26, { 0, 0, 0, 0.55f });
-    float frac = float(me.health) / float(MaxHealthFor(me));
-    g.ui.Rect(hx + 3, hy + 3, 254 * std::max(0.0f, frac), 20,
-              frac > 0.5f ? UiColor{ 0.3f, 0.8f, 0.25f, 0.95f }
-              : frac > 0.25f ? UiColor{ 0.9f, 0.75f, 0.2f, 0.95f }
-                             : UiColor{ 0.9f, 0.2f, 0.15f, 0.95f });
-    sprintf_s(buf, "HP %d", me.health);
-    g.ui.Text(hx + 8, hy + 6, 2.0f, { 0, 0, 0, 0.9f }, buf);
-    sprintf_s(buf, "$ %u", unsigned(me.money));
-    g.ui.Rect(hx + 268, hy, 90, 26, { 0, 0, 0, 0.55f });
-    g.ui.Text(hx + 276, hy + 6, 2.0f, { 1, 0.92f, 0.5f, 1 }, buf);
-
-    // reload bar
-    float rf = 1.0f - me.fireCooldown
-                      / std::max(0.01f, me.stats[int(Stat::ReloadTime)]);
-    g.ui.Rect(hx, hy - 14, 260, 8, { 0, 0, 0, 0.45f });
-    g.ui.Rect(hx + 2, hy - 12, 256 * std::clamp(rf, 0.0f, 1.0f), 4, { 0.95f, 0.9f, 0.5f, 0.9f });
-
-    // fuel bar (SHIFT boost): orange while available, dimmed during the
-    // regen delay; uses the locally predicted fuel so it reacts instantly
-    {
-        float cap = std::max(me.stats[int(Stat::BoostFuel)], 0.01f);
-        float ff = std::clamp(me.boostFuel / cap, 0.0f, 1.0f);
-        bool waiting = me.boostRegenWait > 0.0f && ff < 1.0f;
-        g.ui.Rect(hx, hy - 26, 260, 10, { 0, 0, 0, 0.45f });
-        g.ui.Rect(hx + 2, hy - 24, 256 * ff, 6,
-                  waiting ? UiColor{ 0.9f, 0.45f, 0.15f, 0.45f }
-                          : UiColor{ 1.0f, 0.55f, 0.15f, 0.95f });
-    }
-
-    // kill scores on the circle + match timer in its center
-    DrawScoreCircle();
-
-    if (g.game.phase == PhaseEnded)
-    {
-        const char* winName = (g.game.winner < MaxPlayers)
-                                  ? g.game.players[g.game.winner].name : "?";
-        if (g.game.winner == g.myId)
-            sprintf_s(buf, "YOU WIN");
-        else
-            sprintf_s(buf, "%s WINS", winName);
-        g.ui.TextCentered(w * 0.5f, g.height * 0.36f, 5.0f,
-                          { 1, 0.95f, 0.55f, 1 }, buf);
-        g.ui.TextCentered(w * 0.5f, g.height * 0.36f + 52, 1.7f,
-                          { 1, 1, 1, 0.7f }, "returning to lobby...");
-    }
-
-    if (me.health <= 0 && me.active)
-    {
-        sprintf_s(buf, "DESTROYED - respawn in %.1f", std::max(0.0f, me.respawnTimer));
-        g.ui.TextCentered(w * 0.5f, g.height * 0.42f, 3.0f, { 1, 0.3f, 0.25f, 1 }, buf);
-    }
-
-    // crosshair
-    g.ui.Rect(float(g.mouseX) - 9, float(g.mouseY) - 1, 18, 2, { 1, 1, 1, 0.8f });
-    g.ui.Rect(float(g.mouseX) - 1, float(g.mouseY) - 9, 2, 18, { 1, 1, 1, 0.8f });
-
-    g.ui.Text(10, float(g.height) - 74, 1.4f, { 1, 1, 1, 0.45f },
-              "WASD drive   SHIFT boost   mouse aim   LMB/space fire   TAB supply   ESC menu");
-    if (!g.statusLine.empty())
-        g.ui.TextCentered(w * 0.5f, float(g.height) - 30, 1.7f, { 1, 0.8f, 0.4f, 0.95f },
-                          g.statusLine);
-
-    if (g.shopOpen)
-        BuildShop(frame);
-    BuildOwnedRow(frame);
 }
 
 std::vector<UiButton> MenuButtons()
@@ -2633,7 +1451,7 @@ bool CreateAssets()
     g.texGroundNRA = r->CreateTexture(groundNRA.rgba.data(), groundNRA.width, groundNRA.height);
     ImageData flatNRA = MakeFlatNRA(0.55f);
     g.texFlatNRA = r->CreateTexture(flatNRA.rgba.data(), flatNRA.width, flatNRA.height);
-    ImageData icons = MakeIconAtlas(32, UpgradePoolSize);
+    ImageData icons = MakeIconAtlas(32, UpgradeCount);
     g.texIconAtlas = r->CreateTexture(icons.rgba.data(), icons.width, icons.height);
 
     // skinned test rig (also the template for future rigged units): prefer
@@ -2681,10 +1499,26 @@ bool CreateAssets()
             // IK onto an orbiting marker, weight ramping in and out
             Animator& an = g.rigAnimator;
             an.model = &g.rigModel;
-            int run = g.rigModel.FindClip("Run");
+            // All rig references resolve BY NAME, once, right here -- and
+            // every miss logs. Raw indices are per-export and a re-exported
+            // GLB would silently bend the wrong bone.
+            auto clip = [&](const char* n)
+            {
+                int c = g.rigModel.FindClip(n);
+                if (c < 0) Log("rigtest: clip '%s' not in model", n);
+                return c;
+            };
+            auto joint = [&](const char* n)
+            {
+                int j = FindJoint(g.rigModel, n);
+                if (j < 0) Log("rigtest: joint '%s' not in skeleton", n);
+                return j;
+            };
+            int run = clip("Run");
             int shoot = g.rigModel.FindClip("Idle_Shoot");
-            if (shoot < 0) shoot = g.rigModel.FindClip("Shoot");
-            an.PlayLayer(0, run >= 0 ? run : 0, true, 1.0f);
+            if (shoot < 0) shoot = clip("Shoot");   // log only if both miss
+            if (run >= 0)
+                an.PlayLayer(0, run, true, 1.0f);
             if (shoot >= 0)
             {
                 an.PlayLayer(1, shoot, true, 1.0f);
@@ -2694,21 +1528,23 @@ bool CreateAssets()
             an.aim.chainCount = 0;
             for (const char* n : { "Abdomen", "Torso" })
             {
-                int j = FindJoint(g.rigModel, n);
+                int j = joint(n);
                 if (j >= 0 && an.aim.chainCount < 4)
                     an.aim.chain[an.aim.chainCount++] = j;
             }
             an.aim.forward = XMFLOAT3(0, 0, 1);
             an.aim.maxAngle = 1.2f;
-            int ua = FindJoint(g.rigModel, "UpperArm.L");
-            int la = FindJoint(g.rigModel, "LowerArm.L");
+            int ua = joint("UpperArm.L");
+            int la = joint("LowerArm.L");
             int ha = FindJoint(g.rigModel, "Hand.L");
-            if (ha < 0) ha = FindJoint(g.rigModel, "Index1.L");
+            if (ha < 0) ha = joint("Index1.L");     // log only if both miss
             if (ua >= 0 && la >= 0 && ha >= 0)
             {
                 an.ik[0].active = true;
                 an.ik[0].a = ua; an.ik[0].b = la; an.ik[0].c = ha;
             }
+            else
+                Log("rigtest: IK chain incomplete, hand IK disabled");
         }
     }
     return g.meshHull >= 0 && g.meshTurret >= 0 && g.texPalette >= 0;
@@ -2827,6 +1663,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         g.height = g.opt.winH;
     }
     Log("Tankaq starting. cmdline: %s", cmdUtf8);
+    // the pool is data the whole game trusts: refuse to run if inconsistent
+    if (const char* poolErr = ValidateUpgradePool())
+    {
+        Log("FATAL: upgrade pool invalid: %s", poolErr);
+        MessageBoxA(nullptr, poolErr, "Tankaq: upgrade pool invalid", MB_ICONERROR);
+        return 1;
+    }
     if (g.opt.classTest)
         return RunClassTest();   // headless sim test, exit code = failures
 
@@ -3204,7 +2047,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                     g.predPrev = g.predCurr = me;
                     g.predCooldown = 0;
                     for (auto& pv : g.provRockets)
-                        pv.active = false;
+                        pv.sim.active = false;
                 }
                 else
                 {
@@ -3223,17 +2066,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                     {
                         for (auto& pv : g.provRockets)
                         {
-                            if (pv.active)
+                            if (pv.sim.active)
                                 continue;
                             XMFLOAT3 mz = g.game.MuzzleWorld(me);
-                            pv.active = true;
+                            pv.sim = Projectile{};
+                            pv.sim.active = true;
                             pv.matchedSlot = -1;
-                            pv.x = mz.x; pv.y = mz.y; pv.z = mz.z;
-                            pv.yaw = local.turretYaw;
-                            pv.speed = me.stats[int(Stat::ProjSpeed)];
-                            pv.bounces = int(me.stats[int(Stat::Bounces)] + 0.5f);
-                            pv.bounceSpd = me.stats[int(Stat::BounceSpeed)];
-                            pv.life = ProjectileLife;
+                            pv.sim.x = mz.x; pv.sim.y = mz.y; pv.sim.z = mz.z;
+                            pv.sim.yaw = local.turretYaw;
+                            pv.sim.speed = me.stats[int(Stat::ProjSpeed)];
+                            pv.sim.bounces = int(me.stats[int(Stat::Bounces)] + 0.5f);
+                            pv.sim.bounceSpd = me.stats[int(Stat::BounceSpeed)];
+                            pv.sim.bounceDmg = me.stats[int(Stat::BounceDamage)];
+                            pv.sim.life = ProjectileLife;
                             pv.born = g.time;
                             pv.spawn = mz;
                             g.predCooldown = me.stats[int(Stat::ReloadTime)];
@@ -3249,9 +2094,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                 // (rare drift), unveil the twin so the tail is server-drawn.
                 for (auto& pv : g.provRockets)
                 {
-                    if (!pv.active)
+                    if (!pv.sim.active)
                         continue;
-                    bool aliveLocal = AdvanceProvRocket(pv);
+                    bool aliveLocal = StepProjectile(pv.sim, TickDt);
                     bool expired = pv.matchedSlot < 0 && g.time - pv.born > 0.7;
                     if (!aliveLocal || expired)
                     {
@@ -3259,7 +2104,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                             && g.projVeiledBy[pv.matchedSlot] >= 0)
                             g.projVeiledBy[pv.matchedSlot] = -1;
                         pv.matchedSlot = -1;
-                        pv.active = false;
+                        pv.sim.active = false;
                     }
                 }
             }
@@ -3416,7 +2261,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             g.screen = Screen::Settings;
         }
 
-        // one-shot clicks: menus, or the copyable game code in the HUD
+        // one-shot clicks: menus, or whatever UiHot clickable is topmost
+        // under the cursor (rects registered by last frame's UI build)
         if (g.clicked)
         {
             g.clicked = false;
@@ -3424,57 +2270,46 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             {
                 HandleMenuClick();
             }
-            else if (g.isHost && g.online && g.mmToggleRect[2] > 0
-                     && g.mouseX >= g.mmToggleRect[0]
-                     && g.mouseX <= g.mmToggleRect[0] + g.mmToggleRect[2]
-                     && g.mouseY >= g.mmToggleRect[1]
-                     && g.mouseY <= g.mmToggleRect[1] + g.mmToggleRect[3])
+            else switch (UiHotHit(float(g.mouseX), float(g.mouseY)))
             {
+            case UiIdMmToggle:
                 // matchmaking toggle: is this game advertised to searchers?
-                snd::Play(snd::Sfx::Click, 0.5f, SndJitter(0.06f));
-                if (g.net.hasPublicLobby())
+                if (g.isHost && g.online)
                 {
-                    g.net.LeaveLobby();
+                    snd::Play(snd::Sfx::Click, 0.5f, SndJitter(0.06f));
+                    if (g.net.hasPublicLobby())
+                    {
+                        g.net.LeaveLobby();
+                    }
+                    else
+                    {
+                        g.net.CreatePublicLobby(g.game.targetPlayers);
+                        g.lastAdvertPlayers = g.lastAdvertPhase = -1;
+                    }
                 }
-                else
-                {
-                    g.net.CreatePublicLobby(g.game.targetPlayers);
-                    g.lastAdvertPlayers = g.lastAdvertPhase = -1;
-                }
-            }
-            else if (g.game.phase == PhaseLobby
-                     && g.mouseX >= g.readyRect[0]
-                     && g.mouseX <= g.readyRect[0] + g.readyRect[2]
-                     && g.mouseY >= g.readyRect[1]
-                     && g.mouseY <= g.readyRect[1] + g.readyRect[3])
-            {
-                ToggleReady();
-            }
-            else if (g.ownedArrowRect[2] > 0
-                     && g.mouseX >= g.ownedArrowRect[0]
-                     && g.mouseX <= g.ownedArrowRect[0] + g.ownedArrowRect[2]
-                     && g.mouseY >= g.ownedArrowRect[1]
-                     && g.mouseY <= g.ownedArrowRect[1] + g.ownedArrowRect[3])
-            {
+                break;
+            case UiIdReady:
+                if (g.game.phase == PhaseLobby)
+                    ToggleReady();
+                break;
+            case UiIdOwnedArrow:
                 g.ownedRowHidden = !g.ownedRowHidden;
                 snd::Play(snd::Sfx::Click, 0.45f, SndJitter(0.06f));
-            }
-            else if (g.shopOpen && g.mouseX >= g.shopPanel[0]
-                     && g.mouseX <= g.shopPanel[0] + g.shopPanel[2]
-                     && g.mouseY >= g.shopPanel[1]
-                     && g.mouseY <= g.shopPanel[1] + g.shopPanel[3])
-            {
-                HandleShopClick(float(g.mouseX), float(g.mouseY));
-            }
-            else if (g.isHost && g.online
-                     && g.mouseX >= g.codeRect[0]
-                     && g.mouseX <= g.codeRect[0] + g.codeRect[2]
-                     && g.mouseY >= g.codeRect[1]
-                     && g.mouseY <= g.codeRect[1] + g.codeRect[3])
-            {
-                snd::Play(snd::Sfx::Click, 0.5f, SndJitter(0.06f));
-                CopyTextToClipboard(g.net.joinCode());
-                g.codeCopiedAt = g.time;
+                break;
+            case UiIdShopPanel:
+                if (g.shopOpen)
+                    HandleShopClick(float(g.mouseX), float(g.mouseY));
+                break;
+            case UiIdCode:
+                if (g.isHost && g.online)
+                {
+                    snd::Play(snd::Sfx::Click, 0.5f, SndJitter(0.06f));
+                    CopyTextToClipboard(g.net.joinCode());
+                    g.codeCopiedAt = g.time;
+                }
+                break;
+            default:
+                break;
             }
         }
 
@@ -3514,10 +2349,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                     Offer o;
                     o.active = OfferActive;
                     o.id = 200;
-                    for (int i = 0; i < UpgradePoolSize; ++i)
-                        if (kUpgradePool[i].classGrant == ClassSoldier)
-                            o.type = uint8_t(i);
-                    o.cost = uint16_t(kUpgradePool[o.type].baseCost);
+                    o.type = uint8_t(UpgradeId::SoldierClass);
+                    o.cost = uint16_t(UpgradeDef(UpgradeId::SoldierClass).baseCost);
                     g.game.InsertOffer(g.myId, o);
                 }
                 else
@@ -3533,6 +2366,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         frame.defaultNormalTex = g.texFlatNRA;
         BuildScene(frame, view, proj);
         g.ui.Reset(g.width, g.height);
+        g.uiHotCount = 0;   // clickable registry rebuilds with the UI
         if (g.screen == Screen::InGame)
         {
             BuildHud(frame);

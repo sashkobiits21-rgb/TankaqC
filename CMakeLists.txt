@@ -11,6 +11,9 @@ endif()
 
 add_executable(TankaqClient WIN32
   src/Main.cpp
+  src/UiShop.cpp
+  src/UiHud.cpp
+  src/Tests.cpp
   src/Game.cpp
   src/GpuDetect.cpp
   src/Anim.cpp
