@@ -5,7 +5,7 @@
 namespace tankaq::net
 {
 
-constexpr uint8_t ProtocolVersion = 6;   // v6: lobby/match phases, names, ready
+constexpr uint8_t ProtocolVersion = 7;   // v7: gathering queue (targetPlayers)
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t
@@ -114,6 +114,7 @@ struct MsgSnapshot
     uint8_t type = uint8_t(MsgType::Snapshot);
     uint8_t phase = PhaseLobby;
     uint8_t winner = 0xFF;
+    uint8_t targetPlayers = 0;    // gathering queue size (0 = no queue)
     uint32_t tick = 0;
     uint32_t matchEndTick = 0;
     PlayerNet players[MaxPlayers];

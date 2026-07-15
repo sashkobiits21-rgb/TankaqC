@@ -50,13 +50,15 @@ struct Options
     bool shopTest = false;                              // auto-open + auto-buy (testing)
     int pauseTest = 0;           // 1 = force-pause at frame 200, 2 = + settings
     bool quickMatch = false;     // auto-click FIND MATCH at startup (testing)
+    int quickMatchNeed = 2;      // queue size for --quickmatch
 };
 
 const struct { int w, h; } kResolutions[] = {
     { 1280, 720 }, { 1600, 900 }, { 1920, 1080 }, { 2560, 1440 }
 };
 
-enum class Screen { MainMenu, JoinEntry, Connecting, InGame, Settings, Paused };
+enum class Screen { MainMenu, JoinEntry, Connecting, InGame, Settings, Paused,
+                    MatchSize };
 
 struct App
 {
@@ -98,8 +100,10 @@ struct App
     bool sndHullYawValid = false;
     // quick match state
     bool searching = false;              // lobby search in flight
+    int searchNeed = 2;                  // chosen queue size (FIND MATCH)
     int lastAdvertPlayers = -1;          // last values pushed to the Steam
     int lastAdvertPhase = -1;            //  lobby advert (push on change only)
+    float mmToggleRect[4]{};             // MATCHMAKING ON/OFF button (host)
     Screen screen = Screen::MainMenu;
     Screen settingsReturn = Screen::MainMenu;   // where BACK leads
     bool sessionActive = false;  // a game session exists (pause overlays it)
@@ -307,6 +311,8 @@ Options ParseOptions(const std::string& cmd)
     o.shopTest = cmd.find("--shoptest") != std::string::npos;
     if (!(v = GetArg(cmd, "--pausetest=")).empty()) o.pauseTest = atoi(v.c_str());
     o.quickMatch = cmd.find("--quickmatch") != std::string::npos;
+    if (!(v = GetArg(cmd, "--quickmatch=")).empty())
+        o.quickMatchNeed = atoi(v.c_str());
     if (!(v = GetArg(cmd, "--winsize=")).empty())
         sscanf_s(v.c_str(), "%dx%d", &o.winW, &o.winH);
     return o;
@@ -324,6 +330,7 @@ void ApplySnapshot(const net::MsgSnapshot& s)
     g.game.tick = s.tick;
     g.game.phase = s.phase;
     g.game.winner = s.winner;
+    g.game.targetPlayers = s.targetPlayers;
     g.game.matchEndTick = s.matchEndTick;
     for (int i = 0; i < MaxPlayers; ++i)
     {
@@ -391,6 +398,7 @@ net::MsgSnapshot BuildSnapshot()
     s.tick = g.game.tick;
     s.phase = g.game.phase;
     s.winner = g.game.winner;
+    s.targetPlayers = g.game.targetPlayers;
     s.matchEndTick = g.game.matchEndTick;
     for (int i = 0; i < MaxPlayers; ++i)
     {
@@ -724,20 +732,22 @@ void StartHost()
     g.statusLine.clear();
 }
 
-// Quick match: search the free Steam lobby directory for an open public game;
-// onMatchFound / onNoMatch (set in wWinMain) continue the flow.
-void StartFindMatch()
+// Quick match: search the free Steam lobby directory for an open public game
+// of the chosen size; onMatchFound / onNoMatch (set in wWinMain) continue.
+void StartFindMatch(int need)
 {
     if (!g.net.steamAvailable())
     {
         g.statusLine = "steam is not available - cannot search for matches";
+        g.screen = Screen::MainMenu;
         return;
     }
+    g.searchNeed = std::clamp(need, 2, int(MaxLobbyPlayers));
     g.searching = true;
     g.screen = Screen::Connecting;
     g.connectStart = g.time;
     g.statusLine.clear();
-    g.net.QuickMatch();
+    g.net.QuickMatch(g.searchNeed);
 }
 
 void StartJoin(const std::string& target)
@@ -1393,6 +1403,49 @@ void DrawScoreCircle()
     }
 }
 
+// Host-only MATCHMAKING ON/OFF toggle: is this game advertised to searchers?
+void DrawMatchmakingToggle(float x, float y, float bw, float bh)
+{
+    UiButton btn{ x, y, bw, bh,
+                  g.net.hasPublicLobby() ? "MATCHMAKING: ON"
+                                         : "MATCHMAKING: OFF" };
+    g.mmToggleRect[0] = btn.x; g.mmToggleRect[1] = btn.y;
+    g.mmToggleRect[2] = btn.w; g.mmToggleRect[3] = btn.h;
+    bool hov = btn.Contains(float(g.mouseX), float(g.mouseY));
+    if (hov)
+        g.hoverKeyNow = 3003;
+    DrawButton(g.ui, btn, hov);
+}
+
+// Quick-match queue: the ready-up lobby stays hidden until the queue fills.
+void BuildGatheringUi()
+{
+    float w = float(g.width), h = float(g.height);
+    g.ui.Rect(0, 0, w, h, { 0.05f, 0.07f, 0.05f, 0.45f });
+
+    int active = 0;
+    for (int i = 0; i < MaxPlayers; ++i)
+        if (g.game.players[i].active)
+            ++active;
+    int need = g.game.targetPlayers > 0 ? g.game.targetPlayers
+                                        : int(MaxLobbyPlayers);
+    char buf[96];
+    int dots = 1 + int(fmod(g.time, 3.0));
+    sprintf_s(buf, "FINDING PLAYERS  %d / %d %.*s", active, need, dots, "...");
+    g.ui.TextCentered(w * 0.5f, h * 0.34f, 3.2f, { 0.9f, 1, 0.85f, 1 }, buf);
+    g.ui.TextCentered(w * 0.5f, h * 0.34f + 44, 1.7f, { 1, 1, 1, 0.6f },
+                      "the lobby opens when everyone is here");
+
+    if (g.isHost && g.online)
+    {
+        DrawMatchmakingToggle(w * 0.5f - 140, h * 0.52f, 280, 50);
+        g.ui.TextCentered(w * 0.5f, h * 0.52f + 60, 1.4f, { 1, 1, 1, 0.5f },
+                          "matchmaking off = invite-only (share the game code)");
+    }
+    g.ui.TextCentered(w * 0.5f, h - 40, 1.5f, { 1, 1, 1, 0.5f },
+                      "ESC  menu");
+}
+
 void BuildLobbyUi(FrameData& frame)
 {
     float w = float(g.width), h = float(g.height);
@@ -1404,7 +1457,9 @@ void BuildLobbyUi(FrameData& frame)
             ++active;
             if (g.game.players[i].ready) ++ready;
         }
-    sprintf_s(buf, "LOBBY  %d / %d PLAYERS   %d READY", active, MaxLobbyPlayers, ready);
+    int cap = g.game.targetPlayers > 0 ? g.game.targetPlayers
+                                       : int(MaxLobbyPlayers);
+    sprintf_s(buf, "LOBBY  %d / %d PLAYERS   %d READY", active, cap, ready);
     g.ui.TextCentered(w * 0.5f, 84, 2.4f, { 0.9f, 1, 0.85f, 1 }, buf);
     if (g.net.hasPublicLobby())
         g.ui.TextCentered(w * 0.5f, 112, 1.5f, { 0.7f, 0.95f, 1, 0.8f },
@@ -1445,6 +1500,8 @@ void BuildLobbyUi(FrameData& frame)
     if (readyHov)
         g.hoverKeyNow = 3001;
     DrawButton(g.ui, btn, readyHov);
+    if (g.isHost && g.online)
+        DrawMatchmakingToggle(w * 0.5f + 160, h - 128, 260, 56);
     g.ui.TextCentered(w * 0.5f, h - 62, 1.4f, { 1, 1, 1, 0.5f },
                       "R toggles ready - match starts when everyone is ready");
 }
@@ -1453,6 +1510,7 @@ void BuildHud(FrameData& frame)
 {
     const PlayerState& me = g.game.players[g.myId];
     float w = float(g.width);
+    g.mmToggleRect[2] = 0;   // only clickable on frames where it's drawn
 
     char buf[256];
     sprintf_s(buf, "%s  |  %s  |  %.0f FPS", g.renderer->Name(), g.gpu.name.c_str(), g.fps);
@@ -1501,6 +1559,14 @@ void BuildHud(FrameData& frame)
         g.ui.TextCentered(w * 0.5f, 56, 1.5f, { 1, 1, 1, 0.7f }, buf);
     }
 
+    if (g.game.phase == PhaseGathering)
+    {
+        BuildGatheringUi();
+        if (!g.statusLine.empty())
+            g.ui.TextCentered(w * 0.5f, float(g.height) - 66, 1.7f,
+                              { 1, 0.8f, 0.4f, 0.95f }, g.statusLine);
+        return;
+    }
     if (g.game.phase == PhaseLobby)
     {
         BuildLobbyUi(frame);
@@ -1599,6 +1665,13 @@ std::vector<UiButton> MenuButtons()
         buttons.push_back({ x, y + 1 * (bh + gap), bw, bh, "SETTINGS" });
         buttons.push_back({ x, y + 2 * (bh + gap), bw, bh, "LEAVE GAME" });
         buttons.push_back({ x, y + 3 * (bh + gap), bw, bh, "QUIT" });
+    }
+    else if (g.screen == Screen::MatchSize)
+    {
+        buttons.push_back({ x, y + 0 * (bh + gap), bw, bh, "2 PLAYERS" });
+        buttons.push_back({ x, y + 1 * (bh + gap), bw, bh, "3 PLAYERS" });
+        buttons.push_back({ x, y + 2 * (bh + gap), bw, bh, "4 PLAYERS" });
+        buttons.push_back({ x, y + 3 * (bh + gap), bw, bh, "BACK" });
     }
     else if (g.screen == Screen::Settings)
     {
@@ -1714,6 +1787,9 @@ void BuildMenu()
     if (g.screen == Screen::Settings)
         g.ui.TextCentered(w * 0.5f, h * 0.30f - 40, 2.2f, { 0.9f, 1, 0.85f, 1 },
                           "SETTINGS - effective GI samples = rays x temporal");
+    if (g.screen == Screen::MatchSize)
+        g.ui.TextCentered(w * 0.5f, h * 0.36f - 44, 2.4f, { 0.9f, 1, 0.85f, 1 },
+                          "MATCH SIZE - how many players?");
 
     if (!g.statusLine.empty())
         g.ui.TextCentered(w * 0.5f, h * 0.33f, 1.8f, { 1, 0.7f, 0.5f, 1 }, g.statusLine);
@@ -1736,9 +1812,19 @@ void HandleMenuClick()
         if (!b.Contains(float(g.mouseX), float(g.mouseY)))
             continue;
         snd::Play(snd::Sfx::Click, 0.5f, SndJitter(0.06f));
-        if (b.label == "FIND MATCH") StartFindMatch();
+        if (b.label == "FIND MATCH") { g.screen = Screen::MatchSize; g.statusLine.clear(); }
+        else if (b.label == "2 PLAYERS") StartFindMatch(2);
+        else if (b.label == "3 PLAYERS") StartFindMatch(3);
+        else if (b.label == "4 PLAYERS") StartFindMatch(4);
         else if (b.label == "PLAY SOLO") StartSolo();
-        else if (b.label == "HOST GAME") StartHost();
+        else if (b.label == "HOST GAME")
+        {
+            // hosting counts as matchmaking: advertise as an open host
+            // (need = 0, joinable by searchers of any size; toggleable in lobby)
+            StartHost();
+            if (g.screen == Screen::InGame && g.online)
+                g.net.CreatePublicLobby(0);
+        }
         else if (b.label == "JOIN GAME") { g.screen = Screen::JoinEntry; g.statusLine.clear(); }
         else if (b.label == "SETTINGS")
         {
@@ -1757,6 +1843,7 @@ void HandleMenuClick()
                                                     : Screen::MainMenu;
             g.statusLine.clear();
         }
+        // MatchSize BACK falls through to the branch above (-> MainMenu)
         else if (b.label == "CANCEL") LeaveToMenu("join cancelled");
         else if (b.label.rfind("GI:", 0) == 0) g.post.giEnabled = !g.post.giEnabled;
         else if (b.label.rfind("GI RAYS:", 0) == 0)
@@ -1870,7 +1957,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 g.screen = Screen::InGame;
             else if (g.screen == Screen::Settings)
                 g.screen = g.settingsReturn;
-            else if (g.screen == Screen::JoinEntry)
+            else if (g.screen == Screen::JoinEntry
+                     || g.screen == Screen::MatchSize)
                 g.screen = Screen::MainMenu;
         }
         if (wp == VK_F5) g.post.giEnabled = !g.post.giEnabled;
@@ -2205,11 +2293,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         if (!g.searching)
             return;
         g.searching = false;
-        // nobody out there: become the host and advertise publicly
+        // nobody out there: host a gathering queue of the chosen size. The
+        // ready-up lobby stays hidden until the queue fills.
         StartHost();
         if (g.screen == Screen::InGame)
         {
-            g.net.CreatePublicLobby();
+            g.net.SetJoinCap(g.searchNeed);
+            g.game.StartGathering(g.searchNeed);
+            g.net.CreatePublicLobby(g.searchNeed);
             g.statusLine.clear();
         }
     };
@@ -2218,18 +2309,22 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     if (g.opt.solo)
         StartSolo();
     else if (g.opt.host)
+    {
         (steamOk ? StartHost() : StartSolo());
+        if (g.online)
+            g.net.CreatePublicLobby(0);   // hosting counts as matchmaking
+    }
     else if (!g.opt.join.empty() && steamOk)
         StartJoin(g.opt.join);
     else if (g.opt.quickMatch && steamOk)
-        StartFindMatch();
+        StartFindMatch(g.opt.quickMatchNeed);
 
     net::Net::Events ev;
     ev.onPlayerJoined = [](int pid, const char* name)
     {
         g.game.SpawnPlayer(pid);
         SetPlayerName(pid, name);
-        if (g.game.phase == PhaseLobby)
+        if (g.game.phase == PhaseLobby || g.game.phase == PhaseGathering)
         {
             float x, z, yaw;
             LobbySpot(pid, x, z, yaw);
@@ -2402,7 +2497,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         //    the look-at target, so they always agree (no relative twist),
         //  - snap to the target when within a millimeter to kill float noise.
         XMFLOAT3 target{ 0, 0, 0 };
-        bool lobbyCam = InSession() && g.game.phase == PhaseLobby;
+        bool lobbyCam = InSession() && (g.game.phase == PhaseLobby
+                                        || g.game.phase == PhaseGathering);
         if (lobbyCam)
             target = XMFLOAT3(0, 0, -8.0f);   // lineup center
         else if (InSession() && g.game.players[g.myId].active)
@@ -2526,6 +2622,24 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             if (g.screen != Screen::InGame)
             {
                 HandleMenuClick();
+            }
+            else if (g.isHost && g.online && g.mmToggleRect[2] > 0
+                     && g.mouseX >= g.mmToggleRect[0]
+                     && g.mouseX <= g.mmToggleRect[0] + g.mmToggleRect[2]
+                     && g.mouseY >= g.mmToggleRect[1]
+                     && g.mouseY <= g.mmToggleRect[1] + g.mmToggleRect[3])
+            {
+                // matchmaking toggle: is this game advertised to searchers?
+                snd::Play(snd::Sfx::Click, 0.5f, SndJitter(0.06f));
+                if (g.net.hasPublicLobby())
+                {
+                    g.net.LeaveLobby();
+                }
+                else
+                {
+                    g.net.CreatePublicLobby(g.game.targetPlayers);
+                    g.lastAdvertPlayers = g.lastAdvertPhase = -1;
+                }
             }
             else if (g.game.phase == PhaseLobby
                      && g.mouseX >= g.readyRect[0]

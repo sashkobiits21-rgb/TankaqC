@@ -155,6 +155,12 @@ void GameState::StartMatch()
     matchEndTick = tick + MatchDurationTicks;
 }
 
+void GameState::StartGathering(int playersWanted)
+{
+    targetPlayers = uint8_t(std::clamp(playersWanted, 2, MaxLobbyPlayers));
+    phase = PhaseGathering;
+}
+
 void GameState::ToLobby()
 {
     for (int id = 0; id < MaxPlayers; ++id)
@@ -351,7 +357,7 @@ void GameState::Tick(const InputCmd* inputs)
     ++tick;
 
     // ---------------- match phases ----------------
-    if (phase == PhaseLobby)
+    if (phase == PhaseLobby || phase == PhaseGathering)
     {
         int active = 0, ready = 0;
         for (int id = 0; id < MaxPlayers; ++id)
@@ -367,8 +373,16 @@ void GameState::Tick(const InputCmd* inputs)
                 RecalcStats(id);
             p.health = MaxHealthFor(p);
         }
-        if (active > 0 && ready == active)
+        if (phase == PhaseGathering)
+        {
+            // queue filled: reveal the ready-up lobby
+            if (targetPlayers > 0 && active >= int(targetPlayers))
+                ToLobby();
+        }
+        else if (active > 0 && ready == active)
+        {
             StartMatch();
+        }
         return;   // no movement, firing, offers or money in the lobby
     }
     if (phase == PhaseEnded)

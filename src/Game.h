@@ -20,6 +20,7 @@ enum : uint8_t
     PhasePlaying,        // 5-minute kill-count match
     PhaseOvertime,       // tied at the horn: first kill wins
     PhaseEnded,          // winner banner, auto-return to lobby
+    PhaseGathering,      // quick-match queue: waiting for targetPlayers
 };
 constexpr uint32_t MatchDurationTicks = 5 * 60 * TickRate;
 constexpr uint32_t EndedReturnTicks = 6 * TickRate;
@@ -184,6 +185,7 @@ struct GameState
     uint32_t tick = 0;
     uint8_t phase = PhaseLobby;
     uint8_t winner = 0xFF;
+    uint8_t targetPlayers = 0;    // quick-match queue size (0 = no queue)
     uint32_t matchEndTick = 0;
     uint32_t endedTick = 0;
     bool lagCompEnabled = true;   // host: input catch-up on direction changes
@@ -198,6 +200,9 @@ struct GameState
     void StartMatch();
     // Host: back to the ready-up lineup.
     void ToLobby();
+    // Host: quick-match queue -- tanks park but the ready-up lobby stays
+    // hidden until `playersWanted` tanks have gathered, then ToLobby().
+    void StartGathering(int playersWanted);
     // Advances the full simulation one tick. `inputs` is indexed by player id.
     void Tick(const InputCmd* inputs);
     // Movement + turret only (no timers/firing): shared by the host simulation

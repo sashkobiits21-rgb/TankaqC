@@ -44,14 +44,17 @@ public:
 
     // ---- quick match (free Steam lobby directory; no dedicated servers) ----
     // A public Steam lobby is used purely as an advert: its data carries the
-    // host's SteamID. Searchers read that and ConnectP2P as usual -- nobody
-    // ever joins the Steam lobby itself. Async: one of the two callbacks
-    // below fires from inside Poll().
-    void QuickMatch();                     // search worldwide for an open game
-    bool CreatePublicLobby();              // host: advertise this game
+    // host's SteamID and the queue size ("need"). Searchers read that and
+    // ConnectP2P as usual -- nobody ever joins the Steam lobby itself.
+    // Async: one of the two callbacks below fires from inside Poll().
+    // Search is two-pass: queues of the same size first (need == n), then
+    // open-hosted games (need == 0, joinable at any size).
+    void QuickMatch(int need);             // search worldwide, n players wanted
+    bool CreatePublicLobby(int need);      // host: advertise (0 = open host)
     void UpdateLobbyAdvert(int players, int phase);
     void LeaveLobby();                     // stop advertising
     bool hasPublicLobby() const;
+    void SetJoinCap(int cap);              // host: reject joins beyond this
     std::function<void(uint64_t hostSteamId)> onMatchFound;
     std::function<void()> onNoMatch;       // caller should host a public game
 
@@ -122,6 +125,7 @@ private:
     const Events* m_events = nullptr;       // valid during Poll
     std::string m_disconnectReason;
     bool m_usedPlayerIds[MaxPlayers]{};
+    int m_joinCap = MaxLobbyPlayers;
 };
 
 } // namespace tankaq::net

@@ -1,5 +1,6 @@
 #include "net/Net.h"
 #include "Log.h"
+#include <algorithm>
 #include <chrono>
 #include <steam/steam_api.h>
 #include <steam/isteamnetworkingsockets.h>
@@ -46,8 +47,29 @@ class LobbyWork
 public:
     uint64_t lobbyId = 0;
     bool searching = false;
+    int wantNeed = 0;      // searcher's chosen queue size
+    int advertNeed = 0;    // our own lobby's queue size (0 = open host)
+    int pass = 0;          // 1 = queues of wantNeed, 2 = open hosts (need==0)
 
-    void Search()
+    void Search(int need)
+    {
+        wantNeed = need;
+        pass = 1;
+        searching = true;
+        Log("Net: quick match - pass 1, %d-player queues", need);
+        Request(need);
+    }
+
+    void Create(int need)
+    {
+        advertNeed = need;
+        m_createResult.Set(
+            SteamMatchmaking()->CreateLobby(k_ELobbyTypePublic, MaxLobbyPlayers),
+            this, &LobbyWork::OnCreated);
+    }
+
+private:
+    void Request(int need)
     {
         ISteamMatchmaking* mm = SteamMatchmaking();
         mm->AddRequestLobbyListStringFilter("game", "tankaq",
@@ -56,21 +78,13 @@ public:
                                                k_ELobbyComparisonEqual);
         mm->AddRequestLobbyListNumericalFilter("open", 1,
                                                k_ELobbyComparisonEqual);
+        mm->AddRequestLobbyListNumericalFilter("need", need,
+                                               k_ELobbyComparisonEqual);
         // Russia <-> America must see each other: no distance cutoff
         mm->AddRequestLobbyListDistanceFilter(k_ELobbyDistanceFilterWorldwide);
         m_listResult.Set(mm->RequestLobbyList(), this, &LobbyWork::OnList);
-        searching = true;
-        Log("Net: quick match - searching for open lobbies");
     }
 
-    void Create()
-    {
-        m_createResult.Set(
-            SteamMatchmaking()->CreateLobby(k_ELobbyTypePublic, MaxLobbyPlayers),
-            this, &LobbyWork::OnCreated);
-    }
-
-private:
     void OnList(LobbyMatchList_t* r, bool ioFailure);
     void OnCreated(LobbyCreated_t* r, bool ioFailure);
     CCallResult<LobbyWork, LobbyMatchList_t> m_listResult;
@@ -80,9 +94,8 @@ static LobbyWork* g_lobbyWork = nullptr;
 
 void LobbyWork::OnList(LobbyMatchList_t* r, bool ioFailure)
 {
-    searching = false;
     int n = ioFailure ? 0 : int(r->m_nLobbiesMatching);
-    Log("Net: lobby search finished: %d result(s)", n);
+    Log("Net: lobby search pass %d finished: %d result(s)", pass, n);
     ISteamMatchmaking* mm = SteamMatchmaking();
     for (int i = 0; i < n; ++i)
     {
@@ -90,12 +103,23 @@ void LobbyWork::OnList(LobbyMatchList_t* r, bool ioFailure)
         uint64_t host = strtoull(mm->GetLobbyData(lobby, "host"), nullptr, 10);
         if (host != 0)
         {
+            searching = false;
             Log("Net: match found, host %llu", (unsigned long long)host);
             if (g_net && g_net->onMatchFound)
                 g_net->onMatchFound(host);
             return;
         }
     }
+    if (pass == 1)
+    {
+        // no queue of that size: fall back to open-hosted games (need == 0),
+        // which accept players regardless of the searcher's chosen size
+        pass = 2;
+        Log("Net: quick match - pass 2, open hosts");
+        Request(0);
+        return;
+    }
+    searching = false;
     if (g_net && g_net->onNoMatch)
         g_net->onNoMatch();
 }
@@ -117,10 +141,13 @@ void LobbyWork::OnCreated(LobbyCreated_t* r, bool ioFailure)
     mm->SetLobbyData(lobby, "ver", buf);
     sprintf_s(buf, "%llu", (unsigned long long)(g_net ? g_net->mySteamId() : 0));
     mm->SetLobbyData(lobby, "host", buf);
+    sprintf_s(buf, "%d", advertNeed);
+    mm->SetLobbyData(lobby, "need", buf);
     mm->SetLobbyData(lobby, "open", "1");
     mm->SetLobbyData(lobby, "players", "1");
     mm->SetLobbyData(lobby, "phase", "0");
-    Log("Net: public lobby advertised (%llu)", (unsigned long long)lobbyId);
+    Log("Net: public lobby advertised (%llu, need=%d)",
+        (unsigned long long)lobbyId, advertNeed);
 }
 
 static void SteamDebugOut(ESteamNetworkingSocketsDebugOutputType type, const char* msg)
@@ -185,6 +212,7 @@ bool Net::StartHost(uint16_t udpPort, std::string& error)
 {
     if (!m_steamOk) { error = "Steam is not available"; return false; }
     Disconnect();
+    m_joinCap = MaxLobbyPlayers;   // queues lower this via SetJoinCap
 
     ISteamNetworkingSockets* s = SteamNetworkingSockets();
 
@@ -279,7 +307,7 @@ void Net::Disconnect()
     m_clientState = ClientState::Idle;
 }
 
-void Net::QuickMatch()
+void Net::QuickMatch(int need)
 {
     if (!m_steamOk || !g_lobbyWork || g_lobbyWork->searching)
     {
@@ -287,14 +315,14 @@ void Net::QuickMatch()
             onNoMatch();
         return;
     }
-    g_lobbyWork->Search();
+    g_lobbyWork->Search(need);
 }
 
-bool Net::CreatePublicLobby()
+bool Net::CreatePublicLobby(int need)
 {
     if (!m_steamOk || !g_lobbyWork || g_lobbyWork->lobbyId)
         return false;
-    g_lobbyWork->Create();
+    g_lobbyWork->Create(need);
     return true;
 }
 
@@ -305,11 +333,18 @@ void Net::UpdateLobbyAdvert(int players, int phase)
     ISteamMatchmaking* mm = SteamMatchmaking();
     CSteamID lobby(g_lobbyWork->lobbyId);
     char buf[16];
-    mm->SetLobbyData(lobby, "open", players < MaxLobbyPlayers ? "1" : "0");
+    int cap = g_lobbyWork->advertNeed > 0 ? g_lobbyWork->advertNeed
+                                          : MaxLobbyPlayers;
+    mm->SetLobbyData(lobby, "open", players < cap ? "1" : "0");
     sprintf_s(buf, "%d", players);
     mm->SetLobbyData(lobby, "players", buf);
     sprintf_s(buf, "%d", phase);
     mm->SetLobbyData(lobby, "phase", buf);
+}
+
+void Net::SetJoinCap(int cap)
+{
+    m_joinCap = std::clamp(cap, 1, int(MaxLobbyPlayers));
 }
 
 void Net::LeaveLobby()
@@ -389,7 +424,8 @@ int Net::connectedClients() const
 
 int Net::AllocatePlayerId() const
 {
-    for (int i = 1; i < MaxLobbyPlayers; ++i)   // lobby supports 4 players
+    // up to 4 players; a gathering queue caps at its chosen size
+    for (int i = 1; i < std::min(m_joinCap, int(MaxLobbyPlayers)); ++i)
         if (!m_usedPlayerIds[i])
             return i;
     return -1;
