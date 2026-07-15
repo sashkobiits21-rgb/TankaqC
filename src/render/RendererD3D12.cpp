@@ -1223,13 +1223,19 @@ private:
         if (FAILED(m_device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoMesh))))
         { error = "mesh PSO failed"; return false; }
 
-        // Shadow PSO: depth-only from the sun with slope-scaled bias.
+        // Shadow PSO: depth-only from the sun, BACKFACES only (cull front).
+        // Closed casters store their far side, so shadows meet the occluder
+        // exactly at the contact line (no peter-panning gap at wall bases)
+        // and the bias stays tiny -- it pushes into the caster's interior
+        // instead of detaching the shadow. The up-facing ground quad drops
+        // out of the shadow map automatically (it only receives).
         D3D12_GRAPHICS_PIPELINE_STATE_DESC sh = pso;
         sh.PS = {};
         sh.NumRenderTargets = 0;
         sh.RTVFormats[0] = sh.RTVFormats[1] = sh.RTVFormats[2] = DXGI_FORMAT_UNKNOWN;
-        sh.RasterizerState.DepthBias = 2500;
-        sh.RasterizerState.SlopeScaledDepthBias = 2.0f;
+        sh.RasterizerState.CullMode = D3D12_CULL_MODE_FRONT;
+        sh.RasterizerState.DepthBias = 250;
+        sh.RasterizerState.SlopeScaledDepthBias = 0.75f;
         if (FAILED(m_device->CreateGraphicsPipelineState(&sh, IID_PPV_ARGS(&m_psoShadow))))
         { error = "shadow PSO failed"; return false; }
 

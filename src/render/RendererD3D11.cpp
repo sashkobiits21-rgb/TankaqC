@@ -877,8 +877,15 @@ private:
         rd.FrontCounterClockwise = TRUE;    // glTF winding
         rd.DepthClipEnable = TRUE;
         m_device->CreateRasterizerState(&rd, &m_raster);
-        rd.DepthBias = 2500;                // shadow acne guard
-        rd.SlopeScaledDepthBias = 2.0f;
+        // Shadow pass renders BACKFACES (cull front): closed casters store
+        // their far side, so shadows meet the occluder exactly at the contact
+        // line (no peter-panning gap at wall bases) and the bias stays tiny --
+        // it pushes into the caster's interior instead of detaching the
+        // shadow. The up-facing ground quad drops out of the shadow map
+        // automatically (it only receives).
+        rd.CullMode = D3D11_CULL_FRONT;
+        rd.DepthBias = 250;                 // backface acne guard
+        rd.SlopeScaledDepthBias = 0.75f;
         m_device->CreateRasterizerState(&rd, &m_rasterShadow);
         rd.DepthBias = 0;
         rd.SlopeScaledDepthBias = 0.0f;

@@ -69,7 +69,9 @@ float SampleShadow(float3 wpos, float ndl)
     float2 uv = float2(lc.x * 0.5 + 0.5, 0.5 - lc.y * 0.5);
     if (any(uv < 0.0) || any(uv > 1.0) || lc.z <= 0.0 || lc.z >= 1.0)
         return 1.0;
-    float bias = max(0.0005, 0.0018 * (1.0 - ndl));
+    // tiny bias: the shadow map holds caster BACKFACES, so depth error pushes
+    // into the caster's interior rather than detaching contact shadows
+    float bias = max(0.00008, 0.0003 * (1.0 - ndl));
     float z = lc.z - bias;
     float t = gScreen.z;   // shadow map texel size
     if (mode == 1)
