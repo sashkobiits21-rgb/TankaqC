@@ -105,6 +105,22 @@ struct App
     // per-slot rocket birth records (drive the squish/spring shader)
     XMFLOAT3 projSpawnPos[MaxProjectiles]{};
     double projSpawnTime[MaxProjectiles]{};
+    // client-predicted firing: provisional rockets spawn the moment fire is
+    // pressed; when the server's rocket shows up in a snapshot it adopts the
+    // provisional's spawn record and a decaying render offset hides the seam
+    struct ProvRocket
+    {
+        bool active = false;
+        float x = 0, y = 0, z = 0, yaw = 0, speed = 0, life = 0;
+        int bounces = 0;
+        double born = 0;
+        XMFLOAT3 spawn{};
+    };
+    ProvRocket provRockets[8];
+    float predCooldown = 0;                    // client-side reload prediction
+    float projErrX[MaxProjectiles]{};          // provisional -> server handoff
+    float projErrZ[MaxProjectiles]{};          //  offsets (decay like predErr)
+    bool projMatchedProv[MaxProjectiles]{};    // skip double sound/record
     // quick match state
     bool searching = false;              // lobby search in flight
     int searchNeed = 2;                  // chosen queue size (FIND MATCH)
@@ -211,6 +227,50 @@ bool InSession()
     return g.sessionActive
         && (g.screen == Screen::InGame || g.screen == Screen::Paused
             || g.screen == Screen::Settings);
+}
+
+// One tick of provisional-rocket flight: movement + the same wall/obstacle
+// ricochet rules as GameState::Tick (duplicated deliberately -- provisionals
+// are visual-only, never damage, and vanish when their server twin appears).
+// Returns false when the rocket is spent.
+bool AdvanceProvRocket(App::ProvRocket& pr)
+{
+    pr.life -= TickDt;
+    pr.x += sinf(pr.yaw) * pr.speed * TickDt;
+    pr.z += cosf(pr.yaw) * pr.speed * TickDt;
+    if (pr.life <= 0.0f)
+        return false;
+    const float r = ProjectileRadius;
+    if (fabsf(pr.x) > ArenaHalf - r)
+    {
+        if (pr.bounces-- <= 0) return false;
+        float lim = (pr.x > 0) ? ArenaHalf - r : r - ArenaHalf;
+        pr.x = 2.0f * lim - pr.x;
+        pr.yaw = WrapAngle(-pr.yaw);
+    }
+    if (fabsf(pr.z) > ArenaHalf - r)
+    {
+        if (pr.bounces-- <= 0) return false;
+        float lim = (pr.z > 0) ? ArenaHalf - r : r - ArenaHalf;
+        pr.z = 2.0f * lim - pr.z;
+        pr.yaw = WrapAngle(XM_PI - pr.yaw);
+    }
+    for (const Obstacle& o : kObstacles)
+    {
+        if (pr.y > o.height)
+            continue;
+        float dx = pr.x - o.cx, dz = pr.z - o.cz;
+        float ex = o.hx + r, ez = o.hz + r;
+        if (fabsf(dx) >= ex || fabsf(dz) >= ez)
+            continue;
+        if (pr.bounces-- <= 0) return false;
+        float penX = ex - fabsf(dx);
+        float penZ = ez - fabsf(dz);
+        if (penX < penZ) { pr.x += (dx > 0 ? penX : -penX); pr.yaw = WrapAngle(-pr.yaw); }
+        else { pr.z += (dz > 0 ? penZ : -penZ); pr.yaw = WrapAngle(XM_PI - pr.yaw); }
+        break;
+    }
+    return true;
 }
 
 // small random pitch wobble so repeated sounds don't machine-gun identically
@@ -434,6 +494,35 @@ void ApplySnapshot(const net::MsgSnapshot& s)
         pr.active = in.active != 0;
         pr.x = in.x; pr.y = in.y; pr.z = in.z; pr.yaw = in.yaw;
     }
+
+    // Predicted-fire handoff: a server rocket appearing for the first time
+    // near a provisional IS that provisional confirmed. The slot adopts the
+    // provisional's spawn record (deform continuity) and a decaying render
+    // offset bridges the position difference; the provisional disappears.
+    for (int i = 0; i < MaxProjectiles; ++i)
+    {
+        bool isNew = s.projectiles[i].active
+                  && !g.snapPrev.projectiles[i].active;
+        if (!isNew)
+            continue;
+        for (auto& pv : g.provRockets)
+        {
+            if (!pv.active)
+                continue;
+            float dx = pv.x - s.projectiles[i].x;
+            float dz = pv.z - s.projectiles[i].z;
+            if (dx * dx + dz * dz > 9.0f
+                || fabsf(WrapAngle(pv.yaw - s.projectiles[i].yaw)) > 0.5f)
+                continue;
+            g.projErrX[i] = std::clamp(dx, -3.0f, 3.0f);
+            g.projErrZ[i] = std::clamp(dz, -3.0f, 3.0f);
+            g.projSpawnPos[i] = pv.spawn;
+            g.projSpawnTime[i] = pv.born;
+            g.projMatchedProv[i] = true;   // skip the rising-edge sound/record
+            pv.active = false;
+            break;
+        }
+    }
 }
 
 net::MsgSnapshot BuildSnapshot()
@@ -502,6 +591,11 @@ void GetRenderPlayer(int id, float& x, float& z, float& hullYaw, float& turretYa
             hullYaw = LerpAngle(prev.hullYaw, cur.hullYaw, t);
             turretYaw = LerpAngle(prev.turretYaw, cur.turretYaw, t);
         }
+        // zero-latency turret for the local tank
+        if (id == g.myId
+            && (g.game.phase == PhasePlaying || g.game.phase == PhaseOvertime)
+            && cur.health > 0)
+            turretYaw = g.aimYaw;
     }
     else if (id == g.myId)
     {
@@ -513,6 +607,10 @@ void GetRenderPlayer(int id, float& x, float& z, float& hullYaw, float& turretYa
         hullYaw = WrapAngle(LerpAngle(g.predPrev.hullYaw, g.predCurr.hullYaw, t)
                             + g.predErrYaw);
         turretYaw = LerpAngle(g.predPrev.turretYaw, g.predCurr.turretYaw, t);
+        // zero-latency turret: track the live aim directly while playing
+        if ((g.game.phase == PhasePlaying || g.game.phase == PhaseOvertime)
+            && cur.health > 0)
+            turretYaw = g.aimYaw;
     }
     else if (g.haveTwoSnaps)
     {
@@ -669,13 +767,23 @@ void UpdateVfxFromSim()
             SpawnExplosion(g.prevProjPos[i]);
         if (!g.prevProjActive[i] && pr.active && InSession())
         {
-            snd::Play(snd::Sfx::Shoot, SndDistVol(pr.x, pr.z, 0.6f),
-                      SndJitter(0.07f));
-            // birth record for the squish/spring shader (host: exact muzzle;
-            // client: first snapshot position, close enough to the muzzle)
-            g.projSpawnPos[i] = XMFLOAT3(pr.x, pr.y, pr.z);
-            g.projSpawnTime[i] = g.time;
+            if (g.projMatchedProv[i])
+            {
+                // confirmed provisional: sound + spawn record already done
+                g.projMatchedProv[i] = false;
+            }
+            else
+            {
+                snd::Play(snd::Sfx::Shoot, SndDistVol(pr.x, pr.z, 0.6f),
+                          SndJitter(0.07f));
+                // birth record for the squish/spring shader (host: exact
+                // muzzle; client: first snapshot position)
+                g.projSpawnPos[i] = XMFLOAT3(pr.x, pr.y, pr.z);
+                g.projSpawnTime[i] = g.time;
+            }
         }
+        if (!pr.active)
+            g.projErrX[i] = g.projErrZ[i] = 0;   // slot freed: offset dies
         g.prevProjActive[i] = pr.active;
         if (pr.active)
             g.prevProjPos[i] = XMFLOAT3(pr.x, pr.y, pr.z);
@@ -712,6 +820,13 @@ void ResetNetSimState()
     for (auto& q : g.inputQueue) q.clear();
     g.predErrX = g.predErrZ = g.predErrYaw = 0.0f;
     g.predPrev = g.predCurr = PlayerState{};
+    g.predCooldown = 0;
+    for (auto& pv : g.provRockets) pv.active = false;
+    for (int i = 0; i < MaxProjectiles; ++i)
+    {
+        g.projErrX[i] = g.projErrZ[i] = 0;
+        g.projMatchedProv[i] = false;
+    }
     for (auto& a : g.cardAnims) a.active = false;
     g.shopBurnFx.clear();
     g.ejectFx.clear();
@@ -985,6 +1100,10 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
             py = a.y + (pr.y - a.y) * g.tickAlpha;
             pz = a.z + (pr.z - a.z) * g.tickAlpha;
         }
+        // predicted-fire handoff offset glides the confirmed server rocket
+        // from where the provisional was to its true position
+        px += g.projErrX[i];
+        pz += g.projErrZ[i];
         // rockets render larger than sim size for readability; the deform
         // shader works in local units, so distance is mapped back through
         // the LENGTH scale (the "pipe" follows the rocket's physical length).
@@ -1002,6 +1121,26 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
         float sdz = pz - g.projSpawnPos[i].z;
         ro.deformDist = sqrtf(sdx * sdx + sdz * sdz) / kRocketLenScale;
         ro.deformAge = float(g.time - g.projSpawnTime[i]);
+        frame.objects.push_back(ro);
+    }
+
+    // provisional (predicted-fire) rockets: identical rendering; the server
+    // twin adopts their spawn record on arrival so the deform is continuous
+    for (const auto& pv : g.provRockets)
+    {
+        if (!pv.active)
+            continue;
+        const float kRocketScale = 1.6f;
+        const float kRocketLenScale = kRocketScale * 0.9f;
+        XMMATRIX m = XMMatrixScaling(kRocketScale, kRocketScale, kRocketLenScale)
+                   * XMMatrixRotationY(pv.yaw)
+                   * XMMatrixTranslation(pv.x, pv.y, pv.z);
+        RenderObject ro{ g.meshProj, g.texWhite, Store(m),
+                         { 0.16f, 0.14f, 0.11f, 0.30f }, true };
+        float sdx = pv.x - pv.spawn.x;
+        float sdz = pv.z - pv.spawn.z;
+        ro.deformDist = sqrtf(sdx * sdx + sdz * sdz) / kRocketLenScale;
+        ro.deformAge = float(g.time - pv.born);
         frame.objects.push_back(ro);
     }
 }
@@ -2582,6 +2721,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                     // maintains it (see ApplySnapshot)
                     g.pendingInputs.clear();
                     g.predPrev = g.predCurr = me;
+                    g.predCooldown = 0;
+                    for (auto& pv : g.provRockets)
+                        pv.active = false;
                 }
                 else
                 {
@@ -2591,18 +2733,59 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                     g.predPrev = me;
                     g.game.AdvanceMovement(g.myId, local);
                     g.predCurr = me;
+
+                    // predicted firing: the rocket exists locally the moment
+                    // the input is pressed; the server's rocket adopts it on
+                    // arrival (see ApplySnapshot matching)
+                    g.predCooldown = std::max(0.0f, g.predCooldown - TickDt);
+                    if ((local.buttons & BtnFire) && g.predCooldown <= 0.0f)
+                    {
+                        for (auto& pv : g.provRockets)
+                        {
+                            if (pv.active)
+                                continue;
+                            XMFLOAT3 mz = g.game.MuzzleWorld(me);
+                            pv.active = true;
+                            pv.x = mz.x; pv.y = mz.y; pv.z = mz.z;
+                            pv.yaw = local.turretYaw;
+                            pv.speed = me.stats[int(Stat::ProjSpeed)];
+                            pv.bounces = int(me.stats[int(Stat::Bounces)] + 0.5f);
+                            pv.life = ProjectileLife;
+                            pv.born = g.time;
+                            pv.spawn = mz;
+                            g.predCooldown = me.stats[int(Stat::ReloadTime)];
+                            me.muzzleFlash = 0.12f;
+                            snd::Play(snd::Sfx::Shoot, 0.6f, SndJitter(0.07f));
+                            break;
+                        }
+                    }
+                }
+                // advance provisional rockets (visual-only physics); a
+                // provisional that outlives its match window vanished on the
+                // server (rejected fire) and quietly expires
+                for (auto& pv : g.provRockets)
+                {
+                    if (!pv.active)
+                        continue;
+                    if (!AdvanceProvRocket(pv) || g.time - pv.born > 0.7)
+                        pv.active = false;
                 }
             }
         }
         QueryPerformanceCounter(&dbgC);
         g.tickAlpha = float(accumulator / TickDt);
 
-        // glide the reconciliation-error render offset to zero (~80 ms)
+        // glide the reconciliation-error render offsets to zero (~80 ms)
         {
             float k = 1.0f - expf(-g.frameDt * 12.0f);
             g.predErrX -= g.predErrX * k;
             g.predErrZ -= g.predErrZ * k;
             g.predErrYaw -= g.predErrYaw * k;
+            for (int i = 0; i < MaxProjectiles; ++i)
+            {
+                g.projErrX[i] -= g.projErrX[i] * k;
+                g.projErrZ[i] -= g.projErrZ[i] * k;
+            }
         }
 
         // Camera: smooth-follow of the tank's *interpolated* render position.

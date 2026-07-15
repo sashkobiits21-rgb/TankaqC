@@ -358,7 +358,7 @@ void GameState::AdvanceMovement(int id, const InputCmd& in)
         }
     }
 
-    p.turretYaw = MoveTowardsAngle(p.turretYaw, in.turretYaw, TurretTurnSpeed * TickDt);
+    p.turretYaw = in.turretYaw;   // turret snaps to the aim instantly
 }
 
 void GameState::Tick(const InputCmd* inputs)
