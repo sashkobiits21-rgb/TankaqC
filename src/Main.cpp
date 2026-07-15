@@ -246,6 +246,7 @@ void ApplySnapshot(const net::MsgSnapshot& s)
     {
         g.game.projectiles[i].radarRange = s.projectiles[i].radar16 / 16.0f;
         g.game.projectiles[i].radarRings = s.projectiles[i].radarRings;
+        g.game.projectiles[i].radarLockFrac = s.projectiles[i].lock255 / 255.0f;
     }
 
     // soldiers: adopt the authoritative state wholesale; rendering
@@ -400,6 +401,7 @@ net::MsgSnapshot BuildSnapshot()
         out.active = pr.active ? 1 : 0;
         out.radar16 = uint8_t(std::min(pr.radarRange * 16.0f, 255.0f));
         out.radarRings = uint8_t(pr.radarRings);
+        out.lock255 = uint8_t(std::clamp(pr.radarLockFrac, 0.0f, 1.0f) * 255.0f);
         out.x = pr.x; out.y = pr.y; out.z = pr.z; out.yaw = pr.yaw;
     }
     for (int i = 0; i < MaxSkulls; ++i)
@@ -1076,6 +1078,17 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
                     Store(XMMatrixScaling(rad[k], 1.0f, rad[k])
                           * XMMatrixTranslation(px + ox[k], py, pz + oz[k])),
                     { 1.0f, 0.14f, 0.1f, 1.0f }, true });
+            // countdown: the root circle fills CLOCKWISE with muted red
+            // ground wedges as the lock charges (lit like the floor, so it
+            // reads as a translucent stain)
+            int wedges = int(pr.radarLockFrac * 24.0f + 0.5f);
+            for (int k = 0; k < wedges; ++k)
+                frame.objects.push_back({ g.meshWedge, g.texWhite,
+                    Store(XMMatrixScaling(pr.radarRange, 1.0f, pr.radarRange)
+                          * XMMatrixRotationY(pr.yaw + float(k)
+                                              * (XM_2PI / 24.0f))
+                          * XMMatrixTranslation(px, 0.06f, pz)),
+                    { 0.62f, 0.30f, 0.27f, 0 }, true });
         }
     }
 
@@ -1378,6 +1391,18 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
                           * XMMatrixTranslation(pv.sim.x + ox[k], pv.sim.y,
                                                 pv.sim.z + oz[k])),
                     { 1.0f, 0.14f, 0.1f, 1.0f }, true });
+            // countdown fill: authority lives on the veiled server twin
+            float frac = pv.matchedSlot >= 0
+                ? g.game.projectiles[pv.matchedSlot].radarLockFrac : 0.0f;
+            int wedges = int(frac * 24.0f + 0.5f);
+            for (int k = 0; k < wedges; ++k)
+                frame.objects.push_back({ g.meshWedge, g.texWhite,
+                    Store(XMMatrixScaling(pv.sim.radarRange, 1.0f,
+                                          pv.sim.radarRange)
+                          * XMMatrixRotationY(pv.sim.yaw + float(k)
+                                              * (XM_2PI / 24.0f))
+                          * XMMatrixTranslation(pv.sim.x, 0.06f, pv.sim.z)),
+                    { 0.62f, 0.30f, 0.27f, 0 }, true });
         }
     }
 }
@@ -1865,6 +1890,9 @@ bool CreateAssets()
         MeshData spook = MakeGhostMesh();
         g.meshGhost = r->CreateMesh(spook.verts.data(), spook.verts.size(),
                                     spook.indices.data(), spook.indices.size());
+        MeshData wedge = MakePieWedge();
+        g.meshWedge = r->CreateMesh(wedge.verts.data(), wedge.verts.size(),
+                                    wedge.indices.data(), wedge.indices.size());
     }
 
     // The soldier rig is GAMEPLAY now (summons), not just the --rigtest demo:
@@ -2707,6 +2735,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                     Log("demo: granted RADAR class (rings %d)",
                         int(me.stats[int(Stat::RadarRings)] + 0.5f));
                 }
+                if (!g.opt.demoClass.empty() && g.game.players[1].active)
+                {
+                    // park the dummy on-camera so the whole exchange films
+                    g.game.players[1].x = 15.0f;
+                    g.game.players[1].z = 14.0f;
+                }
             }
             if ((g.opt.shopTest || g.opt.autoDrive || g.opt.soldierTest
                  || !g.opt.demoClass.empty())
@@ -2789,9 +2823,24 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         }
 
         // class demos: periodically pull the local trigger so the radar
-        // rings ride a rocket across the frame (space = the real fire path)
+        // rings ride a rocket across the frame (space = the real fire path),
+        // aimed at the dummy so locks (and the countdown fill) happen
         if (!g.opt.demoClass.empty() && g.screen == Screen::InGame)
+        {
             g.keys[VK_SPACE] = (g.frameCounter % 200) < 10;
+            const PlayerState& me = g.game.players[g.myId];
+            const PlayerState& du = g.game.players[1];
+            if (me.active && du.active)
+            {
+                // aim a NEAR MISS: the rocket passes beside the dummy so the
+                // radar lock (and its countdown fill) plays out visibly
+                float dx = du.x - me.x, dz = du.z - me.z;
+                float len = std::max(0.001f, sqrtf(dx * dx + dz * dz));
+                float txp = du.x + (-dz / len) * 2.6f;
+                float tzp = du.z + (dx / len) * 2.6f;
+                g.aimYaw = atan2f(txp - me.x, tzp - me.z);
+            }
+        }
 
         UpdateVfxFromSim();
 

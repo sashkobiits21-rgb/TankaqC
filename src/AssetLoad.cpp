@@ -1092,6 +1092,37 @@ MeshData MakeGhostMesh()
     return m;
 }
 
+MeshData MakePieWedge()
+{
+    // one 15-degree sector of a unit disc: the countdown draws K of these
+    // rotated in sequence, filling the circle clockwise like a clock hand
+    MeshData m;
+    const int SUB = 2;
+    const float kStep = XM_2PI / 24.0f;
+    Vertex c{};
+    c.px = 0; c.py = 0; c.pz = 0;
+    c.nx = 0; c.ny = 1; c.nz = 0;
+    c.u = 0.5f; c.v = 0.5f;
+    m.verts.push_back(c);
+    for (int i = 0; i <= SUB; ++i)
+    {
+        float a = kStep * float(i) / float(SUB);
+        Vertex v{};
+        v.px = sinf(a); v.py = 0; v.pz = cosf(a);
+        v.nx = 0; v.ny = 1; v.nz = 0;
+        v.u = 0.5f + sinf(a) * 0.5f; v.v = 0.5f + cosf(a) * 0.5f;
+        m.verts.push_back(v);
+    }
+    for (int i = 1; i <= SUB; ++i)
+    {
+        m.indices.push_back(0);
+        m.indices.push_back(uint32_t(i));
+        m.indices.push_back(uint32_t(i + 1));
+    }
+    ComputeTangents(m);
+    return m;
+}
+
 // ------------------------------------------------------------ icon atlas
 
 namespace

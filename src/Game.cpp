@@ -979,9 +979,12 @@ static void TickRadar(GameState& gs, Projectile& pr)
     if (!inside)
     {
         pr.radarLock = 0.0f;
+        pr.radarLockFrac = 0.0f;
         return;
     }
     pr.radarLock += TickDt;
+    pr.radarLockFrac =
+        std::clamp(pr.radarLock / std::max(0.05f, pr.radarLockNeed), 0.0f, 1.0f);
     if (pr.radarLock < pr.radarLockNeed)
         return;
 

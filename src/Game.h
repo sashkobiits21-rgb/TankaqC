@@ -277,6 +277,8 @@ struct Projectile
     float radarLockNeed = 0.0f;      // seconds inside the root to trigger
     int radarRings = 0;              // extra circles (0..MaxRadarExtra)
     float radarLock = 0.0f;
+    float radarLockFrac = 0.0f;      // lock progress 0..1 (replicated for
+                                     // the clockwise countdown fill)
 };
 
 // Lay out the radar circle tree for a rocket (sim, rendering and VFX all

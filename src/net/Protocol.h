@@ -23,7 +23,8 @@ namespace tankaq::net
 // PlayerNet, radar range + ring count per projectile.
 // v15: SkullDamage stat, radar circles become a packed TREE (rings field =
 // extra circle count), skull contact damage -- derived-stat contract change.
-constexpr uint8_t ProtocolVersion = 15;
+// v16: radar lock progress byte per projectile (countdown fill visual).
+constexpr uint8_t ProtocolVersion = 16;
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t
@@ -156,7 +157,8 @@ struct ProjectileNet
 {
     uint8_t active = 0;
     uint8_t radar16 = 0;      // radar ring radius * 16 (0 = not radar)
-    uint8_t radarRings = 0;   // nested ring levels
+    uint8_t radarRings = 0;   // packed extra circles
+    uint8_t lock255 = 0;      // lock progress * 255 (countdown fill)
     float x = 0, y = 0, z = 0;
     float yaw = 0;
 };

@@ -126,7 +126,7 @@ struct App
 
     // necromancer + radar visuals
     int meshSkull = -1, meshJaw = -1, meshPuddle = -1, meshRing = -1;
-    int meshGhost = -1;
+    int meshGhost = -1, meshWedge = -1;
     bool prevSkullActive[MaxSkulls]{};         // burst on skull death
     DirectX::XMFLOAT3 prevSkullPos[MaxSkulls]{};
     float prevProjRadar[MaxProjectiles]{};     // per-circle explosion VFX

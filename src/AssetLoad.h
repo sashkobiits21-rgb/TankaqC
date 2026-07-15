@@ -99,6 +99,7 @@ MeshData MakeRocket();   // +Z forward, z in [-0.5, 0.5] (squish shader relies o
 MeshData MakeDisc(float radius, float y, int segments);       // flat, +Y up
 MeshData MakeRing(float radius, float width, int segments);   // flat annulus
 MeshData MakeGhostMesh();   // lathed spook: dome + pinched waist + wavy hem
+MeshData MakePieWedge();    // 15-degree flat sector, radius 1 (countdown fill)
 
 // Procedural textures.
 ImageData MakeGroundTexture(int size);
