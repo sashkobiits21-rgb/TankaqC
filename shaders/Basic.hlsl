@@ -13,7 +13,8 @@ cbuffer PerObject : register(b1)
 {
     float4x4 gWorld;
     float4   gTint;            // rgb multiplied over albedo, a = emissive amount
-    float4   gMisc;            // x = 1 for dynamic objects (burn decals skip them)
+    float4   gMisc;            // x = dynamic flag, y = rocket distance from
+                               // muzzle, z = rocket age (s), w = rocket flag
 };
 
 Texture2D    gAlbedo  : register(t0);
@@ -41,10 +42,48 @@ struct VsOut
 VsOut VSMesh(VsIn i)
 {
     VsOut o;
-    float4 wp = mul(gWorld, float4(i.pos, 1.0));
+    float3 p = i.pos;
+    float3 n = i.nrm;
+
+    // Rocket squish & spring (gMisc.w = 1). Local +Z is forward, the mesh
+    // spans z in [-0.5, +0.5]. gMisc.y = distance traveled from the muzzle:
+    // the barrel's exit plane therefore sits at local z = 0.5 - dist and
+    // sweeps tailward as the rocket leaves the pipe.
+    if (gMisc.w > 0.5)
+    {
+        float d = gMisc.y;
+        float age = gMisc.z;
+        float zExit = 0.5 - d;
+
+        // jello out of a pipe: the part still inside is squeezed to the
+        // bore, with a soft bulge right where it is squeezing out
+        float emerging = 1.0 - smoothstep(0.9, 1.15, d);
+        float inside = (1.0 - smoothstep(zExit - 0.10, zExit + 0.06, p.z))
+                     * emerging;
+        float radial = lerp(1.0, 0.60, inside);
+        radial *= 1.0 + exp(-abs(p.z - zExit) * 8.0) * 0.35
+                        * step(0.02, d) * emerging;
+
+        // longitudinally compressed in proportion to how much is unexited
+        float fin = saturate(zExit + 0.5);
+        float squash = 1.0 - 0.30 * fin;
+
+        // spring: once free, a decaying stretch/compress ring-down along the
+        // travel axis, radially counter-scaled like a squeezed spring
+        float freed = smoothstep(0.85, 1.25, d);
+        float osc = sin(age * 26.0) * exp(-age * 5.0) * 0.30 * freed;
+
+        float sz = squash * (1.0 + osc);
+        float sr = radial * (1.0 - 0.55 * osc);
+        p.z *= sz;
+        p.xy *= sr;
+        n = normalize(float3(n.xy / max(sr, 0.05), n.z / max(sz, 0.05)));
+    }
+
+    float4 wp = mul(gWorld, float4(p, 1.0));
     o.wpos = wp.xyz;
     o.sv = mul(gViewProj, wp);
-    o.wnrm = mul((float3x3)gWorld, i.nrm);
+    o.wnrm = mul((float3x3)gWorld, n);
     o.uv = i.uv;
     return o;
 }

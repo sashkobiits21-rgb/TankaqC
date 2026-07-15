@@ -218,6 +218,81 @@ MeshData MakeSphere(float radius, int slices, int stacks)
     return m;
 }
 
+// Little rocket, local +Z forward, centered: z spans [-0.5, +0.5].
+// Lathed profile (exhaust ring, tail taper, body, nose cone) + 4 fins.
+// The squish/spring vertex shader assumes exactly this length.
+MeshData MakeRocket()
+{
+    MeshData m;
+    constexpr int kSides = 12;
+    // profile rings: (z, radius)
+    const float prof[][2] = {
+        { -0.50f, 0.055f },   // exhaust lip
+        { -0.44f, 0.060f },
+        { -0.44f, 0.095f },   // tail step
+        { -0.32f, 0.130f },   // taper into body
+        {  0.14f, 0.130f },   // body end
+        {  0.50f, 0.0f },     // nose tip
+    };
+    constexpr int kRings = int(sizeof(prof) / sizeof(prof[0]));
+
+    for (int ring = 0; ring < kRings; ++ring)
+    {
+        // slope normal from neighbouring rings
+        int r0 = ring > 0 ? ring - 1 : ring;
+        int r1 = ring < kRings - 1 ? ring + 1 : ring;
+        float dz = prof[r1][0] - prof[r0][0];
+        float dr = prof[r1][1] - prof[r0][1];
+        float len = sqrtf(dz * dz + dr * dr);
+        float nRad = (len > 1e-5f) ? dz / len : 1.0f;   // radial component
+        float nZ = (len > 1e-5f) ? -dr / len : 0.0f;    // axial component
+        for (int s = 0; s <= kSides; ++s)
+        {
+            float a = XM_2PI * float(s) / kSides;
+            float ca = cosf(a), sa = sinf(a);
+            m.verts.push_back({ ca * prof[ring][1], sa * prof[ring][1],
+                                prof[ring][0],
+                                ca * nRad, sa * nRad, nZ,
+                                float(s) / kSides, prof[ring][0] + 0.5f });
+        }
+    }
+    int stride = kSides + 1;
+    for (int ring = 0; ring < kRings - 1; ++ring)
+        for (int s = 0; s < kSides; ++s)
+        {
+            uint32_t a = uint32_t(ring * stride + s);
+            uint32_t b = a + stride;
+            m.indices.insert(m.indices.end(), { a, b, a + 1, a + 1, b, b + 1 });
+        }
+    // exhaust cap (fan, facing -Z)
+    uint32_t center = uint32_t(m.verts.size());
+    m.verts.push_back({ 0, 0, -0.5f, 0, 0, -1, 0.5f, 0 });
+    for (int s = 0; s < kSides; ++s)
+        m.indices.insert(m.indices.end(),
+                         { center, uint32_t(s), uint32_t(s + 1) });
+
+    // 4 thin fins at 45-degree offsets, double-sided
+    for (int f = 0; f < 4; ++f)
+    {
+        float a = XM_2PI * (f + 0.5f) / 4.0f;
+        float ca = cosf(a), sa = sinf(a);
+        // fin quad corners in (radial, z): swept back
+        const float rz[4][2] = {
+            { 0.10f, -0.30f }, { 0.24f, -0.48f },
+            { 0.24f, -0.36f }, { 0.10f, -0.14f },
+        };
+        float nx = -sa, ny = ca;   // face normal = tangent direction
+        uint32_t base = uint32_t(m.verts.size());
+        for (int c = 0; c < 4; ++c)
+            m.verts.push_back({ ca * rz[c][0], sa * rz[c][0], rz[c][1],
+                                nx, ny, 0, 0.5f, rz[c][1] + 0.5f });
+        m.indices.insert(m.indices.end(),
+                         { base, base + 1, base + 2, base, base + 2, base + 3,
+                           base, base + 2, base + 1, base, base + 3, base + 2 });
+    }
+    return m;
+}
+
 static uint32_t Hash2D(int x, int y)
 {
     uint32_t h = uint32_t(x) * 374761393u + uint32_t(y) * 668265263u;

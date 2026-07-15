@@ -39,6 +39,7 @@ TankModel LoadTankModel(const std::string& glbPath, const std::string& metaPath)
 MeshData MakeBox(float halfX, float halfY, float halfZ, float uvScale);
 MeshData MakeGroundPlane(float halfSize, float uvTiles);
 MeshData MakeSphere(float radius, int slices, int stacks);
+MeshData MakeRocket();   // +Z forward, z in [-0.5, 0.5] (squish shader relies on it)
 
 // Procedural textures.
 ImageData MakeGroundTexture(int size);

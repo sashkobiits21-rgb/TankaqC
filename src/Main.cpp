@@ -102,6 +102,9 @@ struct App
     bool sndHullYawValid = false;
     // frame spike diagnostics
     bool dbgSnapThisFrame = false;       // a snapshot applied this frame
+    // per-slot rocket birth records (drive the squish/spring shader)
+    XMFLOAT3 projSpawnPos[MaxProjectiles]{};
+    double projSpawnTime[MaxProjectiles]{};
     // quick match state
     bool searching = false;              // lobby search in flight
     int searchNeed = 2;                  // chosen queue size (FIND MATCH)
@@ -665,8 +668,14 @@ void UpdateVfxFromSim()
         if (g.prevProjActive[i] && !pr.active && InSession())
             SpawnExplosion(g.prevProjPos[i]);
         if (!g.prevProjActive[i] && pr.active && InSession())
+        {
             snd::Play(snd::Sfx::Shoot, SndDistVol(pr.x, pr.z, 0.6f),
                       SndJitter(0.07f));
+            // birth record for the squish/spring shader (host: exact muzzle;
+            // client: first snapshot position, close enough to the muzzle)
+            g.projSpawnPos[i] = XMFLOAT3(pr.x, pr.y, pr.z);
+            g.projSpawnTime[i] = g.time;
+        }
         g.prevProjActive[i] = pr.active;
         if (pr.active)
             g.prevProjPos[i] = XMFLOAT3(pr.x, pr.y, pr.z);
@@ -976,11 +985,17 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
             py = a.y + (pr.y - a.y) * g.tickAlpha;
             pz = a.z + (pr.z - a.z) * g.tickAlpha;
         }
-        XMMATRIX m = XMMatrixScaling(1, 1, 3)
-                   * XMMatrixRotationY(pr.yaw)
+        XMMATRIX m = XMMatrixRotationY(pr.yaw)
                    * XMMatrixTranslation(px, py, pz);
-        frame.objects.push_back({ g.meshProj, g.texWhite, Store(m),
-                                  { 0.15f, 0.13f, 0.1f, 0.25f }, true });
+        RenderObject ro{ g.meshProj, g.texWhite, Store(m),
+                         { 0.16f, 0.14f, 0.11f, 0.30f }, true };
+        // squish/spring shader inputs: distance from the recorded muzzle
+        // position and seconds since fired (see UpdateVfxFromSim tracking)
+        float sdx = px - g.projSpawnPos[i].x;
+        float sdz = pz - g.projSpawnPos[i].z;
+        ro.deformDist = sqrtf(sdx * sdx + sdz * sdz);
+        ro.deformAge = float(g.time - g.projSpawnTime[i]);
+        frame.objects.push_back(ro);
     }
 }
 
@@ -2077,7 +2092,7 @@ bool CreateAssets()
     MeshData ground = MakeGroundPlane(ArenaHalf * 2.0f, 60.0f);
     g.meshGround = r->CreateMesh(ground.verts.data(), ground.verts.size(),
                                  ground.indices.data(), ground.indices.size());
-    MeshData proj = MakeSphere(0.16f, 12, 8);
+    MeshData proj = MakeRocket();
     g.meshProj = r->CreateMesh(proj.verts.data(), proj.verts.size(),
                                proj.indices.data(), proj.indices.size());
     MeshData flash = MakeSphere(0.22f, 10, 6);

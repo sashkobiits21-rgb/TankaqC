@@ -47,6 +47,9 @@ struct RenderObject
     DirectX::XMFLOAT4X4 world{};
     DirectX::XMFLOAT4 tint{ 1, 1, 1, 0 };   // rgb multiplier, a = emissive amount
     bool isDynamic = false;                 // tanks/projectiles: burn decals skip these
+    // rocket squish/spring deformation (vertex shader); dist < 0 disables
+    float deformDist = -1.0f;               // distance traveled from the muzzle
+    float deformAge = 0.0f;                 // seconds since fired
 };
 
 struct PostSettings
