@@ -112,6 +112,12 @@ Drive the hull with WASD, aim the turret with the mouse, shoot your friends.
   Not found: you become the host and a public lobby advertises your game (player
   count + phase kept fresh, closed on leave). The Steam lobby is a directory
   entry only -- nobody joins it, so no membership bookkeeping. No servers, $0.
+- **Skinned meshes / rigs** — glTF/GLB skins + animations (Blender exports drop
+  in): up to 64 bones, 4 influences, multi-part characters with material
+  colors, CPU clip sampling with crossfades, GPU palette skinning on both
+  backends including animated shadows. `assets/soldier.glb` is "Soldier" by
+  [Quaternius](https://poly.pizza/m/oAArCNHjFB) (CC-BY 3.0), 24 clips.
+  `--rigtest` shows it running in the arena.
 - **Sound** — XAudio2, zero assets: every effect is synthesized at startup
   (square/saw/noise + envelopes + a bitcrush for the low-bit techno style).
   Deep bass shoot + explosion, fire-crackle purchase burn, glass-shard slat

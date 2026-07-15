@@ -91,6 +91,7 @@ void ComposePalette(const SkinnedModel& model,
                     const std::vector<JointPose>& locals, BonePalette& out)
 {
     XMMATRIX global[MaxBones];
+    XMMATRIX rootPre = XMLoadFloat4x4(&model.rootTransform);
     size_t n = std::min<size_t>(model.joints.size(), MaxBones);
     for (size_t j = 0; j < n; ++j)
     {
@@ -99,9 +100,10 @@ void ComposePalette(const SkinnedModel& model,
                        * XMMatrixRotationQuaternion(XMLoadFloat4(&p.r))
                        * XMMatrixTranslation(p.t.x, p.t.y, p.t.z);
         int par = model.joints[j].parent;
-        // joints are ordered parents-first, so par < j when valid
+        // joints are ordered parents-first, so par < j when valid; parentless
+        // joints hang off the composed non-joint ancestor chain
         global[j] = (par >= 0 && par < int(j))
-                        ? local * global[par] : local;
+                        ? local * global[par] : local * rootPre;
         XMMATRIX inv = XMLoadFloat4x4(&model.joints[j].inverseBind);
         XMStoreFloat4x4(&out.m[j], inv * global[j]);
     }

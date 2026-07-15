@@ -64,14 +64,27 @@ struct SkinJoint
     DirectX::XMFLOAT3 restS{ 1, 1, 1 };
 };
 
-struct SkinnedModel
+// One drawable piece of a rigged model: characters often split into several
+// skinned primitives (body/head/feet...), each with its own material color.
+struct SkinnedPart
 {
     std::vector<SkinnedVertex> verts;
     std::vector<uint32_t> indices;
-    std::vector<SkinJoint> joints;
+    DirectX::XMFLOAT4 baseColor{ 1, 1, 1, 1 };   // material base color factor
+};
+
+struct SkinnedModel
+{
+    std::vector<SkinnedPart> parts;
+    std::vector<SkinJoint> joints;    // shared armature (first skin's joints)
     std::vector<AnimClip> clips;
-    ImageData texture;                // base color if present (else 0x0)
+    ImageData texture;                // base color texture if present (else 0x0)
+    // Composed transform of the root joint's NON-JOINT ancestors (FBX->glTF
+    // conversions park scale-100 / axis-flip nodes there); applied above the
+    // root joints when composing palettes.
+    DirectX::XMFLOAT4X4 rootTransform;
     bool valid = false;
+    int FindClip(const char* nameSubstr) const;   // -1 if absent
 };
 
 SkinnedModel LoadSkinnedGLB(const std::string& path);

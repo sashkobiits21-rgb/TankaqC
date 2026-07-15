@@ -95,7 +95,10 @@ struct App
     // skinned test rig (--rigtest; the same path future rigged units use)
     SkinnedModel rigModel;
     AnimPlayer rigAnim;
-    int meshRig = -1, texRig = -1;
+    std::vector<int> meshRigParts;          // one GPU mesh per skinned part
+    std::vector<XMFLOAT4> rigPartColors;    // material base color per part
+    int texRig = -1;
+    float rigScale = 1.0f;
 
     // game
     GameState game;
@@ -1167,18 +1170,24 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
         frame.objects.push_back(ro);
     }
 
-    // animated test rig (--rigtest): posed on the CPU, skinned on the GPU
-    if (g.meshRig >= 0 && g.rigModel.valid)
+    // animated test rig (--rigtest): posed once on the CPU, all parts share
+    // the palette and carry their material base colors
+    if (!g.meshRigParts.empty() && g.rigModel.valid)
     {
         frame.palettes.emplace_back();
         g.rigAnim.Pose(frame.palettes.back());
-        RenderObject ro{ g.meshRig,
-                         g.texRig >= 0 ? g.texRig : g.texWhite,
-                         Store(XMMatrixScaling(2.0f, 2.0f, 2.0f)
-                               * XMMatrixTranslation(5.0f, 0.0f, -8.0f)),
-                         { 0.75f, 0.85f, 0.6f, 0 }, true };
-        ro.paletteIndex = int(frame.palettes.size()) - 1;
-        frame.objects.push_back(ro);
+        int paletteIdx = int(frame.palettes.size()) - 1;
+        XMMATRIX world = XMMatrixScaling(g.rigScale, g.rigScale, g.rigScale)
+                       * XMMatrixTranslation(5.0f, 0.0f, -8.0f);
+        for (size_t p = 0; p < g.meshRigParts.size(); ++p)
+        {
+            const XMFLOAT4& c = g.rigPartColors[p];
+            RenderObject ro{ g.meshRigParts[p],
+                             g.texRig >= 0 ? g.texRig : g.texWhite,
+                             Store(world), { c.x, c.y, c.z, 0 }, true };
+            ro.paletteIndex = paletteIdx;
+            frame.objects.push_back(ro);
+        }
     }
 
     // provisional (predicted-fire) rockets: identical rendering; the server
@@ -2367,22 +2376,31 @@ bool CreateAssets()
     ImageData icons = MakeIconAtlas(32, UpgradePoolSize);
     g.texIconAtlas = r->CreateTexture(icons.rgba.data(), icons.width, icons.height);
 
-    // skinned test rig (also the template for future rigged units)
+    // skinned test rig (also the template for future rigged units): prefer
+    // the soldier if present, else the generated test column
     if (g.opt.rigTest)
     {
-        g.rigModel = LoadSkinnedGLB("assets/test_rig.glb");
+        g.rigModel = LoadSkinnedGLB("assets/soldier.glb");
+        g.rigScale = 1.0f;
+        if (!g.rigModel.valid)
+            g.rigModel = LoadSkinnedGLB("assets/test_rig.glb");
         if (g.rigModel.valid)
         {
-            g.meshRig = r->CreateSkinnedMesh(g.rigModel.verts.data(),
-                                             g.rigModel.verts.size(),
-                                             g.rigModel.indices.data(),
-                                             g.rigModel.indices.size());
+            for (const SkinnedPart& part : g.rigModel.parts)
+            {
+                g.meshRigParts.push_back(
+                    r->CreateSkinnedMesh(part.verts.data(), part.verts.size(),
+                                         part.indices.data(),
+                                         part.indices.size()));
+                g.rigPartColors.push_back(part.baseColor);
+            }
             if (g.rigModel.texture.width > 0)
                 g.texRig = r->CreateTexture(g.rigModel.texture.rgba.data(),
                                             g.rigModel.texture.width,
                                             g.rigModel.texture.height);
             g.rigAnim.model = &g.rigModel;
-            g.rigAnim.Play(0, true);
+            int run = g.rigModel.FindClip("Run");
+            g.rigAnim.Play(run >= 0 ? run : 0, true);
         }
     }
     return g.meshHull >= 0 && g.meshTurret >= 0 && g.texPalette >= 0;

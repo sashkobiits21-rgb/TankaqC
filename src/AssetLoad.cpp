@@ -226,7 +226,7 @@ MeshData MakeSphere(float radius, int slices, int stacks)
 
 // ------------------------------------------------------------ skinned rigs
 
-static void SkinnedTangents(SkinnedModel& m)
+static void SkinnedTangents(SkinnedPart& m)
 {
     std::vector<XMFLOAT3> acc(m.verts.size(), { 0, 0, 0 });
     for (size_t i = 0; i + 2 < m.indices.size(); i += 3)
@@ -373,12 +373,52 @@ SkinnedModel LoadSkinnedGLB(const std::string& path)
         }
     }
 
-    // Geometry: every skinned primitive of every node using this skin.
+    // Ancestor pre-transform: FBX->glTF conversions often park a scale-100 +
+    // axis-flip node ABOVE the armature root; the skin's joints don't include
+    // it, so compose the chain here and let ComposePalette apply it.
+    XMStoreFloat4x4(&model.rootTransform, XMMatrixIdentity());
+    if (!ordered.empty())
+    {
+        XMMATRIX pre = XMMatrixIdentity();
+        for (const cgltf_node* a = ordered[0]->parent; a; a = a->parent)
+        {
+            XMMATRIX local;
+            if (a->has_matrix)
+            {
+                XMFLOAT4X4 m;
+                memcpy(&m, a->matrix, sizeof(m));
+                local = XMLoadFloat4x4(&m);
+            }
+            else
+            {
+                XMVECTOR q = a->has_rotation
+                    ? XMVectorSet(a->rotation[0], a->rotation[1],
+                                  a->rotation[2], a->rotation[3])
+                    : XMQuaternionIdentity();
+                local = XMMatrixScaling(a->has_scale ? a->scale[0] : 1.0f,
+                                        a->has_scale ? a->scale[1] : 1.0f,
+                                        a->has_scale ? a->scale[2] : 1.0f)
+                      * XMMatrixRotationQuaternion(q)
+                      * XMMatrixTranslation(
+                            a->has_translation ? a->translation[0] : 0.0f,
+                            a->has_translation ? a->translation[1] : 0.0f,
+                            a->has_translation ? a->translation[2] : 0.0f);
+            }
+            pre = pre * local;   // child-then-parent (row-vector order)
+        }
+        XMStoreFloat4x4(&model.rootTransform, pre);
+    }
+
+    // Geometry: every skinned primitive of EVERY skinned node. Characters
+    // are often split into several parts (body/head/feet), each carrying its
+    // own skin object over the same armature -- joint indices are remapped
+    // through that node's own skin into our ordered joint list.
     for (size_t ni = 0; ni < data->nodes_count; ++ni)
     {
         const cgltf_node& node = data->nodes[ni];
-        if (node.skin != &skin || !node.mesh)
+        if (!node.skin || !node.mesh)
             continue;
+        const cgltf_skin& nodeSkin = *node.skin;
         for (size_t p = 0; p < node.mesh->primitives_count; ++p)
         {
             const cgltf_primitive& prim = node.mesh->primitives[p];
@@ -398,7 +438,7 @@ SkinnedModel LoadSkinnedGLB(const std::string& path)
             }
             if (!pos || !jnt || !wgt)
                 continue;
-            uint32_t base = uint32_t(model.verts.size());
+            SkinnedPart part;
             for (size_t v = 0; v < pos->count; ++v)
             {
                 SkinnedVertex vert{};
@@ -422,30 +462,34 @@ SkinnedModel LoadSkinnedGLB(const std::string& path)
                 if (wsum < 1e-6f) { tmp[0] = 1; wsum = 1; }
                 for (int k = 0; k < 4; ++k)
                 {
-                    // remap skin-order joint index to our ordered index
+                    // remap THIS node's skin-order index to our ordered list
                     int si = int(ji[k]);
-                    int oi = (si >= 0 && si < int(jointCount))
-                                 ? orderedIndex(skin.joints[si]) : 0;
+                    int oi = (si >= 0 && si < int(nodeSkin.joints_count))
+                                 ? orderedIndex(nodeSkin.joints[si]) : 0;
                     vert.joints[k] = uint8_t(std::clamp(oi, 0, MaxBones - 1));
                     vert.weights[k] = tmp[k] / wsum;
                 }
-                model.verts.push_back(vert);
+                part.verts.push_back(vert);
             }
             if (prim.indices)
                 for (size_t i = 0; i < prim.indices->count; ++i)
-                    model.indices.push_back(
-                        base + uint32_t(cgltf_accessor_read_index(prim.indices, i)));
+                    part.indices.push_back(
+                        uint32_t(cgltf_accessor_read_index(prim.indices, i)));
             else
                 for (size_t i = 0; i < pos->count; ++i)
-                    model.indices.push_back(base + uint32_t(i));
+                    part.indices.push_back(uint32_t(i));
 
-            // base color texture (first primitive that has one wins)
-            if (model.texture.width == 0 && prim.material
-                && prim.material->has_pbr_metallic_roughness)
+            if (prim.material && prim.material->has_pbr_metallic_roughness)
             {
-                const cgltf_texture* tex =
-                    prim.material->pbr_metallic_roughness.base_color_texture.texture;
-                if (tex && tex->image && tex->image->buffer_view)
+                const auto& pbr = prim.material->pbr_metallic_roughness;
+                part.baseColor = XMFLOAT4(pbr.base_color_factor[0],
+                                          pbr.base_color_factor[1],
+                                          pbr.base_color_factor[2],
+                                          pbr.base_color_factor[3]);
+                // base color texture (first one seen wins)
+                const cgltf_texture* tex = pbr.base_color_texture.texture;
+                if (model.texture.width == 0 && tex && tex->image
+                    && tex->image->buffer_view)
                 {
                     const cgltf_buffer_view* bv = tex->image->buffer_view;
                     const uint8_t* bytes =
@@ -461,6 +505,8 @@ SkinnedModel LoadSkinnedGLB(const std::string& path)
                     }
                 }
             }
+            SkinnedTangents(part);
+            model.parts.push_back(std::move(part));
         }
     }
 
@@ -508,12 +554,24 @@ SkinnedModel LoadSkinnedGLB(const std::string& path)
     }
 
     cgltf_free(data);
-    SkinnedTangents(model);
-    model.valid = !model.verts.empty() && !model.joints.empty();
-    Log("Assets: skinned %s: %zu verts / %zu tris, %zu joints, %zu clips",
-        path.c_str(), model.verts.size(), model.indices.size() / 3,
+    model.valid = !model.parts.empty() && !model.joints.empty();
+    size_t tv = 0, ti = 0;
+    for (const SkinnedPart& p : model.parts) { tv += p.verts.size(); ti += p.indices.size(); }
+    Log("Assets: skinned %s: %zu parts, %zu verts / %zu tris, %zu joints, %zu clips",
+        path.c_str(), model.parts.size(), tv, ti / 3,
         model.joints.size(), model.clips.size());
+    for (size_t c = 0; c < model.clips.size(); ++c)
+        Log("Assets:   clip %zu: %s (%.2fs)", c, model.clips[c].name.c_str(),
+            model.clips[c].duration);
     return model;
+}
+
+int SkinnedModel::FindClip(const char* nameSubstr) const
+{
+    for (size_t c = 0; c < clips.size(); ++c)
+        if (clips[c].name.find(nameSubstr) != std::string::npos)
+            return int(c);
+    return -1;
 }
 
 void ComputeTangents(MeshData& m)
