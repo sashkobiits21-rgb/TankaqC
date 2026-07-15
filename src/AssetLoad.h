@@ -78,6 +78,7 @@ struct SkinnedModel
 {
     std::vector<SkinnedPart> parts;
     std::vector<SkinJoint> joints;    // shared armature (first skin's joints)
+    std::vector<std::string> jointNames;   // parallel to joints (FindJoint)
     std::vector<AnimClip> clips;
     ImageData texture;                // base color texture if present (else 0x0)
     // Composed transform of the root joint's NON-JOINT ancestors (FBX->glTF

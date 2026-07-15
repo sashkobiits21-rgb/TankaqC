@@ -345,9 +345,11 @@ SkinnedModel LoadSkinnedGLB(const std::string& path)
     };
 
     model.joints.resize(ordered.size());
+    model.jointNames.resize(ordered.size());
     for (size_t j = 0; j < ordered.size(); ++j)
     {
         const cgltf_node* n = ordered[j];
+        model.jointNames[j] = n->name ? n->name : "";
         SkinJoint& out = model.joints[j];
         out.parent = n->parent ? orderedIndex(n->parent) : -1;
         if (n->has_translation)

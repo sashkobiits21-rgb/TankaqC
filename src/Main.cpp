@@ -94,12 +94,13 @@ struct App
     int texFlatNRA = -1, texWallNRA = -1, texGroundNRA = -1;
     // skinned test rig (--rigtest; the same path future rigged units use)
     SkinnedModel rigModel;
-    AnimPlayer rigAnim;
+    Animator rigAnimator;
     std::vector<int> meshRigParts;          // one GPU mesh per skinned part
     std::vector<XMFLOAT4> rigPartColors;    // material base color per part
     std::vector<bool> rigPartVisible;       // weapon toggling
     int texRig = -1;
     float rigScale = 1.0f;
+    XMFLOAT3 rigPos{ 5.0f, 0.0f, -8.0f };
 
     // game
     GameState game;
@@ -1175,11 +1176,38 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
     // the palette and carry their material base colors
     if (!g.meshRigParts.empty() && g.rigModel.valid)
     {
+        // live constraint targets, world -> the soldier's model space
+        {
+            float rx, rz, rh, rt;
+            GetRenderPlayer(g.myId, rx, rz, rh, rt);
+            g.rigAnimator.aim.target = XMFLOAT3(
+                (rx - g.rigPos.x) / g.rigScale, 1.2f,
+                (rz - g.rigPos.z) / g.rigScale);
+            // orbiting marker for the hand IK; weight ramps 0..1 (the
+            // "reach a specific object" blend)
+            float a = float(g.time) * 1.1f;
+            g.rigAnimator.ik[0].target = XMFLOAT3(cosf(a) * 0.55f,
+                                                  1.05f + 0.25f * sinf(a * 0.7f),
+                                                  sinf(a) * 0.55f);
+            g.rigAnimator.ik[0].pole = XMFLOAT3(cosf(a) * 1.5f, 0.4f,
+                                                sinf(a) * 1.5f);
+            g.rigAnimator.ik[0].weight = 0.5f + 0.5f * sinf(float(g.time) * 0.8f);
+        }
         frame.palettes.emplace_back();
-        g.rigAnim.Pose(frame.palettes.back());
+        g.rigAnimator.Pose(frame.palettes.back());
         int paletteIdx = int(frame.palettes.size()) - 1;
         XMMATRIX world = XMMatrixScaling(g.rigScale, g.rigScale, g.rigScale)
-                       * XMMatrixTranslation(5.0f, 0.0f, -8.0f);
+                       * XMMatrixTranslation(g.rigPos.x, g.rigPos.y, g.rigPos.z);
+        // render the IK marker so the hand visibly tracks it
+        {
+            const XMFLOAT3& m = g.rigAnimator.ik[0].target;
+            XMMATRIX mm = XMMatrixScaling(0.5f, 0.5f, 0.5f)
+                        * XMMatrixTranslation(m.x * g.rigScale + g.rigPos.x,
+                                              m.y * g.rigScale + g.rigPos.y,
+                                              m.z * g.rigScale + g.rigPos.z);
+            frame.objects.push_back({ g.meshFlash, g.texWhite, Store(mm),
+                                      { 1.0f, 0.35f, 0.2f, 0.6f }, true });
+        }
         for (size_t p = 0; p < g.meshRigParts.size(); ++p)
         {
             if (!g.rigPartVisible[p])
@@ -2414,10 +2442,44 @@ bool CreateAssets()
                 g.texRig = r->CreateTexture(g.rigModel.texture.rgba.data(),
                                             g.rigModel.texture.width,
                                             g.rigModel.texture.height);
-            g.rigAnim.model = &g.rigModel;
-            int clip = g.rigModel.FindClip("Idle_Shoot");
-            if (clip < 0) clip = g.rigModel.FindClip("Run");
-            g.rigAnim.Play(clip >= 0 ? clip : 0, true);
+            for (size_t j = 0; j < g.rigModel.jointNames.size(); ++j)
+                Log("Rig joint %zu: %s (parent %d)", j,
+                    g.rigModel.jointNames[j].c_str(),
+                    g.rigModel.joints[j].parent);
+
+            // full animation system demo: run legs + shoot torso (masked
+            // layer) + aim constraint at the player tank + left-hand two-bone
+            // IK onto an orbiting marker, weight ramping in and out
+            Animator& an = g.rigAnimator;
+            an.model = &g.rigModel;
+            int run = g.rigModel.FindClip("Run");
+            int shoot = g.rigModel.FindClip("Idle_Shoot");
+            if (shoot < 0) shoot = g.rigModel.FindClip("Shoot");
+            an.PlayLayer(0, run >= 0 ? run : 0, true, 1.0f);
+            if (shoot >= 0)
+            {
+                an.PlayLayer(1, shoot, true, 1.0f);
+                an.layers[1].mask = MaskSubtree(g.rigModel, "Torso");
+            }
+            an.aim.active = true;
+            an.aim.chainCount = 0;
+            for (const char* n : { "Abdomen", "Torso" })
+            {
+                int j = FindJoint(g.rigModel, n);
+                if (j >= 0 && an.aim.chainCount < 4)
+                    an.aim.chain[an.aim.chainCount++] = j;
+            }
+            an.aim.forward = XMFLOAT3(0, 0, 1);
+            an.aim.maxAngle = 1.2f;
+            int ua = FindJoint(g.rigModel, "UpperArm.L");
+            int la = FindJoint(g.rigModel, "LowerArm.L");
+            int ha = FindJoint(g.rigModel, "Hand.L");
+            if (ha < 0) ha = FindJoint(g.rigModel, "Index1.L");
+            if (ua >= 0 && la >= 0 && ha >= 0)
+            {
+                an.ik[0].active = true;
+                an.ik[0].a = ua; an.ik[0].b = la; an.ik[0].c = ha;
+            }
         }
     }
     return g.meshHull >= 0 && g.meshTurret >= 0 && g.texPalette >= 0;
@@ -3276,7 +3338,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             snd::SetTurn(turn);
             snd::Update(g.frameDt);
             if (g.rigModel.valid)
-                g.rigAnim.Update(g.frameDt);
+                g.rigAnimator.Update(g.frameDt);
         }
 
         g.renderer->RenderFrame(frame);
