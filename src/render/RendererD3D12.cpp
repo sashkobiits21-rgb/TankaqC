@@ -227,7 +227,7 @@ public:
 
         D3D12_DESCRIPTOR_HEAP_DESC dsvd{};
         dsvd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-        dsvd.NumDescriptors = 2;   // scene depth + shadow map
+        dsvd.NumDescriptors = 3;   // scene depth + shadow map + read-only depth
         m_device->CreateDescriptorHeap(&dsvd, IID_PPV_ARGS(&m_dsvHeap));
         m_dsvSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
 
@@ -629,10 +629,13 @@ public:
             }
             if (numBursts > 0)
             {
+                // READ-ONLY depth view (slot 2): matches the resource's
+                // DEPTH_READ | PIXEL_SHADER_RESOURCE state at this point
                 D3D12_CPU_DESCRIPTOR_HANDLE colorRtv = Rtv(m_sceneColor.rtvIndex);
-                D3D12_CPU_DESCRIPTOR_HANDLE sceneDsv =
+                D3D12_CPU_DESCRIPTOR_HANDLE sceneDsvRO =
                     m_dsvHeap->GetCPUDescriptorHandleForHeapStart();
-                m_cmd->OMSetRenderTargets(1, &colorRtv, FALSE, &sceneDsv);
+                sceneDsvRO.ptr += size_t(m_dsvSize) * 2;
+                m_cmd->OMSetRenderTargets(1, &colorRtv, FALSE, &sceneDsvRO);
                 m_cmd->SetPipelineState(m_psoVfx.Get());
                 m_cmd->DrawInstanced(6, UINT(numBursts) * VfxParticlesPerBurst, 0, 0);
             }
@@ -945,6 +948,18 @@ private:
         dvd.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
         m_device->CreateDepthStencilView(m_depth.Get(), &dvd,
                                          m_dsvHeap->GetCPUDescriptorHandleForHeapStart());
+        // Read-only DSV (slot 2): the smoke pass depth-tests while the SAME
+        // depth is bound as a pixel-shader SRV (soft particles). The resource
+        // sits in DEPTH_READ | PIXEL_SHADER_RESOURCE then, and D3D12 only
+        // permits that with a READ_ONLY_DEPTH view -- binding the writable
+        // DSV was undefined behavior and made the smoke flicker (D3D11 was
+        // immune: its VFX pass already used a read-only DSV).
+        D3D12_DEPTH_STENCIL_VIEW_DESC dvr = dvd;
+        dvr.Flags = D3D12_DSV_FLAG_READ_ONLY_DEPTH;
+        D3D12_CPU_DESCRIPTOR_HANDLE dsvRO =
+            m_dsvHeap->GetCPUDescriptorHandleForHeapStart();
+        dsvRO.ptr += size_t(m_dsvSize) * 2;
+        m_device->CreateDepthStencilView(m_depth.Get(), &dvr, dsvRO);
 
         if (!m_shadowMap && !CreateShadowMap(error))
             return false;
