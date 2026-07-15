@@ -72,10 +72,12 @@ enum class Stat : uint8_t
     MaxHealth,        // hit points
     ProjSpeed,        // units/s
     DamageTaken,      // incoming damage multiplier (lower = tankier)
+    Bounces,          // wall bounces per rocket (never bounces off tanks)
     Count
 };
 constexpr int StatCount = int(Stat::Count);
 extern const float kBaseStats[StatCount];
+extern int gDebugBounces;   // --bounces=N dev knob, added onto the stat
 
 // One stat change: `amount` is added in the first pass, `factor` multiplied
 // in the second. An upgrade holds several of these and may mix both kinds.
@@ -166,6 +168,7 @@ struct Projectile
     float life = 0;
     float speed = ProjectileSpeed;   // host-side, baked from owner upgrades
     int damage = ProjectileDamage;
+    int bounces = 0;                 // wall bounces left (baked at fire time)
 };
 
 struct Obstacle

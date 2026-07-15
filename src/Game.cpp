@@ -14,7 +14,10 @@ const float kBaseStats[StatCount] = {
     float(MaxHealth),
     ProjectileSpeed,    // ProjSpeed
     1.0f,               // DamageTaken multiplier
+    0.0f,               // Bounces
 };
+
+int gDebugBounces = 0;   // --bounces=N dev knob (added on top of the stat)
 
 // The pool: mods may mix additive and multiplicative parts, and one upgrade
 // can touch several stats (including tradeoffs).
@@ -44,6 +47,10 @@ const UpgradeType kUpgradePool[] = {
       { { S(MoveSpeed), 0, 1.25f }, { S(DamageTaken), 0, 1.10f } }, 2 },
     { "FIELD KIT", "+15 MAX HP, +0.5 SPEED",          0, 35, 11,
       { { S(MaxHealth), 15, 1 }, { S(MoveSpeed), 0.5f, 1 } }, 2 },
+    { "RICOCHET",  "+1 WALL BOUNCE",                  2, 55, 12,
+      { { S(Bounces), 1, 1 } }, 1 },
+    { "SUPERBALL", "+2 WALL BOUNCES, -15% DAMAGE",    4, 90, 13,
+      { { S(Bounces), 2, 1 }, { S(Damage), 0, 0.85f } }, 2 },
 };
 #undef S
 const int UpgradePoolSize = int(sizeof(kUpgradePool) / sizeof(kUpgradePool[0]));
@@ -126,6 +133,8 @@ void GameState::RecalcStats(int id)
     p.stats[int(Stat::ReloadTime)] = std::max(0.15f, p.stats[int(Stat::ReloadTime)]);
     p.stats[int(Stat::MaxHealth)] = std::max(10.0f, p.stats[int(Stat::MaxHealth)]);
     p.stats[int(Stat::DamageTaken)] = std::max(0.1f, p.stats[int(Stat::DamageTaken)]);
+    p.stats[int(Stat::Bounces)] =
+        std::max(0.0f, p.stats[int(Stat::Bounces)] + float(gDebugBounces));
 }
 
 void GameState::SpawnPlayer(int id)
@@ -530,6 +539,7 @@ void GameState::Tick(const InputCmd* inputs)
                 pr.life = ProjectileLife;
                 pr.speed = p.stats[int(Stat::ProjSpeed)];
                 pr.damage = int(p.stats[int(Stat::Damage)] + 0.5f);
+                pr.bounces = int(p.stats[int(Stat::Bounces)] + 0.5f);
                 p.fireCooldown = p.stats[int(Stat::ReloadTime)];
                 p.muzzleFlash = 0.12f;
                 break;
@@ -544,12 +554,77 @@ void GameState::Tick(const InputCmd* inputs)
         pr.life -= TickDt;
         pr.x += sinf(pr.yaw) * pr.speed * TickDt;
         pr.z += cosf(pr.yaw) * pr.speed * TickDt;
-        if (pr.life <= 0.0f
-            || fabsf(pr.x) > ArenaHalf || fabsf(pr.z) > ArenaHalf
-            || PointHitsObstacle(pr.x, pr.y, pr.z, ProjectileRadius))
+        if (pr.life <= 0.0f)
         {
             pr.active = false;
             continue;
+        }
+
+        // Walls and obstacle boxes ricochet while bounces remain, else the
+        // rocket detonates. Everything is axis-aligned, so a bounce mirrors
+        // one direction component: dir = (sin yaw, cos yaw), X-face hit ->
+        // yaw = -yaw, Z-face hit -> yaw = pi - yaw. Tanks never bounce --
+        // the hit loop below always detonates on contact.
+        {
+            const float r = ProjectileRadius;
+            bool dead = false;
+
+            if (fabsf(pr.x) > ArenaHalf - r)
+            {
+                if (pr.bounces-- > 0)
+                {
+                    float lim = (pr.x > 0) ? ArenaHalf - r : r - ArenaHalf;
+                    pr.x = 2.0f * lim - pr.x;      // reflect off the face
+                    pr.yaw = WrapAngle(-pr.yaw);
+                }
+                else dead = true;
+            }
+            if (!dead && fabsf(pr.z) > ArenaHalf - r)
+            {
+                if (pr.bounces-- > 0)
+                {
+                    float lim = (pr.z > 0) ? ArenaHalf - r : r - ArenaHalf;
+                    pr.z = 2.0f * lim - pr.z;
+                    pr.yaw = WrapAngle(XM_PI - pr.yaw);
+                }
+                else dead = true;
+            }
+            if (!dead)
+            {
+                for (const Obstacle& o : kObstacles)
+                {
+                    if (pr.y > o.height)
+                        continue;
+                    float dx = pr.x - o.cx, dz = pr.z - o.cz;
+                    float ex = o.hx + r, ez = o.hz + r;
+                    if (fabsf(dx) >= ex || fabsf(dz) >= ez)
+                        continue;
+                    if (pr.bounces-- > 0)
+                    {
+                        // resolve along the shallower penetration axis and
+                        // mirror that direction component
+                        float penX = ex - fabsf(dx);
+                        float penZ = ez - fabsf(dz);
+                        if (penX < penZ)
+                        {
+                            pr.x += (dx > 0 ? penX : -penX);
+                            pr.yaw = WrapAngle(-pr.yaw);
+                        }
+                        else
+                        {
+                            pr.z += (dz > 0 ? penZ : -penZ);
+                            pr.yaw = WrapAngle(XM_PI - pr.yaw);
+                        }
+                    }
+                    else dead = true;
+                    break;
+                }
+            }
+            if (dead)
+            {
+                pr.active = false;
+                continue;
+            }
         }
         for (int id = 0; id < MaxPlayers; ++id)
         {

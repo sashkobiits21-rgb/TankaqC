@@ -5,7 +5,7 @@
 namespace tankaq::net
 {
 
-constexpr uint8_t ProtocolVersion = 7;   // v7: gathering queue (targetPlayers)
+constexpr uint8_t ProtocolVersion = 8;   // v8: Bounces stat (stats[] resized)
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t

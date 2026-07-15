@@ -325,6 +325,7 @@ Options ParseOptions(const std::string& cmd)
     if (!(v = GetArg(cmd, "--quickmatch=")).empty())
         o.quickMatchNeed = atoi(v.c_str());
     if (!(v = GetArg(cmd, "--readytest=")).empty()) o.readyTest = atoi(v.c_str());
+    if (!(v = GetArg(cmd, "--bounces=")).empty()) gDebugBounces = atoi(v.c_str());
     if (!(v = GetArg(cmd, "--winsize=")).empty())
         sscanf_s(v.c_str(), "%dx%d", &o.winW, &o.winH);
     return o;

@@ -381,6 +381,17 @@ void DrawIconGlyph(IconCanvas& c, int icon)
         c.Fill(7, 1, 8, 3, W); c.Fill(5, 4, 9, 6, W); c.Fill(4, 7, 11, 10, W);
         c.Fill(5, 11, 10, 13, W); c.Fill(10, 3, 11, 5, W);
         break;
+    case 12: // RICOCHET: V-shaped bouncing arrow
+        for (int i = 0; i < 6; ++i) c.Fill(2 + i, 3 + i, 3 + i, 3 + i, W);
+        for (int i = 0; i < 6; ++i) c.Fill(8 + i, 8 - i, 9 + i, 8 - i, W);
+        c.Fill(11, 2, 13, 2, W); c.Fill(13, 2, 13, 4, W);   // arrow tip
+        c.Fill(2, 12, 13, 13, D);                            // floor line
+        break;
+    case 13: // SUPERBALL: ball + bounce arcs
+        c.Fill(6, 2, 9, 2, W); c.Fill(5, 3, 10, 6, W); c.Fill(6, 7, 9, 7, W);
+        c.Fill(3, 10, 5, 10, W); c.Fill(2, 11, 3, 12, W);   // left arc
+        c.Fill(10, 10, 12, 10, W); c.Fill(12, 11, 13, 12, W); // right arc
+        break;
     default: // FIELD KIT: wrench
         c.Fill(2, 2, 5, 3, W); c.Fill(2, 5, 5, 6, W); c.Fill(4, 3, 5, 5, W);
         for (int i = 0; i < 8; ++i) c.Fill(5 + i, 4 + i, 6 + i, 5 + i, W);
