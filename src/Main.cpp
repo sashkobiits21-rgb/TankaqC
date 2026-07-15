@@ -51,6 +51,7 @@ struct Options
     int pauseTest = 0;           // 1 = force-pause at frame 200, 2 = + settings
     bool quickMatch = false;     // auto-click FIND MATCH at startup (testing)
     int quickMatchNeed = 2;      // queue size for --quickmatch
+    int readyTest = 0;           // toggle ready once at this frame (testing)
 };
 
 const struct { int w, h; } kResolutions[] = {
@@ -313,6 +314,7 @@ Options ParseOptions(const std::string& cmd)
     o.quickMatch = cmd.find("--quickmatch") != std::string::npos;
     if (!(v = GetArg(cmd, "--quickmatch=")).empty())
         o.quickMatchNeed = atoi(v.c_str());
+    if (!(v = GetArg(cmd, "--readytest=")).empty()) o.readyTest = atoi(v.c_str());
     if (!(v = GetArg(cmd, "--winsize=")).empty())
         sscanf_s(v.c_str(), "%dx%d", &o.winW, &o.winH);
     return o;
@@ -2266,27 +2268,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         if (!g.searching)
             return;
         g.searching = false;
-        std::string err;
-        bool ok;
-        if (hostId == g.net.mySteamId())
-        {
-            // Our own advert (same Steam account testing, or a stale lobby
-            // from a crashed run): Steam can't relay P2P to itself, use the
-            // host's local UDP socket -- same trick as code self-joins.
-            Log("QuickMatch: found own lobby, using loopback");
-            ok = g.net.ConnectToIP("127.0.0.1:" + std::to_string(g.opt.port), err);
-        }
-        else
-        {
-            ok = g.net.ConnectToCode(hostId, err);
-        }
-        if (!ok)
-        {
-            g.screen = Screen::MainMenu;
-            g.statusLine = "JOIN FAILED: " + err;
-            return;
-        }
-        g.connectStart = g.time;   // restart the watchdog for the connect leg
+        // Join through StartJoin so ALL the client session bookkeeping runs
+        // (online flag, host flag, sim reset, watchdog). Skipping it was the
+        // ready-up bug: with g.online still false, ToggleReady/purchases took
+        // the offline branch and were never sent to the host, so the next
+        // snapshot instantly reverted the optimistic state. StartJoin also
+        // handles the own-SteamID -> 127.0.0.1 loopback fallback.
+        StartJoin(std::to_string(hostId));
+        if (g.screen == Screen::MainMenu)   // join failed: surface the error
+            g.statusLine = "MATCH JOIN FAILED - try again";
     };
     g.net.onNoMatch = []()
     {
@@ -2336,6 +2326,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     ev.onPlayerLeft = [](int pid) { g.game.RemovePlayer(pid); };
     ev.onReady = [](int pid, bool ready)
     {
+        Log("Host: ready message from player %d -> %d (phase=%d)",
+            pid, ready ? 1 : 0, int(g.game.phase));
         if (g.game.phase == PhaseLobby)
             g.game.players[pid].ready = ready ? 1 : 0;
     };
@@ -2600,6 +2592,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                 && ph == PhaseLobby && !g.game.players[g.myId].ready)
                 ToggleReady();
             g.prevPhase = ph;
+        }
+
+        // ready test hook: simulate exactly one READY UP click
+        if (g.opt.readyTest > 0 && g.frameCounter == uint64_t(g.opt.readyTest))
+        {
+            Log("ReadyTest: toggling ready (phase=%d)", int(g.game.phase));
+            ToggleReady();
         }
 
         // pause-overlay test hook: simulate ESC (and SETTINGS) for screenshots
