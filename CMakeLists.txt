@@ -13,6 +13,7 @@ add_executable(TankaqClient WIN32
   src/Main.cpp
   src/Game.cpp
   src/GpuDetect.cpp
+  src/Anim.cpp
   src/AssetLoad.cpp
   src/Sound.cpp
   src/Ui.cpp

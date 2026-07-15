@@ -16,6 +16,26 @@ struct Vertex
     float tx = 1, ty = 0, tz = 0, tw = 1;
 };
 
+// Skinned meshes (rigged glTF exports): 4 bone influences per vertex.
+constexpr int MaxBones = 64;
+struct SkinnedVertex
+{
+    float px, py, pz;
+    float nx, ny, nz;
+    float u, v;
+    float tx = 1, ty = 0, tz = 0, tw = 1;
+    uint8_t joints[4]{};
+    float weights[4]{};
+};
+
+// One posed skeleton, ready for the GPU: palette[j] = inverseBind[j] *
+// globalJointTransform[j] (row-vector order, matching the codebase).
+struct BonePalette
+{
+    DirectX::XMFLOAT4X4 m[MaxBones];
+    int count = 0;
+};
+
 struct UiVertex
 {
     float x, y;          // pixels, origin top-left
@@ -54,6 +74,8 @@ struct RenderObject
     float deformAge = 0.0f;                 // seconds since fired
     // NRA map (normal rgb + roughness a); -1 = FrameData::defaultNormalTex
     int texNormal = -1;
+    // skinned meshes: index into FrameData::palettes (-1 = static mesh)
+    int paletteIndex = -1;
 };
 
 struct PostSettings
@@ -102,6 +124,7 @@ struct FrameData
     std::vector<UiTexVertex> uiTex;         // textured triangle list (icon atlas)
     int uiTexTexture = -1;                  // texture handle for uiTex + burn
     std::vector<UiBurnQuad> uiBurn;         // burning shop cards (max 32 used)
+    std::vector<BonePalette> palettes;      // posed skeletons (max 16 used)
     int defaultNormalTex = -1;              // flat NRA for objects without one
     bool vsync = true;
 };
@@ -114,6 +137,8 @@ public:
     virtual void Resize(int width, int height) = 0;
     virtual int CreateMesh(const Vertex* verts, size_t vertexCount,
                            const uint32_t* indices, size_t indexCount) = 0;
+    virtual int CreateSkinnedMesh(const SkinnedVertex* verts, size_t vertexCount,
+                                  const uint32_t* indices, size_t indexCount) = 0;
     // rgba: tightly packed 8-bit RGBA. Full CPU mip chain is generated internally.
     virtual int CreateTexture(const uint8_t* rgba, int width, int height) = 0;
     virtual void RenderFrame(const FrameData& frame) = 0;

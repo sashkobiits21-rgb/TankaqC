@@ -23,6 +23,9 @@ constexpr int FrameCount = 3;          // swapchain buffers
 constexpr int FramesInFlight = 2;
 constexpr UINT CbAlign = 256;
 constexpr UINT MaxObjectsPerFrame = 256;
+constexpr UINT MaxSkinnedPerFrame = 16;
+constexpr UINT PaletteBytes = 64 * 64;   // MaxBones float4x4, 256-aligned
+constexpr UINT PaletteBase = (MaxObjectsPerFrame + 16) * CbAlign;
 constexpr UINT UiVbBytes = 4 * 1024 * 1024;
 constexpr UINT MaxTextures = 64;
 constexpr UINT PostSrvBase = MaxTextures;      // 9 groups spaced 8 descriptors apart
@@ -91,6 +94,7 @@ struct GpuMesh
     D3D12_VERTEX_BUFFER_VIEW vbv{};
     D3D12_INDEX_BUFFER_VIEW ibv{};
     UINT indexCount = 0;
+    bool skinned = false;
 };
 
 // Offscreen target with tracked resource state.
@@ -257,7 +261,7 @@ public:
         for (int i = 0; i < FramesInFlight; ++i)
         {
             auto hp = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
-            auto bd = BufferDesc((MaxObjectsPerFrame + 16) * CbAlign);
+            auto bd = BufferDesc(PaletteBase + MaxSkinnedPerFrame * PaletteBytes);
             if (FAILED(m_device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd,
                     D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_cbUpload[i]))))
             { error = "cb upload failed"; return false; }
@@ -312,6 +316,26 @@ public:
         mesh.vbv = { mesh.vb->GetGPUVirtualAddress(), UINT(vbSize), sizeof(Vertex) };
         mesh.ibv = { mesh.ib->GetGPUVirtualAddress(), UINT(ibSize), DXGI_FORMAT_R32_UINT };
         mesh.indexCount = UINT(indexCount);
+        m_meshes.push_back(std::move(mesh));
+        return int(m_meshes.size()) - 1;
+    }
+
+    int CreateSkinnedMesh(const SkinnedVertex* verts, size_t vertexCount,
+                          const uint32_t* indices, size_t indexCount) override
+    {
+        GpuMesh mesh;
+        UINT64 vbSize = vertexCount * sizeof(SkinnedVertex);
+        UINT64 ibSize = indexCount * sizeof(uint32_t);
+        mesh.vb = CreateStaticBuffer(verts, vbSize);
+        mesh.ib = CreateStaticBuffer(indices, ibSize);
+        if (!mesh.vb || !mesh.ib)
+            return -1;
+        mesh.vbv = { mesh.vb->GetGPUVirtualAddress(), UINT(vbSize),
+                     sizeof(SkinnedVertex) };
+        mesh.ibv = { mesh.ib->GetGPUVirtualAddress(), UINT(ibSize),
+                     DXGI_FORMAT_R32_UINT };
+        mesh.indexCount = UINT(indexCount);
+        mesh.skinned = true;
         m_meshes.push_back(std::move(mesh));
         return int(m_meshes.size()) - 1;
     }
@@ -473,6 +497,20 @@ public:
         UINT64 shadowCbOffset = UINT64(MaxObjectsPerFrame + 2) * CbAlign;
         memcpy(m_cbMapped[fi] + shadowCbOffset, &sf, sizeof(sf));
 
+        // Bone palettes for skinned draws (own ring region, root CBV b2).
+        UINT numPalettes = UINT(std::min<size_t>(frame.palettes.size(),
+                                                 MaxSkinnedPerFrame));
+        for (UINT p = 0; p < numPalettes; ++p)
+            memcpy(m_cbMapped[fi] + PaletteBase + size_t(p) * PaletteBytes,
+                   frame.palettes[p].m, sizeof(frame.palettes[p].m));
+        auto paletteAddr = [&](const RenderObject* obj) -> D3D12_GPU_VIRTUAL_ADDRESS
+        {
+            UINT pi = (obj->paletteIndex >= 0
+                       && obj->paletteIndex < int(numPalettes))
+                          ? UINT(obj->paletteIndex) : 0;
+            return cbBase + PaletteBase + UINT64(pi) * PaletteBytes;
+        };
+
         // Per-object constants are written once and shared by both passes.
         struct Drawable { const RenderObject* obj; UINT slot; };
         std::vector<Drawable> drawables;
@@ -542,10 +580,19 @@ public:
             m_cmd->SetGraphicsRootDescriptorTable(4, GpuSrv(0));   // unused (no PS)
             m_cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             m_cmd->SetPipelineState(m_psoShadow.Get());
+            bool shSkinned = false;
             for (const auto& d : drawables)
             {
-                m_cmd->SetGraphicsRootConstantBufferView(1, cbBase + d.slot * CbAlign);
                 const GpuMesh& mesh = m_meshes[d.obj->mesh];
+                if (mesh.skinned != shSkinned)
+                {
+                    shSkinned = mesh.skinned;
+                    m_cmd->SetPipelineState(shSkinned ? m_psoShadowSkinned.Get()
+                                                      : m_psoShadow.Get());
+                }
+                if (mesh.skinned)
+                    m_cmd->SetGraphicsRootConstantBufferView(5, paletteAddr(d.obj));
+                m_cmd->SetGraphicsRootConstantBufferView(1, cbBase + d.slot * CbAlign);
                 m_cmd->IASetVertexBuffers(0, 1, &mesh.vbv);
                 m_cmd->IASetIndexBuffer(&mesh.ibv);
                 m_cmd->DrawIndexedInstanced(mesh.indexCount, 1, 0, 0, 0);
@@ -593,8 +640,18 @@ public:
         m_cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         m_cmd->SetPipelineState(m_psoMesh.Get());
 
+        bool sceneSkinned = false;
         for (const auto& d : drawables)
         {
+            const GpuMesh& mesh = m_meshes[d.obj->mesh];
+            if (mesh.skinned != sceneSkinned)
+            {
+                sceneSkinned = mesh.skinned;
+                m_cmd->SetPipelineState(sceneSkinned ? m_psoMeshSkinned.Get()
+                                                     : m_psoMesh.Get());
+            }
+            if (mesh.skinned)
+                m_cmd->SetGraphicsRootConstantBufferView(5, paletteAddr(d.obj));
             m_cmd->SetGraphicsRootConstantBufferView(1, cbBase + d.slot * CbAlign);
             int texIdx = (d.obj->texture >= 0 && d.obj->texture < m_textureCount)
                              ? d.obj->texture : 0;
@@ -604,7 +661,6 @@ public:
             if (nraIdx < 0 || nraIdx >= m_textureCount)
                 nraIdx = texIdx;
             m_cmd->SetGraphicsRootDescriptorTable(4, GpuSrv(nraIdx));
-            const GpuMesh& mesh = m_meshes[d.obj->mesh];
             m_cmd->IASetVertexBuffers(0, 1, &mesh.vbv);
             m_cmd->IASetIndexBuffer(&mesh.ibv);
             m_cmd->DrawIndexedInstanced(mesh.indexCount, 1, 0, 0, 0);
@@ -1099,6 +1155,8 @@ private:
         if (vfxSrc.empty()) { error = "shaders/Vfx.hlsl not found"; return false; }
 
         ComPtr<ID3DBlob> vsMesh = Compile(src, "Basic.hlsl", "VSMesh", "vs_5_0", error);
+        ComPtr<ID3DBlob> vsMeshSkin = Compile(src, "Basic.hlsl", "VSMeshSkinned", "vs_5_0", error);
+        if (!vsMeshSkin) return false;
         ComPtr<ID3DBlob> psMesh = Compile(src, "Basic.hlsl", "PSMesh", "ps_5_0", error);
         ComPtr<ID3DBlob> vsUi = Compile(src, "Basic.hlsl", "VSUi", "vs_5_0", error);
         ComPtr<ID3DBlob> psUi = Compile(src, "Basic.hlsl", "PSUi", "ps_5_0", error);
@@ -1136,7 +1194,7 @@ private:
             D3D12_DESCRIPTOR_RANGE rangeNra = range;
             rangeNra.BaseShaderRegister = 2;
 
-            D3D12_ROOT_PARAMETER params[5]{};
+            D3D12_ROOT_PARAMETER params[6]{};
             params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
             params[0].Descriptor.ShaderRegister = 0;
             params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
@@ -1155,6 +1213,9 @@ private:
             params[4].DescriptorTable.NumDescriptorRanges = 1;
             params[4].DescriptorTable.pDescriptorRanges = &rangeNra;
             params[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+            params[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;   // bones b2
+            params[5].Descriptor.ShaderRegister = 2;
+            params[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 
             D3D12_STATIC_SAMPLER_DESC smps[2]{};
             smps[0].Filter = D3D12_FILTER_ANISOTROPIC;
@@ -1171,7 +1232,7 @@ private:
             smps[1].ShaderRegister = 1;
 
             D3D12_ROOT_SIGNATURE_DESC rsd{};
-            rsd.NumParameters = 5;
+            rsd.NumParameters = 6;
             rsd.pParameters = params;
             rsd.NumStaticSamplers = 2;
             rsd.pStaticSamplers = smps;
@@ -1270,6 +1331,26 @@ private:
         sh.RasterizerState.SlopeScaledDepthBias = 0.0f;
         if (FAILED(m_device->CreateGraphicsPipelineState(&sh, IID_PPV_ARGS(&m_psoShadow))))
         { error = "shadow PSO failed"; return false; }
+
+        // Skinned variants of the scene + shadow PSOs (blend-skinned VS).
+        D3D12_INPUT_ELEMENT_DESC skinEls[] = {
+            { "POSITION",     0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 0,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "NORMAL",       0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "TEXCOORD",     0, DXGI_FORMAT_R32G32_FLOAT,       0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "TANGENT",      0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "BLENDINDICES", 0, DXGI_FORMAT_R8G8B8A8_UINT,      0, 48, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "BLENDWEIGHT",  0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 52, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        };
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC skinPso = pso;
+        skinPso.VS = { vsMeshSkin->GetBufferPointer(), vsMeshSkin->GetBufferSize() };
+        skinPso.InputLayout = { skinEls, 6 };
+        if (FAILED(m_device->CreateGraphicsPipelineState(&skinPso, IID_PPV_ARGS(&m_psoMeshSkinned))))
+        { error = "skinned mesh PSO failed"; return false; }
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC skinSh = sh;
+        skinSh.VS = { vsMeshSkin->GetBufferPointer(), vsMeshSkin->GetBufferSize() };
+        skinSh.InputLayout = { skinEls, 6 };
+        if (FAILED(m_device->CreateGraphicsPipelineState(&skinSh, IID_PPV_ARGS(&m_psoShadowSkinned))))
+        { error = "skinned shadow PSO failed"; return false; }
 
         // UI PSO (renders to the backbuffer after composite).
         D3D12_GRAPHICS_PIPELINE_STATE_DESC ui = pso;
@@ -1497,7 +1578,8 @@ private:
     UINT64 m_fenceValues[FramesInFlight]{};
     UINT64 m_frameIndex = 0;
     ComPtr<ID3D12RootSignature> m_rootSig, m_rootSigPost;
-    ComPtr<ID3D12PipelineState> m_psoMesh, m_psoUi, m_psoShadow, m_psoSsao, m_psoAoBlurH,
+    ComPtr<ID3D12PipelineState> m_psoMesh, m_psoMeshSkinned, m_psoUi, m_psoShadow,
+                                m_psoShadowSkinned, m_psoSsao, m_psoAoBlurH,
                                 m_psoAoBlurV, m_psoSsgi, m_psoTemporal, m_psoComposite,
                                 m_psoScorch, m_psoVfx, m_psoAA, m_psoUiBurn, m_psoUiTex;
     int m_shadowSize = 2048;

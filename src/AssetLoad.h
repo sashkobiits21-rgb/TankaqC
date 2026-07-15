@@ -35,6 +35,47 @@ struct TankModel
 // Loads assets/tank/tank_baked.glb + tank_meta.txt.
 TankModel LoadTankModel(const std::string& glbPath, const std::string& metaPath);
 
+// ------------------------------------------------------------ skinned rigs
+// Rigged glTF/GLB (Blender: File > Export > glTF 2.0). First skin in the
+// file; joints capped at MaxBones; LINEAR/STEP keyframes (CUBICSPLINE is
+// sampled from its middle values).
+struct AnimChannel
+{
+    int joint = -1;
+    int path = 0;                     // 0 = translation, 1 = rotation, 2 = scale
+    std::vector<float> times;
+    std::vector<DirectX::XMFLOAT4> values;   // vec3 in xyz, quats full
+};
+
+struct AnimClip
+{
+    std::string name;
+    float duration = 0;
+    std::vector<AnimChannel> channels;
+};
+
+struct SkinJoint
+{
+    int parent = -1;                  // index into the joints array (ordered
+                                      // parents-before-children)
+    DirectX::XMFLOAT4X4 inverseBind;
+    DirectX::XMFLOAT3 restT{ 0, 0, 0 };
+    DirectX::XMFLOAT4 restR{ 0, 0, 0, 1 };
+    DirectX::XMFLOAT3 restS{ 1, 1, 1 };
+};
+
+struct SkinnedModel
+{
+    std::vector<SkinnedVertex> verts;
+    std::vector<uint32_t> indices;
+    std::vector<SkinJoint> joints;
+    std::vector<AnimClip> clips;
+    ImageData texture;                // base color if present (else 0x0)
+    bool valid = false;
+};
+
+SkinnedModel LoadSkinnedGLB(const std::string& path);
+
 // Procedural meshes (unit-ish sizes, uv-mapped).
 MeshData MakeBox(float halfX, float halfY, float halfZ, float uvScale);
 MeshData MakeGroundPlane(float halfSize, float uvTiles);

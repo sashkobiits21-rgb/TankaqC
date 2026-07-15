@@ -78,6 +78,8 @@ struct GpuMesh
     ComPtr<ID3D11Buffer> vb;
     ComPtr<ID3D11Buffer> ib;
     UINT indexCount = 0;
+    UINT stride = sizeof(Vertex);
+    bool skinned = false;
 };
 
 struct RenderTexture
@@ -228,6 +230,55 @@ public:
         return int(m_meshes.size()) - 1;
     }
 
+    int CreateSkinnedMesh(const SkinnedVertex* verts, size_t vertexCount,
+                          const uint32_t* indices, size_t indexCount) override
+    {
+        GpuMesh mesh;
+        mesh.stride = sizeof(SkinnedVertex);
+        mesh.skinned = true;
+        D3D11_BUFFER_DESC vbd{};
+        vbd.ByteWidth = UINT(vertexCount * sizeof(SkinnedVertex));
+        vbd.Usage = D3D11_USAGE_IMMUTABLE;
+        vbd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+        D3D11_SUBRESOURCE_DATA vsd{ verts };
+        if (FAILED(m_device->CreateBuffer(&vbd, &vsd, &mesh.vb)))
+            return -1;
+        D3D11_BUFFER_DESC ibd{};
+        ibd.ByteWidth = UINT(indexCount * sizeof(uint32_t));
+        ibd.Usage = D3D11_USAGE_IMMUTABLE;
+        ibd.BindFlags = D3D11_BIND_INDEX_BUFFER;
+        D3D11_SUBRESOURCE_DATA isd{ indices };
+        if (FAILED(m_device->CreateBuffer(&ibd, &isd, &mesh.ib)))
+            return -1;
+        mesh.indexCount = UINT(indexCount);
+        m_meshes.push_back(std::move(mesh));
+        return int(m_meshes.size()) - 1;
+    }
+
+    // Select the static or skinned vertex path for a draw; skinned objects
+    // also get their bone palette uploaded to b2.
+    void BindMeshVs(const GpuMesh& mesh, const RenderObject& obj,
+                    const FrameData& frame)
+    {
+        if (mesh.skinned)
+        {
+            m_ctx->IASetInputLayout(m_skinLayout.Get());
+            m_ctx->VSSetShader(m_vsMeshSkinned.Get(), nullptr, 0);
+            if (obj.paletteIndex >= 0
+                && obj.paletteIndex < int(frame.palettes.size()))
+            {
+                const BonePalette& p = frame.palettes[obj.paletteIndex];
+                UpdateCB(m_cbBones.Get(), p.m, sizeof(p.m));
+            }
+            m_ctx->VSSetConstantBuffers(2, 1, m_cbBones.GetAddressOf());
+        }
+        else
+        {
+            m_ctx->IASetInputLayout(m_meshLayout.Get());
+            m_ctx->VSSetShader(m_vsMesh.Get(), nullptr, 0);
+        }
+    }
+
     int CreateTexture(const uint8_t* rgba, int width, int height) override
     {
         ImageData src;
@@ -310,7 +361,8 @@ public:
                 po.tint = obj.tint;
                 UpdateCB(m_cbObject.Get(), &po, sizeof(po));
                 const GpuMesh& mesh = m_meshes[obj.mesh];
-                UINT stride = sizeof(Vertex), offset = 0;
+                BindMeshVs(mesh, obj, frame);   // static or skinned VS/layout
+                UINT stride = mesh.stride, offset = 0;
                 m_ctx->IASetVertexBuffers(0, 1, mesh.vb.GetAddressOf(), &stride, &offset);
                 m_ctx->IASetIndexBuffer(mesh.ib.Get(), DXGI_FORMAT_R32_UINT, 0);
                 m_ctx->DrawIndexed(mesh.indexCount, 0, 0);
@@ -365,7 +417,8 @@ public:
             UpdateCB(m_cbObject.Get(), &po, sizeof(po));
 
             const GpuMesh& mesh = m_meshes[obj.mesh];
-            UINT stride = sizeof(Vertex), offset = 0;
+            BindMeshVs(mesh, obj, frame);       // static or skinned VS/layout
+            UINT stride = mesh.stride, offset = 0;
             m_ctx->IASetVertexBuffers(0, 1, mesh.vb.GetAddressOf(), &stride, &offset);
             m_ctx->IASetIndexBuffer(mesh.ib.Get(), DXGI_FORMAT_R32_UINT, 0);
             ID3D11ShaderResourceView* srv =
@@ -780,6 +833,7 @@ private:
         if (vfxSrc.empty()) { error = "shaders/Vfx.hlsl not found"; return false; }
 
         ComPtr<ID3DBlob> vsMesh = Compile(src, "Basic.hlsl", "VSMesh", "vs_5_0", error);
+        ComPtr<ID3DBlob> vsMeshSkin = Compile(src, "Basic.hlsl", "VSMeshSkinned", "vs_5_0", error);
         ComPtr<ID3DBlob> psMesh = Compile(src, "Basic.hlsl", "PSMesh", "ps_5_0", error);
         ComPtr<ID3DBlob> vsUi = Compile(src, "Basic.hlsl", "VSUi", "vs_5_0", error);
         ComPtr<ID3DBlob> psUi = Compile(src, "Basic.hlsl", "PSUi", "ps_5_0", error);
@@ -799,13 +853,14 @@ private:
         ComPtr<ID3DBlob> psVfx = Compile(vfxSrc, "Vfx.hlsl", "PSVfx", "ps_5_0", error);
         ComPtr<ID3DBlob> vsVfxFull = Compile(vfxSrc, "Vfx.hlsl", "VSVfxFull", "vs_5_0", error);
         ComPtr<ID3DBlob> psScorch = Compile(vfxSrc, "Vfx.hlsl", "PSScorch", "ps_5_0", error);
-        if (!vsMesh || !psMesh || !vsUi || !psUi || !vsFull || !psSsao || !psBlurH
+        if (!vsMesh || !vsMeshSkin || !psMesh || !vsUi || !psUi || !vsFull || !psSsao || !psBlurH
             || !psBlurV || !psSsgi || !psTemporal || !psComposite
             || !psAA || !vsUiBurn || !psUiBurn || !vsUiTex || !psUiTex
             || !vsVfx || !psVfx || !vsVfxFull || !psScorch)
             return false;
 
         m_device->CreateVertexShader(vsMesh->GetBufferPointer(), vsMesh->GetBufferSize(), nullptr, &m_vsMesh);
+        m_device->CreateVertexShader(vsMeshSkin->GetBufferPointer(), vsMeshSkin->GetBufferSize(), nullptr, &m_vsMeshSkinned);
         m_device->CreatePixelShader(psMesh->GetBufferPointer(), psMesh->GetBufferSize(), nullptr, &m_psMesh);
         m_device->CreateVertexShader(vsUi->GetBufferPointer(), vsUi->GetBufferSize(), nullptr, &m_vsUi);
         m_device->CreatePixelShader(psUi->GetBufferPointer(), psUi->GetBufferSize(), nullptr, &m_psUi);
@@ -845,6 +900,18 @@ private:
                                                vsMesh->GetBufferSize(), &m_meshLayout)))
         { error = "mesh input layout failed"; return false; }
 
+        D3D11_INPUT_ELEMENT_DESC skinEls[] = {
+            { "POSITION",     0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 0,  D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "NORMAL",       0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "TEXCOORD",     0, DXGI_FORMAT_R32G32_FLOAT,       0, 24, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "TANGENT",      0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 32, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "BLENDINDICES", 0, DXGI_FORMAT_R8G8B8A8_UINT,      0, 48, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "BLENDWEIGHT",  0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 52, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        };
+        if (FAILED(m_device->CreateInputLayout(skinEls, 6, vsMeshSkin->GetBufferPointer(),
+                                               vsMeshSkin->GetBufferSize(), &m_skinLayout)))
+        { error = "skinned input layout failed"; return false; }
+
         D3D11_INPUT_ELEMENT_DESC uiEls[] = {
             { "POSITION", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
             { "COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 8, D3D11_INPUT_PER_VERTEX_DATA, 0 },
@@ -868,6 +935,8 @@ private:
         m_device->CreateBuffer(&cbd, nullptr, &m_cbVfx);
         cbd.ByteWidth = sizeof(UiBurnCB);
         m_device->CreateBuffer(&cbd, nullptr, &m_cbUiBurn);
+        cbd.ByteWidth = sizeof(XMFLOAT4X4) * MaxBones;   // bone palette (b2)
+        m_device->CreateBuffer(&cbd, nullptr, &m_cbBones);
 
         if (!CreateShadowMap(error))
             return false;
@@ -975,14 +1044,14 @@ private:
     XMFLOAT4X4 m_prevViewProj{};
     XMFLOAT3 m_prevCamPos{};
     uint64_t m_frameIndex = 0;
-    ComPtr<ID3D11VertexShader> m_vsMesh, m_vsUi, m_vsFull, m_vsVfx, m_vsVfxFull,
-                               m_vsUiBurn, m_vsUiTex;
+    ComPtr<ID3D11VertexShader> m_vsMesh, m_vsMeshSkinned, m_vsUi, m_vsFull,
+                               m_vsVfx, m_vsVfxFull, m_vsUiBurn, m_vsUiTex;
     ComPtr<ID3D11PixelShader> m_psMesh, m_psUi, m_psSsao, m_psAoBlurH, m_psAoBlurV,
                               m_psSsgi, m_psTemporal, m_psComposite, m_psAA, m_psVfx,
                               m_psScorch, m_psUiBurn, m_psUiTex;
-    ComPtr<ID3D11InputLayout> m_meshLayout, m_uiLayout, m_uiTexLayout;
+    ComPtr<ID3D11InputLayout> m_meshLayout, m_skinLayout, m_uiLayout, m_uiTexLayout;
     ComPtr<ID3D11Buffer> m_cbFrame, m_cbShadowFrame, m_cbObject, m_cbPost, m_cbVfx,
-                         m_cbUiBurn, m_uiVb, m_uiTexVb;
+                         m_cbUiBurn, m_cbBones, m_uiVb, m_uiTexVb;
     ComPtr<ID3D11RasterizerState> m_raster, m_rasterShadow, m_rasterUi;
     ComPtr<ID3D11DepthStencilState> m_depthOn, m_depthOff, m_depthRead;
     ComPtr<ID3D11BlendState> m_blendAlpha, m_blendMultiply;

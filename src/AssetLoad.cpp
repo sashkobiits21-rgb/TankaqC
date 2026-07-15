@@ -224,6 +224,298 @@ MeshData MakeSphere(float radius, int slices, int stacks)
     return m;
 }
 
+// ------------------------------------------------------------ skinned rigs
+
+static void SkinnedTangents(SkinnedModel& m)
+{
+    std::vector<XMFLOAT3> acc(m.verts.size(), { 0, 0, 0 });
+    for (size_t i = 0; i + 2 < m.indices.size(); i += 3)
+    {
+        const SkinnedVertex& v0 = m.verts[m.indices[i]];
+        const SkinnedVertex& v1 = m.verts[m.indices[i + 1]];
+        const SkinnedVertex& v2 = m.verts[m.indices[i + 2]];
+        float du1 = v1.u - v0.u, dv1 = v1.v - v0.v;
+        float du2 = v2.u - v0.u, dv2 = v2.v - v0.v;
+        float det = du1 * dv2 - du2 * dv1;
+        if (fabsf(det) < 1e-9f)
+            continue;
+        float r = 1.0f / det;
+        XMFLOAT3 t{ ((v1.px - v0.px) * dv2 - (v2.px - v0.px) * dv1) * r,
+                    ((v1.py - v0.py) * dv2 - (v2.py - v0.py) * dv1) * r,
+                    ((v1.pz - v0.pz) * dv2 - (v2.pz - v0.pz) * dv1) * r };
+        for (int c = 0; c < 3; ++c)
+        {
+            uint32_t idx = m.indices[i + c];
+            acc[idx].x += t.x; acc[idx].y += t.y; acc[idx].z += t.z;
+        }
+    }
+    for (size_t i = 0; i < m.verts.size(); ++i)
+    {
+        SkinnedVertex& v = m.verts[i];
+        float nx = v.nx, ny = v.ny, nz = v.nz;
+        float tx = acc[i].x, ty = acc[i].y, tz = acc[i].z;
+        if (tx * tx + ty * ty + tz * tz < 1e-10f)
+        {
+            if (fabsf(ny) < 0.9f) { tx = -nz; ty = 0; tz = nx; }
+            else { tx = 1; ty = 0; tz = 0; }
+        }
+        float d = tx * nx + ty * ny + tz * nz;
+        tx -= nx * d; ty -= ny * d; tz -= nz * d;
+        float len = sqrtf(tx * tx + ty * ty + tz * tz);
+        if (len < 1e-6f) { tx = 1; ty = 0; tz = 0; len = 1; }
+        v.tx = tx / len; v.ty = ty / len; v.tz = tz / len; v.tw = 1.0f;
+    }
+}
+
+SkinnedModel LoadSkinnedGLB(const std::string& path)
+{
+    SkinnedModel model;
+    cgltf_options opts{};
+    cgltf_data* data = nullptr;
+    if (cgltf_parse_file(&opts, path.c_str(), &data) != cgltf_result_success)
+    {
+        Log("Assets: cannot parse %s", path.c_str());
+        return model;
+    }
+    if (cgltf_load_buffers(&opts, data, path.c_str()) != cgltf_result_success)
+    {
+        Log("Assets: cannot load buffers of %s", path.c_str());
+        cgltf_free(data);
+        return model;
+    }
+    if (data->skins_count == 0)
+    {
+        Log("Assets: %s has no skin", path.c_str());
+        cgltf_free(data);
+        return model;
+    }
+
+    const cgltf_skin& skin = data->skins[0];
+    size_t jointCount = std::min<size_t>(skin.joints_count, MaxBones);
+
+    // Order joints parents-before-children so composition is a single pass.
+    std::vector<const cgltf_node*> ordered;
+    ordered.reserve(jointCount);
+    {
+        auto inSkin = [&](const cgltf_node* n) -> int
+        {
+            for (size_t j = 0; j < jointCount; ++j)
+                if (skin.joints[j] == n)
+                    return int(j);
+            return -1;
+        };
+        std::vector<bool> added(jointCount, false);
+        bool progressed = true;
+        while (ordered.size() < jointCount && progressed)
+        {
+            progressed = false;
+            for (size_t j = 0; j < jointCount; ++j)
+            {
+                if (added[j])
+                    continue;
+                const cgltf_node* n = skin.joints[j];
+                int par = n->parent ? inSkin(n->parent) : -1;
+                bool parentReady = par < 0 || added[size_t(par)];
+                if (parentReady)
+                {
+                    added[j] = true;
+                    ordered.push_back(n);
+                    progressed = true;
+                }
+            }
+        }
+        // cycles can't happen in valid glTF; append leftovers defensively
+        for (size_t j = 0; j < jointCount; ++j)
+            if (!added[j])
+                ordered.push_back(skin.joints[j]);
+    }
+    auto orderedIndex = [&](const cgltf_node* n) -> int
+    {
+        for (size_t j = 0; j < ordered.size(); ++j)
+            if (ordered[j] == n)
+                return int(j);
+        return -1;
+    };
+    auto skinIndex = [&](const cgltf_node* n) -> int
+    {
+        for (size_t j = 0; j < jointCount; ++j)
+            if (skin.joints[j] == n)
+                return int(j);
+        return -1;
+    };
+
+    model.joints.resize(ordered.size());
+    for (size_t j = 0; j < ordered.size(); ++j)
+    {
+        const cgltf_node* n = ordered[j];
+        SkinJoint& out = model.joints[j];
+        out.parent = n->parent ? orderedIndex(n->parent) : -1;
+        if (n->has_translation)
+            out.restT = XMFLOAT3(n->translation[0], n->translation[1],
+                                 n->translation[2]);
+        if (n->has_rotation)
+            out.restR = XMFLOAT4(n->rotation[0], n->rotation[1],
+                                 n->rotation[2], n->rotation[3]);
+        if (n->has_scale)
+            out.restS = XMFLOAT3(n->scale[0], n->scale[1], n->scale[2]);
+        // inverse bind from the skin (indexed by the SKIN's joint order)
+        XMStoreFloat4x4(&out.inverseBind, XMMatrixIdentity());
+        int si = skinIndex(n);
+        if (skin.inverse_bind_matrices && si >= 0)
+        {
+            float mtx[16];
+            cgltf_accessor_read_float(skin.inverse_bind_matrices, si, mtx, 16);
+            // glTF is column-major; this codebase stores row-vector matrices,
+            // which use the same memory layout for M^T... glTF stores column-
+            // major m[col][row]; loading raw gives us the TRANSPOSE in row-
+            // major terms, which is exactly the row-vector convention here.
+            memcpy(&out.inverseBind, mtx, sizeof(mtx));
+        }
+    }
+
+    // Geometry: every skinned primitive of every node using this skin.
+    for (size_t ni = 0; ni < data->nodes_count; ++ni)
+    {
+        const cgltf_node& node = data->nodes[ni];
+        if (node.skin != &skin || !node.mesh)
+            continue;
+        for (size_t p = 0; p < node.mesh->primitives_count; ++p)
+        {
+            const cgltf_primitive& prim = node.mesh->primitives[p];
+            const cgltf_accessor* pos = nullptr;
+            const cgltf_accessor* nrm = nullptr;
+            const cgltf_accessor* uv = nullptr;
+            const cgltf_accessor* jnt = nullptr;
+            const cgltf_accessor* wgt = nullptr;
+            for (size_t a = 0; a < prim.attributes_count; ++a)
+            {
+                const cgltf_attribute& at = prim.attributes[a];
+                if (at.type == cgltf_attribute_type_position) pos = at.data;
+                else if (at.type == cgltf_attribute_type_normal) nrm = at.data;
+                else if (at.type == cgltf_attribute_type_texcoord && at.index == 0) uv = at.data;
+                else if (at.type == cgltf_attribute_type_joints && at.index == 0) jnt = at.data;
+                else if (at.type == cgltf_attribute_type_weights && at.index == 0) wgt = at.data;
+            }
+            if (!pos || !jnt || !wgt)
+                continue;
+            uint32_t base = uint32_t(model.verts.size());
+            for (size_t v = 0; v < pos->count; ++v)
+            {
+                SkinnedVertex vert{};
+                float tmp[4]{};
+                cgltf_accessor_read_float(pos, v, tmp, 3);
+                vert.px = tmp[0]; vert.py = tmp[1]; vert.pz = tmp[2];
+                if (nrm)
+                {
+                    cgltf_accessor_read_float(nrm, v, tmp, 3);
+                    vert.nx = tmp[0]; vert.ny = tmp[1]; vert.nz = tmp[2];
+                }
+                if (uv)
+                {
+                    cgltf_accessor_read_float(uv, v, tmp, 2);
+                    vert.u = tmp[0]; vert.v = tmp[1];
+                }
+                cgltf_uint ji[4]{};
+                cgltf_accessor_read_uint(jnt, v, ji, 4);
+                cgltf_accessor_read_float(wgt, v, tmp, 4);
+                float wsum = tmp[0] + tmp[1] + tmp[2] + tmp[3];
+                if (wsum < 1e-6f) { tmp[0] = 1; wsum = 1; }
+                for (int k = 0; k < 4; ++k)
+                {
+                    // remap skin-order joint index to our ordered index
+                    int si = int(ji[k]);
+                    int oi = (si >= 0 && si < int(jointCount))
+                                 ? orderedIndex(skin.joints[si]) : 0;
+                    vert.joints[k] = uint8_t(std::clamp(oi, 0, MaxBones - 1));
+                    vert.weights[k] = tmp[k] / wsum;
+                }
+                model.verts.push_back(vert);
+            }
+            if (prim.indices)
+                for (size_t i = 0; i < prim.indices->count; ++i)
+                    model.indices.push_back(
+                        base + uint32_t(cgltf_accessor_read_index(prim.indices, i)));
+            else
+                for (size_t i = 0; i < pos->count; ++i)
+                    model.indices.push_back(base + uint32_t(i));
+
+            // base color texture (first primitive that has one wins)
+            if (model.texture.width == 0 && prim.material
+                && prim.material->has_pbr_metallic_roughness)
+            {
+                const cgltf_texture* tex =
+                    prim.material->pbr_metallic_roughness.base_color_texture.texture;
+                if (tex && tex->image && tex->image->buffer_view)
+                {
+                    const cgltf_buffer_view* bv = tex->image->buffer_view;
+                    const uint8_t* bytes =
+                        static_cast<const uint8_t*>(bv->buffer->data) + bv->offset;
+                    int w = 0, h = 0, comp = 0;
+                    if (uint8_t* px = stbi_load_from_memory(bytes, int(bv->size),
+                                                            &w, &h, &comp, 4))
+                    {
+                        model.texture.width = w;
+                        model.texture.height = h;
+                        model.texture.rgba.assign(px, px + size_t(w) * h * 4);
+                        stbi_image_free(px);
+                    }
+                }
+            }
+        }
+    }
+
+    // Animations: keep channels that target our joints.
+    for (size_t ai = 0; ai < data->animations_count; ++ai)
+    {
+        const cgltf_animation& anim = data->animations[ai];
+        AnimClip clip;
+        clip.name = anim.name ? anim.name : "clip";
+        for (size_t ci = 0; ci < anim.channels_count; ++ci)
+        {
+            const cgltf_animation_channel& ch = anim.channels[ci];
+            int joint = ch.target_node ? orderedIndex(ch.target_node) : -1;
+            if (joint < 0 || !ch.sampler)
+                continue;
+            int path = ch.target_path == cgltf_animation_path_type_translation ? 0
+                     : ch.target_path == cgltf_animation_path_type_rotation ? 1
+                     : ch.target_path == cgltf_animation_path_type_scale ? 2 : -1;
+            if (path < 0)
+                continue;
+            AnimChannel out;
+            out.joint = joint;
+            out.path = path;
+            const cgltf_accessor* in = ch.sampler->input;
+            const cgltf_accessor* val = ch.sampler->output;
+            bool cubic = ch.sampler->interpolation
+                         == cgltf_interpolation_type_cubic_spline;
+            size_t stride = cubic ? 3 : 1;      // cubic: inTan, value, outTan
+            size_t offset = cubic ? 1 : 0;
+            for (size_t k = 0; k < in->count; ++k)
+            {
+                float t = 0;
+                cgltf_accessor_read_float(in, k, &t, 1);
+                out.times.push_back(t);
+                float v4[4]{ 0, 0, 0, 1 };
+                cgltf_accessor_read_float(val, k * stride + offset, v4,
+                                          path == 1 ? 4 : 3);
+                out.values.push_back(XMFLOAT4(v4[0], v4[1], v4[2], v4[3]));
+                clip.duration = std::max(clip.duration, t);
+            }
+            clip.channels.push_back(std::move(out));
+        }
+        if (!clip.channels.empty())
+            model.clips.push_back(std::move(clip));
+    }
+
+    cgltf_free(data);
+    SkinnedTangents(model);
+    model.valid = !model.verts.empty() && !model.joints.empty();
+    Log("Assets: skinned %s: %zu verts / %zu tris, %zu joints, %zu clips",
+        path.c_str(), model.verts.size(), model.indices.size() / 3,
+        model.joints.size(), model.clips.size());
+    return model;
+}
+
 void ComputeTangents(MeshData& m)
 {
     std::vector<XMFLOAT3> accT(m.verts.size(), { 0, 0, 0 });

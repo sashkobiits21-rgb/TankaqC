@@ -17,6 +17,11 @@ cbuffer PerObject : register(b1)
                                // muzzle, z = rocket age (s), w = rocket flag
 };
 
+cbuffer Bones : register(b2)
+{
+    float4x4 gBones[64];   // inverseBind * globalJoint, row-vector order
+};
+
 Texture2D    gAlbedo  : register(t0);
 Texture2D    gShadowMap : register(t1);
 Texture2D    gNra     : register(t2);   // normal rgb (tangent space) + roughness a
@@ -100,6 +105,38 @@ VsOut VSMesh(VsIn i)
     o.sv = mul(gViewProj, wp);
     o.wnrm = mul((float3x3)gWorld, n);
     o.wtan = float4(mul((float3x3)gWorld, i.tan.xyz), i.tan.w);
+    o.uv = i.uv;
+    return o;
+}
+
+// ---------------- skinned mesh (rigged glTF) ----------------
+struct VsInSkin
+{
+    float3 pos : POSITION;
+    float3 nrm : NORMAL;
+    float2 uv  : TEXCOORD0;
+    float4 tan : TANGENT;
+    uint4  jnt : BLENDINDICES;
+    float4 wgt : BLENDWEIGHT;
+};
+
+VsOut VSMeshSkinned(VsInSkin i)
+{
+    // 4-influence linear blend skinning on position, normal and tangent
+    float4x4 skin = gBones[i.jnt.x] * i.wgt.x
+                  + gBones[i.jnt.y] * i.wgt.y
+                  + gBones[i.jnt.z] * i.wgt.z
+                  + gBones[i.jnt.w] * i.wgt.w;
+    float3 p = mul(skin, float4(i.pos, 1.0)).xyz;
+    float3 n = mul((float3x3)skin, i.nrm);
+    float3 t = mul((float3x3)skin, i.tan.xyz);
+
+    VsOut o;
+    float4 wp = mul(gWorld, float4(p, 1.0));
+    o.wpos = wp.xyz;
+    o.sv = mul(gViewProj, wp);
+    o.wnrm = mul((float3x3)gWorld, n);
+    o.wtan = float4(mul((float3x3)gWorld, t), i.tan.w);
     o.uv = i.uv;
     return o;
 }

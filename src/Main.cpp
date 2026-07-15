@@ -17,6 +17,7 @@
 #include "render/IRenderer.h"
 #include "net/Net.h"
 #include "Sound.h"
+#include "Anim.h"
 #include <deque>
 
 using namespace DirectX;
@@ -53,6 +54,7 @@ struct Options
     bool quickMatch = false;     // auto-click FIND MATCH at startup (testing)
     int quickMatchNeed = 2;      // queue size for --quickmatch
     int readyTest = 0;           // toggle ready once at this frame (testing)
+    bool rigTest = false;        // show the animated test rig in the arena
 };
 
 const struct { int w, h; } kResolutions[] = {
@@ -90,6 +92,10 @@ struct App
     int texPalette = -1, texGround = -1, texWall = -1, texWhite = -1;
     // NRA material maps (normal rgb + roughness a)
     int texFlatNRA = -1, texWallNRA = -1, texGroundNRA = -1;
+    // skinned test rig (--rigtest; the same path future rigged units use)
+    SkinnedModel rigModel;
+    AnimPlayer rigAnim;
+    int meshRig = -1, texRig = -1;
 
     // game
     GameState game;
@@ -394,6 +400,7 @@ Options ParseOptions(const std::string& cmd)
         o.quickMatchNeed = atoi(v.c_str());
     if (!(v = GetArg(cmd, "--readytest=")).empty()) o.readyTest = atoi(v.c_str());
     if (!(v = GetArg(cmd, "--bounces=")).empty()) gDebugBounces = atoi(v.c_str());
+    o.rigTest = cmd.find("--rigtest") != std::string::npos;
     if (!(v = GetArg(cmd, "--winsize=")).empty())
         sscanf_s(v.c_str(), "%dx%d", &o.winW, &o.winH);
     return o;
@@ -1157,6 +1164,20 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
         float sdz = pz - g.projSpawnPos[i].z;
         ro.deformDist = sqrtf(sdx * sdx + sdz * sdz) / kRocketLenScale;
         ro.deformAge = float(g.time - g.projSpawnTime[i]);
+        frame.objects.push_back(ro);
+    }
+
+    // animated test rig (--rigtest): posed on the CPU, skinned on the GPU
+    if (g.meshRig >= 0 && g.rigModel.valid)
+    {
+        frame.palettes.emplace_back();
+        g.rigAnim.Pose(frame.palettes.back());
+        RenderObject ro{ g.meshRig,
+                         g.texRig >= 0 ? g.texRig : g.texWhite,
+                         Store(XMMatrixScaling(2.0f, 2.0f, 2.0f)
+                               * XMMatrixTranslation(5.0f, 0.0f, -8.0f)),
+                         { 0.75f, 0.85f, 0.6f, 0 }, true };
+        ro.paletteIndex = int(frame.palettes.size()) - 1;
         frame.objects.push_back(ro);
     }
 
@@ -2345,6 +2366,25 @@ bool CreateAssets()
     g.texFlatNRA = r->CreateTexture(flatNRA.rgba.data(), flatNRA.width, flatNRA.height);
     ImageData icons = MakeIconAtlas(32, UpgradePoolSize);
     g.texIconAtlas = r->CreateTexture(icons.rgba.data(), icons.width, icons.height);
+
+    // skinned test rig (also the template for future rigged units)
+    if (g.opt.rigTest)
+    {
+        g.rigModel = LoadSkinnedGLB("assets/test_rig.glb");
+        if (g.rigModel.valid)
+        {
+            g.meshRig = r->CreateSkinnedMesh(g.rigModel.verts.data(),
+                                             g.rigModel.verts.size(),
+                                             g.rigModel.indices.data(),
+                                             g.rigModel.indices.size());
+            if (g.rigModel.texture.width > 0)
+                g.texRig = r->CreateTexture(g.rigModel.texture.rgba.data(),
+                                            g.rigModel.texture.width,
+                                            g.rigModel.texture.height);
+            g.rigAnim.model = &g.rigModel;
+            g.rigAnim.Play(0, true);
+        }
+    }
     return g.meshHull >= 0 && g.meshTurret >= 0 && g.texPalette >= 0;
 }
 
@@ -3200,6 +3240,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             snd::SetEngine(intensity);
             snd::SetTurn(turn);
             snd::Update(g.frameDt);
+            if (g.rigModel.valid)
+                g.rigAnim.Update(g.frameDt);
         }
 
         g.renderer->RenderFrame(frame);
