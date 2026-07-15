@@ -115,13 +115,16 @@ struct App
         bool active = false;
         float x = 0, y = 0, z = 0, yaw = 0, speed = 0, life = 0;
         int bounces = 0;
+        int matchedSlot = -1;   // confirmed server twin (veiled while we live)
         double born = 0;
         XMFLOAT3 spawn{};
     };
     ProvRocket provRockets[8];
     float predCooldown = 0;                    // client-side reload prediction
-    float projErrX[MaxProjectiles]{};          // provisional -> server handoff
-    float projErrZ[MaxProjectiles]{};          //  offsets (decay like predErr)
+    // Own rockets render 100% locally for their whole flight: the confirmed
+    // server twin is VEILED (never drawn) and only supplies authority -- when
+    // it dies, the provisional dies and the explosion plays. No corrections.
+    int projVeiledBy[MaxProjectiles];          // provisional index or -1
     bool projMatchedProv[MaxProjectiles]{};    // skip double sound/record
     // quick match state
     bool searching = false;              // lobby search in flight
@@ -509,31 +512,31 @@ void ApplySnapshot(const net::MsgSnapshot& s)
         pr.x = in.x; pr.y = in.y; pr.z = in.z; pr.yaw = in.yaw;
     }
 
-    // Predicted-fire handoff: a server rocket appearing for the first time
-    // near a provisional IS that provisional confirmed. The slot adopts the
-    // provisional's spawn record (deform continuity) and a decaying render
-    // offset bridges the position difference; the provisional disappears.
+    // Predicted-fire confirmation: a server rocket appearing for the first
+    // time near a provisional IS that provisional. The slot gets VEILED --
+    // the provisional keeps rendering with pure local physics for its whole
+    // flight (zero corrections); the veiled slot only supplies authority.
     for (int i = 0; i < MaxProjectiles; ++i)
     {
         bool isNew = s.projectiles[i].active
                   && !g.snapPrev.projectiles[i].active;
         if (!isNew)
             continue;
-        for (auto& pv : g.provRockets)
+        for (int pv = 0; pv < 8; ++pv)
         {
-            if (!pv.active)
+            App::ProvRocket& p = g.provRockets[pv];
+            if (!p.active || p.matchedSlot >= 0)
                 continue;
-            float dx = pv.x - s.projectiles[i].x;
-            float dz = pv.z - s.projectiles[i].z;
+            float dx = p.x - s.projectiles[i].x;
+            float dz = p.z - s.projectiles[i].z;
             if (dx * dx + dz * dz > 9.0f
-                || fabsf(WrapAngle(pv.yaw - s.projectiles[i].yaw)) > 0.5f)
+                || fabsf(WrapAngle(p.yaw - s.projectiles[i].yaw)) > 0.5f)
                 continue;
-            g.projErrX[i] = std::clamp(dx, -3.0f, 3.0f);
-            g.projErrZ[i] = std::clamp(dz, -3.0f, 3.0f);
-            g.projSpawnPos[i] = pv.spawn;
-            g.projSpawnTime[i] = pv.born;
+            p.matchedSlot = i;
+            g.projVeiledBy[i] = pv;
+            g.projSpawnPos[i] = p.spawn;   // in case the slot ever unveils
+            g.projSpawnTime[i] = p.born;
             g.projMatchedProv[i] = true;   // skip the rising-edge sound/record
-            pv.active = false;
             break;
         }
     }
@@ -783,7 +786,16 @@ void UpdateVfxFromSim()
     {
         const Projectile& pr = g.game.projectiles[i];
         if (g.prevProjActive[i] && !pr.active && InSession())
+        {
             SpawnExplosion(g.prevProjPos[i]);
+            // authority: the veiled server twin died, so our locally rendered
+            // provisional dies with it (the explosion above is the boom)
+            if (g.projVeiledBy[i] >= 0)
+            {
+                g.provRockets[g.projVeiledBy[i]].active = false;
+                g.projVeiledBy[i] = -1;
+            }
+        }
         if (!g.prevProjActive[i] && pr.active && InSession())
         {
             if (g.projMatchedProv[i])
@@ -801,8 +813,6 @@ void UpdateVfxFromSim()
                 g.projSpawnTime[i] = g.time;
             }
         }
-        if (!pr.active)
-            g.projErrX[i] = g.projErrZ[i] = 0;   // slot freed: offset dies
         g.prevProjActive[i] = pr.active;
         if (pr.active)
             g.prevProjPos[i] = XMFLOAT3(pr.x, pr.y, pr.z);
@@ -843,7 +853,7 @@ void ResetNetSimState()
     for (auto& pv : g.provRockets) pv.active = false;
     for (int i = 0; i < MaxProjectiles; ++i)
     {
-        g.projErrX[i] = g.projErrZ[i] = 0;
+        g.projVeiledBy[i] = -1;
         g.projMatchedProv[i] = false;
     }
     for (auto& a : g.cardAnims) a.active = false;
@@ -1106,6 +1116,8 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
         const Projectile& pr = g.game.projectiles[i];
         if (!pr.active)
             continue;
+        if (g.projVeiledBy[i] >= 0)
+            continue;   // our provisional renders this rocket, never the slot
         float px = pr.x, py = pr.y, pz = pr.z;
         if (clientMode)
         {
@@ -1128,10 +1140,6 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
             py = a.y + (pr.y - a.y) * g.tickAlpha;
             pz = a.z + (pr.z - a.z) * g.tickAlpha;
         }
-        // predicted-fire handoff offset glides the confirmed server rocket
-        // from where the provisional was to its true position
-        px += g.projErrX[i];
-        pz += g.projErrZ[i];
         // rockets render larger than sim size for readability; the deform
         // shader works in local units, so distance is mapped back through
         // the LENGTH scale (the "pipe" follows the rocket's physical length).
@@ -2851,6 +2859,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                                 continue;
                             XMFLOAT3 mz = g.game.MuzzleWorld(me);
                             pv.active = true;
+                            pv.matchedSlot = -1;
                             pv.x = mz.x; pv.y = mz.y; pv.z = mz.z;
                             pv.yaw = local.turretYaw;
                             pv.speed = me.stats[int(Stat::ProjSpeed)];
@@ -2865,32 +2874,36 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                         }
                     }
                 }
-                // advance provisional rockets (visual-only physics); a
-                // provisional that outlives its match window vanished on the
-                // server (rejected fire) and quietly expires
+                // advance provisional rockets (pure local physics, full
+                // flight). Unmatched past the window = the server rejected
+                // the fire: expire quietly. If OUR physics end it first
+                // (rare drift), unveil the twin so the tail is server-drawn.
                 for (auto& pv : g.provRockets)
                 {
                     if (!pv.active)
                         continue;
-                    if (!AdvanceProvRocket(pv) || g.time - pv.born > 0.7)
+                    bool aliveLocal = AdvanceProvRocket(pv);
+                    bool expired = pv.matchedSlot < 0 && g.time - pv.born > 0.7;
+                    if (!aliveLocal || expired)
+                    {
+                        if (pv.matchedSlot >= 0
+                            && g.projVeiledBy[pv.matchedSlot] >= 0)
+                            g.projVeiledBy[pv.matchedSlot] = -1;
+                        pv.matchedSlot = -1;
                         pv.active = false;
+                    }
                 }
             }
         }
         QueryPerformanceCounter(&dbgC);
         g.tickAlpha = float(accumulator / TickDt);
 
-        // glide the reconciliation-error render offsets to zero (~80 ms)
+        // glide the reconciliation-error render offset to zero (~80 ms)
         {
             float k = 1.0f - expf(-g.frameDt * 12.0f);
             g.predErrX -= g.predErrX * k;
             g.predErrZ -= g.predErrZ * k;
             g.predErrYaw -= g.predErrYaw * k;
-            for (int i = 0; i < MaxProjectiles; ++i)
-            {
-                g.projErrX[i] -= g.projErrX[i] * k;
-                g.projErrZ[i] -= g.projErrZ[i] * k;
-            }
         }
 
         // Camera: smooth-follow of the tank's *interpolated* render position.
