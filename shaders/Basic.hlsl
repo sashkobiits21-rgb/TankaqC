@@ -56,30 +56,40 @@ VsOut VSMesh(VsIn i)
         // the exit plane sweeps slower than travel (x0.6) so the extrusion
         // reads as jello squeezing out over ~1.7 rocket lengths
         float zExit = 0.5 - d * 0.6;
+        // everything is released by the PLANE passing it (smooth, per-vertex);
+        // this factor only retires the residual bulge once the plane has
+        // cleared the tail entirely -- no distance-window pop
+        float pipeActive = smoothstep(-0.62, -0.45, zExit);
 
-        // jello out of a pipe: the part still inside is squeezed hard to the
-        // bore, with a pronounced bulge right where it is squeezing out
-        float emerging = 1.0 - smoothstep(1.45, 1.75, d);
-        float inside = (1.0 - smoothstep(zExit - 0.12, zExit + 0.08, p.z))
-                     * emerging;
+        // all weights from the undeformed z
+        float zi = p.z;
+
+        // jello out of a pipe: vertices still behind the exit plane squeeze
+        // to the bore, with a bulge riding the plane itself
+        float inside = (1.0 - smoothstep(zExit - 0.12, zExit + 0.08, zi))
+                     * pipeActive;
         float radial = lerp(1.0, 0.45, inside);
-        radial *= 1.0 + exp(-abs(p.z - zExit) * 6.0) * 0.55
-                        * step(0.02, d) * emerging;
+        radial *= 1.0 + exp(-abs(zi - zExit) * 6.0) * 0.55
+                        * step(0.02, d) * pipeActive;
 
-        // longitudinally compressed in proportion to how much is unexited
-        float fin = saturate(zExit + 0.5);
+        // longitudinal compression ANCHORED AT THE NOSE: the emerged front
+        // holds its shape while the unexited rear stays compressed and
+        // relaxes rearward as the plane frees it (nose never wobbles)
+        float fin = saturate(zExit + 0.5);        // fraction still in pipe
         float squash = 1.0 - 0.42 * fin;
+        p.z = 0.5 - (0.5 - zi) * squash;
 
-        // spring: once free, a decaying stretch/compress ring-down along the
-        // travel axis, radially counter-scaled like a squeezed spring
+        // spring: tail-weighted decaying ring-down. Only the rear -- the part
+        // that left the barrel last -- oscillates; weight fades to zero at
+        // the nose so the front flies clean.
         float freed = smoothstep(1.5, 1.9, d);
-        float osc = sin(age * 18.0) * exp(-age * 3.5) * 0.45 * freed;
+        float osc = sin(age * 18.0) * exp(-age * 3.5) * freed;
+        float tailW = saturate((0.30 - zi) / 0.80);   // 0 nose, 1 tail
+        p.z -= osc * 0.22 * tailW;
+        radial *= 1.0 + osc * 0.35 * tailW;           // counter-bulge
 
-        float sz = squash * (1.0 + osc);
-        float sr = radial * (1.0 - 0.55 * osc);
-        p.z *= sz;
-        p.xy *= sr;
-        n = normalize(float3(n.xy / max(sr, 0.05), n.z / max(sz, 0.05)));
+        p.xy *= radial;
+        n = normalize(float3(n.xy / max(radial, 0.05), n.z));
     }
 
     float4 wp = mul(gWorld, float4(p, 1.0));

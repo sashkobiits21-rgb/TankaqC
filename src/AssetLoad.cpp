@@ -1,6 +1,7 @@
 #include "AssetLoad.h"
 #include "Game.h"
 #include "Log.h"
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -225,8 +226,8 @@ MeshData MakeRocket()
 {
     MeshData m;
     constexpr int kSides = 12;
-    // profile rings: (z, radius)
-    const float prof[][2] = {
+    // key profile points: (z, radius)
+    const float key[][2] = {
         { -0.50f, 0.055f },   // exhaust lip
         { -0.44f, 0.060f },
         { -0.44f, 0.095f },   // tail step
@@ -234,7 +235,24 @@ MeshData MakeRocket()
         {  0.14f, 0.130f },   // body end
         {  0.50f, 0.0f },     // nose tip
     };
-    constexpr int kRings = int(sizeof(prof) / sizeof(prof[0]));
+    constexpr int kKeys = int(sizeof(key) / sizeof(key[0]));
+    // Subdivide long segments (max ring gap ~0.075): the squish/spring vertex
+    // deformation needs intermediate rings to bend at the exit plane --
+    // without them the traveling bulge quantizes into visible pops.
+    std::vector<std::array<float, 2>> prof;
+    for (int k = 0; k < kKeys - 1; ++k)
+    {
+        float dz = key[k + 1][0] - key[k][0];
+        int steps = std::max(1, int(ceilf(fabsf(dz) / 0.075f)));
+        for (int s = 0; s < steps; ++s)
+        {
+            float t = float(s) / steps;
+            prof.push_back({ key[k][0] + dz * t,
+                             key[k][1] + (key[k + 1][1] - key[k][1]) * t });
+        }
+    }
+    prof.push_back({ key[kKeys - 1][0], key[kKeys - 1][1] });
+    const int kRings = int(prof.size());
 
     for (int ring = 0; ring < kRings; ++ring)
     {
