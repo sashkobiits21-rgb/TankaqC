@@ -11,7 +11,10 @@ namespace tankaq::net
 // stats no longer changes the protocol.
 // v10: boost (SHIFT) -- BtnBoost input bit + quantized fuel/regen-wait in
 // PlayerNet so prediction replay rebases the fuel state.
-constexpr uint8_t ProtocolVersion = 10;
+// v11: class system -- no wire change, but upgrade indices remap (soldier +
+// bouncy families), and upgrades replicate by pool index, so mixed-version
+// peers must be rejected.
+constexpr uint8_t ProtocolVersion = 11;
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t

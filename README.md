@@ -89,10 +89,20 @@ Drive the hull with WASD, aim the turret with the mouse, shoot your friends.
   both across several stats, tradeoffs included). Finals are rebuilt from scratch as
   `final = (base + sum(amounts)) * product(factors)` — additions/subtractions first,
   then multiplications/divisions — with the two accumulation maps stored as flat
-  Stat-indexed arrays. The host recalculates every 8 ticks and on every purchase;
-  the server runs at 64 tick. Final stats replicate in snapshots so client
-  prediction integrates the exact host values.
-- **Offer conveyor** (`TAB`) — players start with zero offers; a random one (rarity-
+  Stat-indexed arrays. The host recalculates every 8 ticks and on every purchase.
+  Stats never touch the wire: owned upgrades replicate as reliable events
+  (protocol v9) and every peer re-derives stats with the identical RecalcStats,
+  so hundreds of stats cost zero bandwidth.
+- **Classes** — a CLASS rarity band (teal, rolled between rare and epic) keeps
+  exotic content out of the base pool: class-locked upgrades are only offered
+  after buying that class's card, the card immediately grants the class's base
+  upgrade (as a real owned copy, replicated as a second upgrade event), and a
+  player holds at most 2 classes. Current classes: **SOLDIER** (summon stats:
+  speed / damage / health / fire rate / max count / spawn cooldown) and
+  **BOUNCY** (wall-bounce count plus per-ricochet damage and speed multipliers,
+  baked into each rocket at fire time and applied on every bounce — including
+  the client's provisional rockets).
+- **Supply line** (`TAB`) — players start with zero offers; a random one (rarity-
   weighted, no cap, cost +25%/copy owned) arrives every 5 s at slot 0 of a 2x3
   panel, pushing the rest along like a conveyor; every card's position lerps to its
   new slot. Icons are real images from an atlas texture (generated pixel-art by
@@ -102,7 +112,10 @@ Drive the hull with WASD, aim the turret with the mouse, shoot your friends.
   through breakable slats on the panel's lower-right border (which shatter into
   spinning, falling debris), flies right at high velocity, bounces off the screen
   edge with a velocity-scaled impulse and spin, and tumbles off-screen. Offers are
-  host-authoritative with rolling ids (protocol v5). `--rich`, `--shoptest`.
+  host-authoritative with rolling ids (protocol v5). A half-transparent strip on
+  the right screen edge shows everything bought (deduped icons with xN counts,
+  hover for descriptions, collapsible via its arrow). `--rich`, `--shoptest`,
+  `--classtest` (headless class-rule test, exit code = failures).
 - **Camera lean** — strafing tilts the camera slightly around Y, forward/back
   pitches around its local X; dt-exponential smoothing with epsilon snaps, targets
   only from held input, so no twitching at rest or near-target.
@@ -115,9 +128,9 @@ Drive the hull with WASD, aim the turret with the mouse, shoot your friends.
 - **Skinned meshes / rigs** — glTF/GLB skins + animations (Blender exports drop
   in): up to 64 bones, 4 influences, multi-part characters with material
   colors, CPU clip sampling with crossfades, GPU palette skinning on both
-  backends including animated shadows. `assets/soldier.glb` is "Soldier" by
-  [Quaternius](https://poly.pizza/m/oAArCNHjFB) (CC-BY 3.0), 24 clips.
-  `--rigtest` shows it running in the arena.
+  backends including animated shadows. `assets/soldier.glb` is "Character
+  Soldier" by [Quaternius](https://poly.pizza/) (CC0), 14 clips. `--rigtest`
+  shows it running in the arena.
 - **Sound** — XAudio2, zero assets: every effect is synthesized at startup
   (square/saw/noise + envelopes + a bitcrush for the low-bit techno style).
   Deep bass shoot + explosion, fire-crackle purchase burn, glass-shard slat
@@ -130,7 +143,7 @@ Drive the hull with WASD, aim the turret with the mouse, shoot your friends.
 - Mouse — aim the turret (world-space cursor aim)
 - Left mouse / `Space` — fire
 - `F5` / `F6` / `F7` — toggle GI / SSAO / shadows
-- `TAB` — upgrade shop, `R` — ready up in the lobby
+- `TAB` — supply line (the upgrade conveyor), `R` — ready up in the lobby
 - `ESC` — pause overlay (resume / settings / leave game); the game keeps
   running behind it — only LEAVE GAME disconnects
 - Join screen accepts typing and `Ctrl+V` paste

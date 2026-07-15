@@ -19,12 +19,26 @@ const float kBaseStats[StatCount] = {
     1.0f,               // BoostFuel: 1 second of boost
     0.4f,               // BoostRegen: fuel/s once regenerating
     1.2f,               // BoostRegenDelay: pause after boosting
+    4.0f,               // SoldierSpeed
+    10.0f,              // SoldierDamage
+    40.0f,              // SoldierHealth
+    1.0f,               // SoldierFireRate: shots/s
+    1.0f,               // SoldierMax: one soldier out at a time
+    10.0f,              // SoldierCooldown: 10 s between spawns
+    1.0f,               // BounceDamage: x1 per ricochet until upgraded
+    1.0f,               // BounceSpeed
 };
 
 int gDebugBounces = 0;   // --bounces=N dev knob (added on top of the stat)
 
 // The pool: mods may mix additive and multiplicative parts, and one upgrade
 // can touch several stats (including tradeoffs).
+//
+// Class-locked entries carry classReq and are only offered to players who own
+// that class's card. Buying a card unlocks the family and immediately grants
+// its base upgrade (grantUpgrade -- keep these indices in sync with the pool).
+constexpr int kIdxRicochet = 12;
+constexpr int kIdxRecruiter = 21;
 #define S(x) Stat::x
 const UpgradeType kUpgradePool[] = {
     { "ENGINE",    "+5% MOVE SPEED",                  0, 30, 0,
@@ -52,9 +66,9 @@ const UpgradeType kUpgradePool[] = {
     { "FIELD KIT", "+15 MAX HP, +0.15 SPEED",         0, 35, 11,
       { { S(MaxHealth), 15, 1 }, { S(MoveSpeed), 0.15f, 1 } }, 2 },
     { "RICOCHET",  "+1 WALL BOUNCE",                  2, 55, 12,
-      { { S(Bounces), 1, 1 } }, 1 },
+      { { S(Bounces), 1, 1 } }, 1, ClassBouncy },
     { "SUPERBALL", "+2 WALL BOUNCES, -15% DAMAGE",    4, 90, 13,
-      { { S(Bounces), 2, 1 }, { S(Damage), 0, 0.85f } }, 2 },
+      { { S(Bounces), 2, 1 }, { S(Damage), 0, 0.85f } }, 2, ClassBouncy },
     { "NITRO TANK", "+0.5s BOOST FUEL",               2, 55, 14,
       { { S(BoostFuel), 0.5f, 1 } }, 1 },
     { "AFTERBURNER", "+20% BOOST SPEED",              3, 70, 15,
@@ -65,8 +79,49 @@ const UpgradeType kUpgradePool[] = {
       { { S(BoostRegenDelay), -0.4f, 1 } }, 1 },
     { "FUEL INJECTION", "+25% FUEL REGEN",            2, 55, 18,
       { { S(BoostRegen), 0, 1.25f } }, 1 },
+    // class cards: no mods of their own -- the granted base upgrade carries
+    // the stats, the card itself is the unlock marker in `owned`
+    { "SOLDIER CLASS", "UNLOCK SOLDIERS +RECRUITER",  RarityClass, 80, 19,
+      {}, 0, ClassNone, ClassSoldier, kIdxRecruiter },
+    { "BOUNCY CLASS", "UNLOCK BOUNCES +RICOCHET",     RarityClass, 80, 20,
+      {}, 0, ClassNone, ClassBouncy, kIdxRicochet },
+    // SOLDIER family
+    { "RECRUITER", "-0.2s & -10% SPAWN TIME",         2, 55, 21,
+      { { S(SoldierCooldown), -0.2f, 0.90f } }, 1, ClassSoldier },
+    { "DOUBLE TIME", "+15% SOLDIER SPEED",            1, 40, 22,
+      { { S(SoldierSpeed), 0, 1.15f } }, 1, ClassSoldier },
+    { "FLAK VEST", "+15 SOLDIER HEALTH",              1, 40, 23,
+      { { S(SoldierHealth), 15, 1 } }, 1, ClassSoldier },
+    { "HOLLOW POINTS", "+25% SOLDIER DAMAGE",         2, 55, 24,
+      { { S(SoldierDamage), 0, 1.25f } }, 1, ClassSoldier },
+    { "RAPID FIRE", "+15% SOLDIER FIRE RATE",         2, 55, 25,
+      { { S(SoldierFireRate), 0, 1.15f } }, 1, ClassSoldier },
+    { "PLATOON",   "+1 MAX SOLDIERS",                 4, 95, 26,
+      { { S(SoldierMax), 1, 1 } }, 1, ClassSoldier },
+    // BOUNCY family (per-ricochet multipliers, multiplicative only)
+    { "RUBBER SHELLS", "+15% DAMAGE PER BOUNCE",      2, 55, 27,
+      { { S(BounceDamage), 0, 1.15f } }, 1, ClassBouncy },
+    { "SLINGSHOT", "+12% SPEED PER BOUNCE",           2, 55, 28,
+      { { S(BounceSpeed), 0, 1.12f } }, 1, ClassBouncy },
 };
 #undef S
+
+bool HasClass(const PlayerState& p, uint8_t cls)
+{
+    for (uint8_t t : p.owned)
+        if (kUpgradePool[t].classGrant == cls)
+            return true;
+    return false;
+}
+
+int CountClasses(const PlayerState& p)
+{
+    int n = 0;
+    for (uint8_t t : p.owned)
+        if (kUpgradePool[t].classGrant != ClassNone)
+            ++n;
+    return n;
+}
 const int UpgradePoolSize = int(sizeof(kUpgradePool) / sizeof(kUpgradePool[0]));
 
 const Obstacle kObstacles[NumObstacles] = {
@@ -154,6 +209,14 @@ void GameState::RecalcStats(int id)
     p.stats[int(Stat::BoostRegen)] = std::max(0.05f, p.stats[int(Stat::BoostRegen)]);
     p.stats[int(Stat::BoostRegenDelay)] =
         std::max(0.0f, p.stats[int(Stat::BoostRegenDelay)]);
+    p.stats[int(Stat::SoldierSpeed)] = std::max(0.5f, p.stats[int(Stat::SoldierSpeed)]);
+    p.stats[int(Stat::SoldierDamage)] = std::max(1.0f, p.stats[int(Stat::SoldierDamage)]);
+    p.stats[int(Stat::SoldierHealth)] = std::max(5.0f, p.stats[int(Stat::SoldierHealth)]);
+    p.stats[int(Stat::SoldierFireRate)] = std::max(0.1f, p.stats[int(Stat::SoldierFireRate)]);
+    p.stats[int(Stat::SoldierMax)] = std::max(1.0f, p.stats[int(Stat::SoldierMax)]);
+    p.stats[int(Stat::SoldierCooldown)] = std::max(0.5f, p.stats[int(Stat::SoldierCooldown)]);
+    p.stats[int(Stat::BounceDamage)] = std::max(0.25f, p.stats[int(Stat::BounceDamage)]);
+    p.stats[int(Stat::BounceSpeed)] = std::max(0.25f, p.stats[int(Stat::BounceSpeed)]);
 }
 
 void GameState::SpawnPlayer(int id)
@@ -224,15 +287,52 @@ void GameState::InsertOffer(int id, const Offer& o)
 void GameState::GenerateOffer(int id)
 {
     PlayerState& p = players[id];
-    // rarity roll: 40/25/18/11/6 %
+
+    // Eligibility: class-locked upgrades need the class owned; class cards
+    // are one-time and capped at kMaxClasses per player.
+    auto eligible = [&](int i)
+    {
+        const UpgradeType& u = kUpgradePool[i];
+        if (u.classGrant != ClassNone)
+        {
+            if (CountClasses(p) >= kMaxClasses)
+                return false;
+            for (uint8_t t : p.owned)
+                if (t == i)
+                    return false;   // never re-offer an owned class card
+        }
+        if (u.classReq != ClassNone && !HasClass(p, u.classReq))
+            return false;
+        return true;
+    };
+
+    // rarity roll: common 36 / uncommon 23 / rare 17 / CLASS 10 / epic 9 /
+    // legendary 5 -- class cards sit between rare and epic as requested
     uint32_t r = NextRand() % 100;
-    int rarity = r < 40 ? 0 : r < 65 ? 1 : r < 83 ? 2 : r < 94 ? 3 : 4;
-    // uniform pick among pool entries of that rarity (fall back to any)
+    int rarity = r < 36 ? 0
+               : r < 59 ? 1
+               : r < 76 ? 2
+               : r < 86 ? RarityClass
+               : r < 95 ? 3 : 4;
+    // uniform pick among eligible pool entries of that rarity; an empty class
+    // band (both classes taken) degrades to rare, any other empty band falls
+    // back to a uniform pick over everything eligible
     int candidates[32];
     int n = 0;
-    for (int i = 0; i < UpgradePoolSize && n < 32; ++i)
-        if (kUpgradePool[i].rarity == rarity)
-            candidates[n++] = i;
+    auto gather = [&](int band)
+    {
+        n = 0;
+        for (int i = 0; i < UpgradePoolSize && n < 32; ++i)
+            if (kUpgradePool[i].rarity == band && eligible(i))
+                candidates[n++] = i;
+    };
+    gather(rarity);
+    if (n == 0 && rarity == RarityClass)
+        gather(2);
+    if (n == 0)
+        for (int i = 0; i < UpgradePoolSize && n < 32; ++i)
+            if (eligible(i))
+                candidates[n++] = i;
     int type = (n > 0) ? candidates[NextRand() % n]
                        : int(NextRand() % UpgradePoolSize);
 
@@ -272,6 +372,12 @@ bool GameState::TryPurchase(int id, int slot)
         return false;
     p.money = uint16_t(p.money - o.cost);
     p.owned.push_back(o.type);
+    // class cards also grant their base upgrade as a real owned copy (it
+    // stacks and prices like any other; the host broadcasts it as a second
+    // upgrade event so client owned lists stay identical)
+    int grant = kUpgradePool[o.type].grantUpgrade;
+    if (grant >= 0)
+        p.owned.push_back(uint8_t(grant));
 
     int prevMax = MaxHealthFor(p);
     RecalcStats(id);
@@ -586,6 +692,8 @@ void GameState::Tick(const InputCmd* inputs)
                 pr.speed = p.stats[int(Stat::ProjSpeed)];
                 pr.damage = int(p.stats[int(Stat::Damage)] + 0.5f);
                 pr.bounces = int(p.stats[int(Stat::Bounces)] + 0.5f);
+                pr.bounceDmg = p.stats[int(Stat::BounceDamage)];
+                pr.bounceSpd = p.stats[int(Stat::BounceSpeed)];
                 p.fireCooldown = p.stats[int(Stat::ReloadTime)];
                 p.muzzleFlash = 0.12f;
                 break;
@@ -614,6 +722,13 @@ void GameState::Tick(const InputCmd* inputs)
         {
             const float r = ProjectileRadius;
             bool dead = false;
+            // BOUNCY class: every ricochet multiplies the rocket's damage and
+            // speed by the owner's per-bounce stats (baked at fire time)
+            auto onBounce = [&pr]()
+            {
+                pr.speed *= pr.bounceSpd;
+                pr.damage = int(float(pr.damage) * pr.bounceDmg + 0.5f);
+            };
 
             if (fabsf(pr.x) > ArenaHalf - r)
             {
@@ -622,6 +737,7 @@ void GameState::Tick(const InputCmd* inputs)
                     float lim = (pr.x > 0) ? ArenaHalf - r : r - ArenaHalf;
                     pr.x = 2.0f * lim - pr.x;      // reflect off the face
                     pr.yaw = WrapAngle(-pr.yaw);
+                    onBounce();
                 }
                 else dead = true;
             }
@@ -632,6 +748,7 @@ void GameState::Tick(const InputCmd* inputs)
                     float lim = (pr.z > 0) ? ArenaHalf - r : r - ArenaHalf;
                     pr.z = 2.0f * lim - pr.z;
                     pr.yaw = WrapAngle(XM_PI - pr.yaw);
+                    onBounce();
                 }
                 else dead = true;
             }
@@ -661,6 +778,7 @@ void GameState::Tick(const InputCmd* inputs)
                             pr.z += (dz > 0 ? penZ : -penZ);
                             pr.yaw = WrapAngle(XM_PI - pr.yaw);
                         }
+                        onBounce();
                     }
                     else dead = true;
                     break;

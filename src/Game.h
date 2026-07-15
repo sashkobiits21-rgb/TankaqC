@@ -78,6 +78,16 @@ enum class Stat : uint8_t
     BoostFuel,        // fuel capacity in seconds of boost
     BoostRegen,       // fuel restored per second (after the delay)
     BoostRegenDelay,  // seconds after boosting before regen starts
+    // SOLDIER class (summon; gameplay entity lands with the summon AI)
+    SoldierSpeed,     // units/s
+    SoldierDamage,    // hit points per soldier shot
+    SoldierHealth,    // hit points per soldier
+    SoldierFireRate,  // soldier shots per second
+    SoldierMax,       // max concurrent soldiers
+    SoldierCooldown,  // seconds between soldier spawns
+    // BOUNCY class: per-ricochet multipliers baked into the rocket at fire
+    BounceDamage,     // damage multiplier applied on every wall bounce
+    BounceSpeed,      // speed multiplier applied on every wall bounce
     Count
 };
 constexpr int StatCount = int(Stat::Count);
@@ -93,19 +103,37 @@ struct StatMod
     float factor = 1.0f;
 };
 
+// ------------------------------------------------------------------ classes
+// Classes keep the pool clean as exotic content lands: class-locked upgrades
+// only enter a player's offers after they buy that class's CARD (its own
+// rarity band, teal). The card immediately grants the class's base upgrade
+// and unlocks the family. A player holds at most kMaxClasses classes.
+constexpr uint8_t ClassNone = 0xFF;
+enum : uint8_t { ClassSoldier = 0, ClassBouncy, ClassCount };
+constexpr int kMaxClasses = 2;
+constexpr int RarityClass = 5;    // rolled between rare and epic
+
 constexpr int MaxModsPerUpgrade = 3;
 struct UpgradeType
 {
     const char* name;
     const char* desc;
-    int rarity;        // 0 common, 1 uncommon, 2 rare, 3 epic, 4 legendary
+    int rarity;        // 0 common, 1 uncommon, 2 rare, 3 epic, 4 legendary,
+                       // 5 class card
     int baseCost;      // grows per owned copy of the same type
     int icon;          // index into the icon atlas
     StatMod mods[MaxModsPerUpgrade];
     int modCount;
+    uint8_t classReq = ClassNone;    // offered only if the class is owned
+    uint8_t classGrant = ClassNone;  // buying this card unlocks the class
+    int grantUpgrade = -1;           // extra upgrade granted with this card
 };
 extern const UpgradeType kUpgradePool[];
 extern const int UpgradePoolSize;
+
+struct PlayerState;
+bool HasClass(const PlayerState& p, uint8_t cls);
+int CountClasses(const PlayerState& p);
 
 // ------------------------------------------------------------------ offers
 // Each player runs a conveyor of up to 6 offers; a new random one arrives
@@ -176,6 +204,8 @@ struct Projectile
     float speed = ProjectileSpeed;   // host-side, baked from owner upgrades
     int damage = ProjectileDamage;
     int bounces = 0;                 // wall bounces left (baked at fire time)
+    float bounceDmg = 1.0f;          // damage multiplier per ricochet (baked)
+    float bounceSpd = 1.0f;          // speed multiplier per ricochet (baked)
 };
 
 struct Obstacle

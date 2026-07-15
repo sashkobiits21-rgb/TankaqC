@@ -50,6 +50,7 @@ struct Options
     bool fullscreen = false;
     bool rich = false;                                  // start with 500 credits
     bool shopTest = false;                              // auto-open + auto-buy (testing)
+    bool classTest = false;                             // headless class-rule test
     int pauseTest = 0;           // 1 = force-pause at frame 200, 2 = + settings
     bool quickMatch = false;     // auto-click FIND MATCH at startup (testing)
     int quickMatchNeed = 2;      // queue size for --quickmatch
@@ -125,6 +126,7 @@ struct App
     {
         bool active = false;
         float x = 0, y = 0, z = 0, yaw = 0, speed = 0, life = 0;
+        float bounceSpd = 1.0f;   // per-ricochet speed multiplier (baked)
         int bounces = 0;
         int matchedSlot = -1;   // confirmed server twin (veiled while we live)
         double born = 0;
@@ -225,6 +227,10 @@ struct App
     int shopTestOffersForced = 0;
     int texIconAtlas = -1;
 
+    // owned-items strip (right edge): half-transparent, collapsible
+    bool ownedRowHidden = false;
+    float ownedArrowRect[4]{};   // x, y, w, h (w = 0 when not drawn)
+
     // camera lean (movement game feel)
     float camYawLean = 0, camPitchLean = 0;
     uint64_t frameCounter = 0;
@@ -263,6 +269,7 @@ bool AdvanceProvRocket(App::ProvRocket& pr)
         float lim = (pr.x > 0) ? ArenaHalf - r : r - ArenaHalf;
         pr.x = 2.0f * lim - pr.x;
         pr.yaw = WrapAngle(-pr.yaw);
+        pr.speed *= pr.bounceSpd;   // BOUNCY: mirror the host's per-bounce speed
     }
     if (fabsf(pr.z) > ArenaHalf - r)
     {
@@ -270,6 +277,7 @@ bool AdvanceProvRocket(App::ProvRocket& pr)
         float lim = (pr.z > 0) ? ArenaHalf - r : r - ArenaHalf;
         pr.z = 2.0f * lim - pr.z;
         pr.yaw = WrapAngle(XM_PI - pr.yaw);
+        pr.speed *= pr.bounceSpd;
     }
     for (const Obstacle& o : kObstacles)
     {
@@ -284,6 +292,7 @@ bool AdvanceProvRocket(App::ProvRocket& pr)
         float penZ = ez - fabsf(dz);
         if (penX < penZ) { pr.x += (dx > 0 ? penX : -penX); pr.yaw = WrapAngle(-pr.yaw); }
         else { pr.z += (dz > 0 ? penZ : -penZ); pr.yaw = WrapAngle(XM_PI - pr.yaw); }
+        pr.speed *= pr.bounceSpd;
         break;
     }
     return true;
@@ -406,9 +415,136 @@ Options ParseOptions(const std::string& cmd)
     if (!(v = GetArg(cmd, "--readytest=")).empty()) o.readyTest = atoi(v.c_str());
     if (!(v = GetArg(cmd, "--bounces=")).empty()) gDebugBounces = atoi(v.c_str());
     o.rigTest = cmd.find("--rigtest") != std::string::npos;
+    o.classTest = cmd.find("--classtest") != std::string::npos;
     if (!(v = GetArg(cmd, "--winsize=")).empty())
         sscanf_s(v.c_str(), "%dx%d", &o.winW, &o.winH);
     return o;
+}
+
+// --classtest: deterministic, headless exercise of the class-card rules
+// against the raw sim (no window, no RNG luck). Logs PASS/FAIL per rule.
+int RunClassTest()
+{
+    GameState gs{};
+    gs.SpawnPlayer(0);
+    PlayerState& p = gs.players[0];
+    int fails = 0;
+    auto check = [&](bool ok, const char* what)
+    {
+        Log("classtest %s: %s", ok ? "PASS" : "FAIL", what);
+        if (!ok) ++fails;
+    };
+    auto freeConveyor = [&]()   // clear burn holds so offers insert directly
+    {
+        for (Offer& o : p.offers) o = Offer{};
+        p.pendingOffers.clear();
+    };
+    auto rollTypes = [&](int rolls, bool& lockedSeen, bool& cardSeen,
+                         bool& demoLockedSeen)
+    {
+        lockedSeen = cardSeen = demoLockedSeen = false;
+        for (int i = 0; i < rolls; ++i)
+        {
+            freeConveyor();
+            gs.GenerateOffer(0);
+            const UpgradeType& u = kUpgradePool[p.offers[0].type];
+            if (u.classReq != ClassNone && !HasClass(p, u.classReq))
+                lockedSeen = true;
+            if (u.classReq == ClassBouncy)
+                demoLockedSeen = true;
+            if (u.classGrant != ClassNone)
+                cardSeen = true;
+        }
+    };
+
+    bool locked, card, demo;
+    rollTypes(400, locked, card, demo);
+    check(!locked, "no class-locked upgrade offered before owning a class");
+    check(card, "class cards do appear in the offer stream");
+
+    // buy the SOLDIER card through the real purchase path
+    int soldierIdx = -1, bouncyIdx = -1;
+    for (int i = 0; i < UpgradePoolSize; ++i)
+    {
+        if (kUpgradePool[i].classGrant == ClassSoldier) soldierIdx = i;
+        if (kUpgradePool[i].classGrant == ClassBouncy) bouncyIdx = i;
+    }
+    freeConveyor();
+    p.money = 999;
+    Offer o;
+    o.active = OfferActive; o.id = 1; o.type = uint8_t(soldierIdx); o.cost = 80;
+    gs.InsertOffer(0, o);
+    check(gs.TryPurchase(0, 0), "SOLDIER card purchase succeeds");
+    check(p.owned.size() == 2, "card grants its base upgrade (owned == 2)");
+    check(fabsf(p.stats[int(Stat::SoldierCooldown)] - 8.82f) < 1e-3f,
+          "granted RECRUITER applied add-first-mult-last ((10-0.2)*0.9)");
+    check(HasClass(p, ClassSoldier) && CountClasses(p) == 1,
+          "class ownership derived from owned list");
+
+    // soldier-locked upgrades now offered; bouncy still locked; the owned
+    // card never re-offered
+    bool soldierSeen = false, cardAgain = false;
+    for (int i = 0; i < 600; ++i)
+    {
+        freeConveyor();
+        gs.GenerateOffer(0);
+        const UpgradeType& u = kUpgradePool[p.offers[0].type];
+        if (u.classReq == ClassSoldier) soldierSeen = true;
+        if (u.classReq == ClassBouncy && !HasClass(p, ClassBouncy))
+            demo = true;
+        if (p.offers[0].type == soldierIdx) cardAgain = true;
+    }
+    check(soldierSeen, "soldier-locked upgrades offered after unlock");
+    check(!demo, "bouncy-locked upgrades still gated");
+    check(!cardAgain, "owned class card never re-offered");
+
+    // second class, then the cap: no class card may ever appear again
+    freeConveyor();
+    p.money = 999;
+    o.id = 2; o.type = uint8_t(bouncyIdx);
+    gs.InsertOffer(0, o);
+    check(gs.TryPurchase(0, 0), "BOUNCY card purchase succeeds");
+    check(fabsf(p.stats[int(Stat::Bounces)] - 1.0f) < 1e-4f,
+          "granted RICOCHET applied (1 bounce)");
+    check(CountClasses(p) == kMaxClasses, "two classes owned");
+    bool cardAfterCap = false, bouncySeen = false;
+    for (int i = 0; i < 600; ++i)
+    {
+        freeConveyor();
+        gs.GenerateOffer(0);
+        const UpgradeType& u = kUpgradePool[p.offers[0].type];
+        if (u.classGrant != ClassNone) cardAfterCap = true;
+        if (u.classReq == ClassBouncy) bouncySeen = true;
+    }
+    check(!cardAfterCap, "no class card offered at the 2-class cap");
+    check(bouncySeen, "bouncy-locked upgrades offered after unlock");
+
+    // per-bounce multipliers: a fired rocket ricochets once and both its
+    // speed and damage scale by the baked stats
+    {
+        p.owned.push_back(27);   // RUBBER SHELLS x1.15 dmg per bounce
+        p.owned.push_back(28);   // SLINGSHOT     x1.12 spd per bounce
+        gs.RecalcStats(0);
+        Projectile pr{};
+        pr.active = true; pr.owner = 0;
+        pr.x = ArenaHalf - 0.2f; pr.z = 0; pr.y = 0.17f;
+        pr.yaw = XM_PI * 0.5f;   // heading +X into the wall
+        pr.life = 1.0f; pr.speed = 10.0f; pr.damage = 100; pr.bounces = 1;
+        pr.bounceDmg = p.stats[int(Stat::BounceDamage)];
+        pr.bounceSpd = p.stats[int(Stat::BounceSpeed)];
+        gs.projectiles[0] = pr;
+        gs.phase = PhasePlaying;
+        gs.matchEndTick = gs.tick + 100000;
+        InputCmd idle[MaxPlayers]{};
+        for (int t = 0; t < 8; ++t) gs.Tick(idle);
+        const Projectile& out = gs.projectiles[0];
+        check(out.active && out.bounces == 0, "test rocket ricocheted once");
+        check(fabsf(out.speed - 11.2f) < 1e-3f, "SLINGSHOT speed applied on bounce");
+        check(out.damage == 115, "RUBBER SHELLS damage applied on bounce");
+    }
+
+    Log("classtest done: %d failure(s)", fails);
+    return fails;
 }
 
 void ApplySnapshot(const net::MsgSnapshot& s)
@@ -751,6 +887,12 @@ InputCmd BuildLocalInput()
         && g.mouseX <= g.shopPanel[0] + g.shopPanel[2]
         && g.mouseY >= g.shopPanel[1]
         && g.mouseY <= g.shopPanel[1] + g.shopPanel[3])
+        fire = false;
+    // ...or on the owned-strip collapse arrow
+    if (g.ownedArrowRect[2] > 0 && g.mouseX >= g.ownedArrowRect[0]
+        && g.mouseX <= g.ownedArrowRect[0] + g.ownedArrowRect[2]
+        && g.mouseY >= g.ownedArrowRect[1]
+        && g.mouseY <= g.ownedArrowRect[1] + g.ownedArrowRect[3])
         fire = false;
     if (fire) in.buttons |= BtnFire;
     if (g.keys[VK_SHIFT]) in.buttons |= BtnBoost;   // boost: 2x speed on fuel
@@ -1294,12 +1436,13 @@ void AddIconQuad(FrameData& frame, int icon, float cx, float cy, float half,
     frame.uiTex.push_back(v[0]); frame.uiTex.push_back(v[2]); frame.uiTex.push_back(v[3]);
 }
 
-static const UiColor kRarityCol[5] = {
+static const UiColor kRarityCol[6] = {
     { 0.35f, 0.37f, 0.35f, 0.96f },   // common
     { 0.15f, 0.40f, 0.20f, 0.96f },   // uncommon
     { 0.14f, 0.28f, 0.55f, 0.96f },   // rare
     { 0.40f, 0.17f, 0.52f, 0.96f },   // epic
     { 0.62f, 0.35f, 0.10f, 0.96f },   // legendary
+    { 0.07f, 0.44f, 0.47f, 0.96f },   // class card (teal)
 };
 
 constexpr float kCardW = 150, kCardH = 96, kCardGap = 10, kShopHeader = 34;
@@ -1379,7 +1522,7 @@ void BuildShop(FrameData& frame)
     g.ui.Rect(px, py, panelW, panelH, { 0.07f, 0.09f, 0.07f, 0.85f });
     DrawShopFrame();
     char buf[96];
-    sprintf_s(buf, "UPGRADES   $ %u", unsigned(me.money));
+    sprintf_s(buf, "SUPPLY LINE   $ %u", unsigned(me.money));
     g.ui.Text(px + 10, py + 9, 2.2f, { 1, 0.95f, 0.6f, 1 }, buf);
 
     // empty sockets
@@ -1535,7 +1678,7 @@ void BuildShop(FrameData& frame)
         float dx = std::max(fx.ox - fx.x, fx.x + fx.w - fx.ox);
         float dy = std::max(fx.oy - fx.y, fx.y + fx.h - fx.oy);
         float maxR = sqrtf(dx * dx + dy * dy) + 8.0f;
-        UiColor bg = kRarityCol[std::clamp(fx.rarity, 0, 4)];
+        UiColor bg = kRarityCol[std::clamp(fx.rarity, 0, 5)];
         UiBurnQuad q{ fx.x, fx.y, fx.w, fx.h, bg.r, bg.g, bg.b, bg.a,
                       fx.ox, fx.oy, progress, maxR };
         frame.uiBurn.push_back(q);
@@ -1619,10 +1762,87 @@ void BuildShop(FrameData& frame)
                          : UiColor{ 1, 0.45f, 0.4f, 1 }, tip);
         int copies = 0;   // owned copies are host-side; show rarity instead
         (void)copies;
-        static const char* rarityNames[5] = { "COMMON", "UNCOMMON", "RARE",
-                                              "EPIC", "LEGENDARY" };
+        static const char* rarityNames[6] = { "COMMON", "UNCOMMON", "RARE",
+                                              "EPIC", "LEGENDARY", "CLASS" };
         g.ui.Text(tx + 10, ty + 74, 1.4f, { 1, 1, 1, 0.6f },
-                  rarityNames[def.rarity]);
+                  rarityNames[std::clamp(def.rarity, 0, 5)]);
+    }
+}
+
+// Owned-items strip: a half-transparent horizontal row of everything bought,
+// anchored to the right screen edge. Icons are deduped with an xN count,
+// hovering shows the card's description, and the (also half-transparent)
+// arrow at the far right collapses the row.
+void BuildOwnedRow(FrameData& frame)
+{
+    g.ownedArrowRect[2] = 0;
+    if (!InSession())
+        return;
+    const PlayerState& me = g.game.players[g.myId];
+    if (me.owned.empty())
+        return;
+
+    // dedupe by type, first-purchase order
+    uint8_t types[64];
+    int counts[64], n = 0;
+    for (uint8_t t : me.owned)
+    {
+        int f = -1;
+        for (int i = 0; i < n; ++i)
+            if (types[i] == t) { f = i; break; }
+        if (f >= 0) ++counts[f];
+        else if (n < 64) { types[n] = t; counts[n] = 1; ++n; }
+    }
+
+    const float tile = 36, gap = 5, arrowW = 16, y = 12;
+    float ax = float(g.width) - 10 - arrowW;
+    g.ownedArrowRect[0] = ax; g.ownedArrowRect[1] = y;
+    g.ownedArrowRect[2] = arrowW; g.ownedArrowRect[3] = tile;
+    bool ah = float(g.mouseX) >= ax && float(g.mouseX) <= ax + arrowW
+           && float(g.mouseY) >= y && float(g.mouseY) <= y + tile;
+    g.ui.Rect(ax, y, arrowW, tile, { 0.10f, 0.12f, 0.10f, ah ? 0.8f : 0.5f });
+    g.ui.Text(ax + 5, y + tile * 0.5f - 6, 1.6f, { 1, 1, 1, ah ? 0.95f : 0.5f },
+              g.ownedRowHidden ? "<" : ">");
+    if (g.ownedRowHidden)
+        return;
+
+    int hoverIdx = -1;
+    float hoverX = 0;
+    float x = ax - gap - tile;
+    for (int i = 0; i < n; ++i, x -= tile + gap)
+    {
+        const UpgradeType& u = kUpgradePool[types[i]];
+        bool hov = float(g.mouseX) >= x && float(g.mouseX) <= x + tile
+                && float(g.mouseY) >= y && float(g.mouseY) <= y + tile;
+        UiColor bg = kRarityCol[std::clamp(u.rarity, 0, 5)];
+        bg.a = hov ? 0.85f : 0.5f;
+        g.ui.Rect(x, y, tile, tile, bg);
+        AddIconQuad(frame, u.icon, x + tile * 0.5f, y + tile * 0.5f, 12,
+                    hov ? 1.0f : 0.55f);
+        if (counts[i] > 1)
+        {
+            char b[8];
+            sprintf_s(b, "x%d", counts[i]);
+            g.ui.Text(x + 2, y + tile - 10, 1.2f,
+                      { 1, 1, 1, hov ? 0.95f : 0.6f }, b);
+        }
+        if (hov) { hoverIdx = i; hoverX = x; }
+    }
+
+    if (hoverIdx >= 0)   // description tooltip under the strip
+    {
+        const UpgradeType& u = kUpgradePool[types[hoverIdx]];
+        const float tw = 250, th = 66;
+        float tx = std::min(hoverX, float(g.width) - tw - 8);
+        float ty = y + tile + 6;
+        g.ui.Rect(tx, ty, tw, th, { 0.05f, 0.06f, 0.05f, 0.94f });
+        g.ui.RectOutline(tx, ty, tw, th, 2,
+                         kRarityCol[std::clamp(u.rarity, 0, 5)]);
+        g.ui.Text(tx + 8, ty + 8, 1.8f, { 1, 1, 1, 1 }, u.name);
+        g.ui.Text(tx + 8, ty + 28, 1.4f, { 0.85f, 0.9f, 0.85f, 1 }, u.desc);
+        char own[24];
+        sprintf_s(own, "OWNED x%d", counts[hoverIdx]);
+        g.ui.Text(tx + 8, ty + 46, 1.3f, { 1, 1, 1, 0.6f }, own);
     }
 }
 
@@ -1638,7 +1858,15 @@ bool HostPurchase(int pid, int slot)
     Log("Purchase: player %d type %d (owned %zu) -> broadcast", pid, int(type),
         g.game.players[pid].owned.size());
     if (g.online)
+    {
         g.net.BroadcastUpgrade(pid, type);
+        // Class cards also granted their base upgrade inside TryPurchase;
+        // replicate it as a second plain upgrade event so every client's
+        // owned list (and its RecalcStats) matches the host exactly.
+        int grant = kUpgradePool[type].grantUpgrade;
+        if (grant >= 0)
+            g.net.BroadcastUpgrade(pid, uint8_t(grant));
+    }
     return true;
 }
 
@@ -1957,13 +2185,14 @@ void BuildHud(FrameData& frame)
     g.ui.Rect(float(g.mouseX) - 1, float(g.mouseY) - 9, 2, 18, { 1, 1, 1, 0.8f });
 
     g.ui.Text(10, float(g.height) - 74, 1.4f, { 1, 1, 1, 0.45f },
-              "WASD drive   SHIFT boost   mouse aim   LMB/space fire   TAB shop   ESC menu");
+              "WASD drive   SHIFT boost   mouse aim   LMB/space fire   TAB supply   ESC menu");
     if (!g.statusLine.empty())
         g.ui.TextCentered(w * 0.5f, float(g.height) - 30, 1.7f, { 1, 0.8f, 0.4f, 0.95f },
                           g.statusLine);
 
     if (g.shopOpen)
         BuildShop(frame);
+    BuildOwnedRow(frame);
 }
 
 std::vector<UiButton> MenuButtons()
@@ -2598,6 +2827,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         g.height = g.opt.winH;
     }
     Log("Tankaq starting. cmdline: %s", cmdUtf8);
+    if (g.opt.classTest)
+        return RunClassTest();   // headless sim test, exit code = failures
 
     g.gpu = DetectGpu(g.opt.renderer);
     if (!g.gpu.adapter)
@@ -3001,6 +3232,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                             pv.yaw = local.turretYaw;
                             pv.speed = me.stats[int(Stat::ProjSpeed)];
                             pv.bounces = int(me.stats[int(Stat::Bounces)] + 0.5f);
+                            pv.bounceSpd = me.stats[int(Stat::BounceSpeed)];
                             pv.life = ProjectileLife;
                             pv.born = g.time;
                             pv.spawn = mz;
@@ -3218,6 +3450,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             {
                 ToggleReady();
             }
+            else if (g.ownedArrowRect[2] > 0
+                     && g.mouseX >= g.ownedArrowRect[0]
+                     && g.mouseX <= g.ownedArrowRect[0] + g.ownedArrowRect[2]
+                     && g.mouseY >= g.ownedArrowRect[1]
+                     && g.mouseY <= g.ownedArrowRect[1] + g.ownedArrowRect[3])
+            {
+                g.ownedRowHidden = !g.ownedRowHidden;
+                snd::Play(snd::Sfx::Click, 0.45f, SndJitter(0.06f));
+            }
             else if (g.shopOpen && g.mouseX >= g.shopPanel[0]
                      && g.mouseX <= g.shopPanel[0] + g.shopPanel[2]
                      && g.mouseY >= g.shopPanel[1]
@@ -3266,7 +3507,21 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             {
                 g.shopTestNextOffer = g.time + 0.45;
                 ++g.shopTestOffersForced;
-                g.game.GenerateOffer(g.myId);   // host-side direct feed
+                if (g.shopTestOffersForced == 1)
+                {
+                    // guaranteed class card first: visual check of the teal
+                    // band + card glyph without relying on the rarity roll
+                    Offer o;
+                    o.active = OfferActive;
+                    o.id = 200;
+                    for (int i = 0; i < UpgradePoolSize; ++i)
+                        if (kUpgradePool[i].classGrant == ClassSoldier)
+                            o.type = uint8_t(i);
+                    o.cost = uint16_t(kUpgradePool[o.type].baseCost);
+                    g.game.InsertOffer(g.myId, o);
+                }
+                else
+                    g.game.GenerateOffer(g.myId);   // host-side direct feed
             }
         }
 

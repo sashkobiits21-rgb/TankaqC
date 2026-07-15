@@ -1120,6 +1120,60 @@ void DrawIconGlyph(IconCanvas& c, int icon)
         c.Fill(9, 3, 12, 6, W); c.Fill(12, 2, 13, 3, W);
         c.Fill(2, 12, 3, 13, D);
         break;
+    case 19: // SOLDIER CLASS: helmet
+        c.Fill(5, 3, 10, 4, W); c.Fill(4, 5, 11, 7, W);        // dome
+        c.Fill(2, 8, 13, 9, W);                                // brim
+        c.Fill(6, 10, 9, 12, W); c.Fill(7, 10, 8, 11, D);      // chin strap
+        break;
+    case 20: // BOUNCY CLASS: ball mid-bounce with arcs
+        c.Fill(6, 3, 9, 3, W); c.Fill(5, 4, 10, 7, W);
+        c.Fill(6, 8, 9, 8, W);
+        c.Fill(2, 10, 4, 10, W); c.Fill(2, 11, 2, 12, W);      // left arc
+        c.Fill(11, 10, 13, 10, W); c.Fill(13, 11, 13, 12, W);  // right arc
+        c.Fill(5, 13, 10, 13, D);                              // ground
+        break;
+    case 21: // RECRUITER: whistle
+        c.Fill(3, 5, 9, 10, W); c.Fill(9, 6, 12, 8, W);        // body + mouth
+        c.Fill(5, 7, 7, 8, D);                                 // pea hole
+        c.Fill(10, 2, 10, 4, W); c.Fill(12, 2, 13, 3, W);      // toots
+        break;
+    case 22: // DOUBLE TIME: boot with speed lines
+        c.Fill(6, 2, 9, 8, W); c.Fill(6, 9, 12, 12, W);        // shaft + foot
+        c.Fill(2, 4, 4, 4, W); c.Fill(2, 7, 4, 7, W);
+        c.Fill(2, 10, 4, 10, W);
+        break;
+    case 23: // FLAK VEST: vest with collar notch and belt
+        c.Fill(3, 2, 5, 3, W); c.Fill(10, 2, 12, 3, W);        // shoulders
+        c.Fill(3, 4, 12, 12, W);
+        c.Fill(7, 2, 8, 5, D);                                 // collar notch
+        c.Fill(5, 8, 10, 9, D);                                // belt
+        break;
+    case 24: // HOLLOW POINTS: bullet, tip notched
+        c.Fill(6, 1, 9, 2, W); c.Fill(5, 3, 10, 9, W);         // tip + case
+        c.Fill(4, 10, 11, 13, W);                              // rim
+        c.Fill(7, 1, 8, 3, D);                                 // hollow tip
+        break;
+    case 25: // RAPID FIRE: stacked muzzle dashes
+        c.Fill(2, 3, 7, 4, W);  c.Fill(9, 3, 11, 4, W);  c.Fill(13, 3, 13, 4, W);
+        c.Fill(2, 7, 7, 8, W);  c.Fill(9, 7, 11, 8, W);  c.Fill(13, 7, 13, 8, W);
+        c.Fill(2, 11, 7, 12, W); c.Fill(9, 11, 11, 12, W); c.Fill(13, 11, 13, 12, W);
+        break;
+    case 26: // PLATOON: three helmets in rank
+        c.Fill(2, 3, 6, 5, W);  c.Fill(1, 6, 7, 6, W);
+        c.Fill(9, 3, 13, 5, W); c.Fill(8, 6, 13, 6, W);
+        c.Fill(5, 9, 10, 11, W); c.Fill(4, 12, 11, 12, W);
+        break;
+    case 27: // RUBBER SHELLS: shell with a zigzag tread
+        c.Fill(6, 2, 9, 3, W); c.Fill(5, 4, 10, 10, W);        // ogive + body
+        c.Fill(4, 11, 11, 12, W);                              // skirt
+        c.Fill(6, 6, 6, 6, D); c.Fill(7, 7, 7, 7, D);          // zigzag
+        c.Fill(8, 6, 8, 6, D); c.Fill(9, 7, 9, 7, D);
+        break;
+    case 28: // SLINGSHOT: Y-frame with band
+        c.Fill(7, 7, 8, 13, W);                                // handle
+        c.Fill(4, 2, 5, 7, W); c.Fill(10, 2, 11, 7, W);        // forks
+        c.Fill(5, 3, 10, 3, D);                                // band
+        break;
     default: // FIELD KIT: wrench
         c.Fill(2, 2, 5, 3, W); c.Fill(2, 5, 5, 6, W); c.Fill(4, 3, 5, 5, W);
         for (int i = 0; i < 8; ++i) c.Fill(5 + i, 4 + i, 6 + i, 5 + i, W);
