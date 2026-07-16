@@ -132,7 +132,8 @@ struct App
     SkinnedModel skullModel;
     std::vector<int> meshSkullParts;
     float skullScale = 1.0f;
-    int texSkull = -1;                         // stays -1 until UVs exist
+    int texSkull = -1;                         // base color (needs UVs)
+    int texSkullNRA = -1;                      // normal+roughness (needs UVs)
     Animator skullAnim[MaxSkulls];             // staggered chomp per slot
     bool prevSkullActive[MaxSkulls]{};         // burst on skull death
     DirectX::XMFLOAT3 prevSkullPos[MaxSkulls]{};

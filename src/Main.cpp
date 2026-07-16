@@ -1137,11 +1137,16 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
                 * XMMatrixTranslation(sx, SkullY + bob, sz);
             for (size_t pi = 0; pi < g.meshSkullParts.size(); ++pi)
             {
+                // textured when the export has UVs, necro-bone tint otherwise
+                XMFLOAT4 tint = g.texSkull >= 0
+                    ? XMFLOAT4{ 1.0f, 1.0f, 1.0f, 0 }
+                    : XMFLOAT4{ 0.85f, 0.95f, 0.72f, 0 };
                 RenderObject ro{ g.meshSkullParts[pi],
                                  g.texSkull >= 0 ? g.texSkull : g.texWhite,
-                                 Store(world),
-                                 { 0.85f, 0.95f, 0.72f, 0 }, true };
+                                 Store(world), tint, true };
                 ro.paletteIndex = paletteIdx;
+                if (g.texSkullNRA >= 0)
+                    ro.texNormal = g.texSkullNRA;
                 frame.objects.push_back(ro);
             }
         }
@@ -1943,7 +1948,26 @@ bool CreateAssets()
                 }
             }
             g.skullScale = 0.62f / mx;   // normalize to gameplay size
-            if (!hasUv)
+            if (hasUv)
+            {
+                // the export carries UVs: bind the authored texture set
+                ImageData col = LoadImageFile(
+                    "assets/Skull/DefaultMaterial_Base_color.png");
+                if (col.width > 0)
+                    g.texSkull = r->CreateTexture(col.rgba.data(),
+                                                  col.width, col.height);
+                ImageData nrm = LoadImageFile(
+                    "assets/Skull/DefaultMaterial_Normal_OpenGL.png");
+                ImageData rgh = LoadImageFile(
+                    "assets/Skull/DefaultMaterial_Specular_roughness.png");
+                ImageData nra = MakeNraFromMaps(nrm, rgh);
+                if (nra.width > 0)
+                    g.texSkullNRA = r->CreateTexture(nra.rgba.data(),
+                                                     nra.width, nra.height);
+                Log("Skull textures bound: color %dx%d, nra %dx%d",
+                    col.width, col.height, nra.width, nra.height);
+            }
+            else
                 Log("Skull.glb has no UVs: textures skipped (re-export with "
                     "UVs checked to enable them)");
             int clip = g.skullModel.FindClip("OpenAndClose");

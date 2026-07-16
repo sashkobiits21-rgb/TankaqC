@@ -1049,6 +1049,52 @@ MeshData MakeRing(float radius, float width, int segments)
     return m;
 }
 
+ImageData LoadImageFile(const std::string& path)
+{
+    ImageData img;
+    int w = 0, h = 0, comp = 0;
+    unsigned char* px = stbi_load(path.c_str(), &w, &h, &comp, 4);
+    if (!px)
+    {
+        Log("Assets: cannot load image %s", path.c_str());
+        return img;
+    }
+    img.width = w;
+    img.height = h;
+    img.rgba.assign(px, px + size_t(w) * h * 4);
+    stbi_image_free(px);
+    return img;
+}
+
+ImageData MakeNraFromMaps(const ImageData& normal, const ImageData& rough)
+{
+    ImageData out;
+    if (normal.width <= 0)
+        return out;
+    out.width = normal.width;
+    out.height = normal.height;
+    out.rgba.resize(size_t(out.width) * out.height * 4);
+    for (int y = 0; y < out.height; ++y)
+        for (int x = 0; x < out.width; ++x)
+        {
+            size_t di = (size_t(y) * out.width + x) * 4;
+            out.rgba[di + 0] = normal.rgba[di + 0];
+            out.rgba[di + 1] = normal.rgba[di + 1];
+            out.rgba[di + 2] = normal.rgba[di + 2];
+            uint8_t r = 128;
+            if (rough.width > 0)
+            {
+                int sx = x * rough.width / out.width;
+                int sy = y * rough.height / out.height;
+                size_t si = (size_t(sy) * rough.width + sx) * 4;
+                // roughness maps are effectively grayscale: take green
+                r = rough.rgba[si + 1];
+            }
+            out.rgba[di + 3] = r;
+        }
+    return out;
+}
+
 MeshData MakeGhostMesh()
 {
     // lathe profile bottom-to-top: wavy hem, skirt, pinched waist,

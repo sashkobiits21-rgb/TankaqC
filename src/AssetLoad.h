@@ -101,6 +101,12 @@ MeshData MakeRing(float radius, float width, int segments);   // flat annulus
 MeshData MakeGhostMesh();   // lathed spook: dome + pinched waist + wavy hem
 MeshData MakePieWedge();    // 15-degree flat sector, radius 1 (countdown fill)
 
+// Image file loading (png/jpg via stb_image); empty ImageData on failure.
+ImageData LoadImageFile(const std::string& path);
+// Combine a tangent-space normal map (rgb) + a roughness map (luminance ->
+// alpha, nearest-resampled to the normal map's size) into one NRA texture.
+ImageData MakeNraFromMaps(const ImageData& normal, const ImageData& rough);
+
 // Procedural textures.
 ImageData MakeGroundTexture(int size);
 ImageData MakeWallTexture(int size);
