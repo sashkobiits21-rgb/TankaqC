@@ -522,6 +522,81 @@ int RunClassTest()
               "blast hits for exactly double the rocket damage");
     }
 
+    // ---- SHIELD PROFICIENCY: raise, slow, deflect, allegiance flip ----
+    {
+        GameState gsh{};
+        gsh.SpawnPlayer(0);   // shieldman
+        gsh.SpawnPlayer(1);   // shooter
+        gsh.phase = PhasePlaying;
+        gsh.matchEndTick = gsh.tick + 100000000u;
+        PlayerState& sm = gsh.players[0];
+        sm.owned.push_back(uint8_t(UpgradeId::ShieldClass));
+        sm.owned.push_back(uint8_t(UpgradeId::WideBarrier));   // card grant
+        gsh.RecalcStats(0);
+        sm.x = 0; sm.z = -24; sm.turretYaw = 0;      // clear lane, facing +Z
+        gsh.players[1].x = 0; gsh.players[1].z = -14;
+        InputCmd cmds[MaxPlayers]{};
+        cmds[0].buttons = BtnAbility1;
+        cmds[0].turretYaw = 0;
+        gsh.Tick(cmds);
+        check(sm.shieldTimer > 3.5f, "pressing 1 raises the 4 s barrier");
+        check(sm.shieldWait > 10.0f, "the cooldown starts on activation");
+        cmds[0].buttons = 0;
+
+        // 35% slow while raised: half a second of reverse along the lane
+        float z0 = sm.z;
+        cmds[0].moveZ = -1.0f;
+        for (int t = 0; t < TickRate / 2; ++t) gsh.Tick(cmds);
+        float moved = fabsf(sm.z - z0);
+        cmds[0].moveZ = 0;
+        check(moved > 1.9f && moved < 2.7f,
+              "the raised shield drives at 65% speed");
+
+        // enemy rocket head-on: deflect, flip, orange, +1 bounce, fly back
+        Projectile pr{};
+        pr.active = true;
+        pr.owner = 1;
+        pr.x = 0; pr.z = -18.0f; pr.y = 0.17f;
+        pr.yaw = XM_PI;              // straight at the shieldman
+        pr.speed = 10.0f;
+        pr.life = 6.0f;
+        pr.damage = 10;
+        pr.bounces = 0;
+        gsh.projectiles[0] = pr;
+        int hpShield = sm.health;
+        int hpShooter = gsh.players[1].health;
+        bool orange = false, flipped = false, bonus = false;
+        for (int t = 0; t < TickRate * 2; ++t)
+        {
+            gsh.Tick(cmds);
+            const Projectile& q = gsh.projectiles[0];
+            if (q.active && q.deflected)
+            {
+                orange = true;
+                flipped |= q.owner == 0;
+                bonus |= q.bounces >= 1;
+            }
+        }
+        check(orange && flipped && bonus,
+              "deflection: orange shell, allegiance flip, +1 bounce");
+        check(sm.health == hpShield,
+              "nothing gets through to the shieldman");
+        check(gsh.players[1].health < hpShooter,
+              "the returned rocket hits its original shooter");
+
+        // let the barrier lapse, then: a press mid-cooldown is refused
+        for (int t = 0; t < TickRate * 2; ++t) gsh.Tick(cmds);
+        cmds[0].buttons = BtnAbility1;
+        gsh.Tick(cmds);
+        check(sm.shieldTimer <= 0.0f && sm.shieldWait > 0.0f,
+              "the ability refuses to fire mid-cooldown");
+        cmds[0].buttons = 0;
+        for (int t = 0; t < TickRate * 10; ++t) gsh.Tick(cmds);
+        cmds[0].buttons = BtnAbility1;
+        gsh.Tick(cmds);
+        check(sm.shieldTimer > 3.5f, "cooled down: the barrier rises again");
+    }
+
     // ---- match length: default 10:00, the host pick sets the horn ----
     {
         GameState g7{};

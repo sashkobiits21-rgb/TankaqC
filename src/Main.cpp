@@ -216,6 +216,8 @@ void ApplySnapshot(const net::MsgSnapshot& s)
             p.hullYaw = in.hullYaw;
             p.turretYaw = in.turretYaw;
             p.possessTimer = in.possess32 / 32.0f;   // ghost-tint on remotes
+            p.shieldTimer = in.shield16 / 16.0f;     // barrier draw on remotes
+            p.shieldWait = in.shieldCd4 / 4.0f;
         }
     }
 
@@ -258,6 +260,7 @@ void ApplySnapshot(const net::MsgSnapshot& s)
     for (int i = 0; i < MaxProjectiles; ++i)
     {
         g.game.projectiles[i].radarRange = s.projectiles[i].radar16 / 16.0f;
+        g.game.projectiles[i].deflected = s.projectiles[i].deflected;
         g.game.projectiles[i].radarRings = s.projectiles[i].radarRings;
         g.game.projectiles[i].radarLockFrac = s.projectiles[i].lock255 / 255.0f;
     }
@@ -304,6 +307,9 @@ void ApplySnapshot(const net::MsgSnapshot& s)
         me.boostRegenWait = own.regenWait32 / 32.0f;
         // ...and possession: the replay drives the same deterministic chaos
         me.possessTimer = own.possess32 / 32.0f;
+        // ...and the shield: replayed activation/slow must match the host
+        me.shieldTimer = own.shield16 / 16.0f;
+        me.shieldWait = own.shieldCd4 / 4.0f;
         while (!g.pendingInputs.empty() && g.pendingInputs.front().seq <= own.ackSeq)
             g.pendingInputs.erase(g.pendingInputs.begin());
         for (const auto& pi : g.pendingInputs)
@@ -395,6 +401,8 @@ net::MsgSnapshot BuildSnapshot()
         out.fuel255 = uint8_t(std::clamp(p.boostFuel / cap, 0.0f, 1.0f) * 255.0f);
         out.regenWait32 = uint8_t(std::min(p.boostRegenWait * 32.0f, 255.0f));
         out.possess32 = uint8_t(std::min(p.possessTimer * 32.0f, 255.0f));
+        out.shield16 = uint8_t(std::min(p.shieldTimer * 16.0f, 255.0f));
+        out.shieldCd4 = uint8_t(std::min(p.shieldWait * 4.0f, 255.0f));
         for (int s = 0; s < NumOfferSlots; ++s)
         {
             out.offers[s].active = p.offers[s].active;
@@ -416,6 +424,7 @@ net::MsgSnapshot BuildSnapshot()
         out.radar16 = uint8_t(std::min(pr.radarRange * 16.0f, 255.0f));
         out.radarRings = uint8_t(pr.radarRings);
         out.lock255 = uint8_t(std::clamp(pr.radarLockFrac, 0.0f, 1.0f) * 255.0f);
+        out.deflected = pr.deflected;
         out.x = pr.x; out.y = pr.y; out.z = pr.z; out.yaw = pr.yaw;
     }
     for (int i = 0; i < MaxSkulls; ++i)
@@ -625,6 +634,7 @@ InputCmd BuildLocalInput()
         fire = false;
     if (fire) in.buttons |= BtnFire;
     if (g.keys[VK_SHIFT]) in.buttons |= BtnBoost;   // boost: 2x speed on fuel
+    if (g.keys['1']) in.buttons |= BtnAbility1;     // ability slot 1: SHIELD
     in.turretYaw = g.aimYaw;
     return in;
 }
@@ -1047,6 +1057,32 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
                         * XMMatrixTranslation(pivWorld.x, pivWorld.y, pivWorld.z);
         frame.objects.push_back({ g.meshTurret, g.texPalette, Store(turret), tint, true });
 
+        // SHIELD barrier: a pale energy lattice riding the turret facing.
+        // See-through by construction (slats + posts), since the scene pass
+        // draws opaque geometry only.
+        if (!dead && p.shieldTimer > 0.0f && g.meshShieldSlat >= 0)
+        {
+            float w2 = p.stats[int(Stat::ShieldWidth)] * 0.5f;
+            float fx = sinf(rTurret), fz = cosf(rTurret);
+            float cx = rx + fx * ShieldDist, cz = rz + fz * ShieldDist;
+            float rgx = cosf(rTurret), rgz = -sinf(rTurret);   // lateral
+            float flick = 0.9f + 0.1f * sinf(float(g.time) * 9.0f + i * 2.3f);
+            XMFLOAT4 glow{ 0.5f * flick, 0.85f * flick, 1.1f * flick, 0.8f };
+            XMMATRIX rot = XMMatrixRotationY(rTurret);
+            const float slatY[3] = { 0.16f, 0.72f, 1.28f };
+            for (float y : slatY)
+                frame.objects.push_back({ g.meshShieldSlat, g.texWhite,
+                    Store(XMMatrixScaling(w2, 1.0f, 1.0f) * rot
+                          * XMMatrixTranslation(cx, y, cz)),
+                    glow, true });
+            for (int sgn = -1; sgn <= 1; sgn += 2)
+                frame.objects.push_back({ g.meshShieldPost, g.texWhite,
+                    Store(rot * XMMatrixTranslation(cx + rgx * w2 * sgn,
+                                                    0.72f,
+                                                    cz + rgz * w2 * sgn)),
+                    glow, true });
+        }
+
         if (p.muzzleFlash > 0 && !dead)
         {
             PlayerState rp = p;
@@ -1099,8 +1135,10 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
         XMMATRIX m = XMMatrixScaling(kRocketScale, kRocketScale, kRocketLenScale)
                    * XMMatrixRotationY(pr.yaw)
                    * XMMatrixTranslation(px, py, pz);
-        RenderObject ro{ g.meshProj, g.texWhite, Store(m),
-                         { 0.16f, 0.14f, 0.11f, 0.30f }, true };
+        XMFLOAT4 shellTint = pr.deflected
+            ? XMFLOAT4{ 1.0f, 0.45f, 0.08f, 0.45f }   // shield-flipped
+            : XMFLOAT4{ 0.16f, 0.14f, 0.11f, 0.30f };
+        RenderObject ro{ g.meshProj, g.texWhite, Store(m), shellTint, true };
         // squish/spring shader inputs: distance from the recorded muzzle
         // position and seconds since fired (see UpdateVfxFromSim tracking)
         float sdx = px - g.projSpawnPos[i].x;
@@ -2024,6 +2062,18 @@ bool CreateAssets()
         MeshData wedge = MakePieWedge();
         g.meshWedge = r->CreateMesh(wedge.verts.data(), wedge.verts.size(),
                                     wedge.indices.data(), wedge.indices.size());
+    }
+
+    // shield barrier lattice pieces (unit slat, scaled per width)
+    {
+        MeshData slat = MakeBox(1.0f, 0.055f, 0.05f, 1.0f);
+        g.meshShieldSlat = r->CreateMesh(slat.verts.data(), slat.verts.size(),
+                                         slat.indices.data(),
+                                         slat.indices.size());
+        MeshData post = MakeBox(0.07f, 0.72f, 0.07f, 1.0f);
+        g.meshShieldPost = r->CreateMesh(post.verts.data(), post.verts.size(),
+                                         post.indices.data(),
+                                         post.indices.size());
     }
 
     // grenade prop (FRAG PACK): CC0 "Frag Grenade West" by Pichuliru
@@ -3070,6 +3120,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                     g.game.RecalcStats(g.myId);
                     Log("demo: granted SOLDIER class + FRAG PACK");
                 }
+                else if (g.opt.demoClass == "shield")
+                {
+                    PlayerState& me = g.game.players[g.myId];
+                    me.owned.push_back(uint8_t(UpgradeId::ShieldClass));
+                    me.owned.push_back(uint8_t(UpgradeId::WideBarrier));
+                    g.game.RecalcStats(g.myId);
+                    Log("demo: granted SHIELD class");
+                }
                 if (!g.opt.demoClass.empty() && g.game.players[1].active)
                 {
                     // park the dummy on-camera so the whole exchange films
@@ -3176,6 +3234,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         if (!g.opt.demoClass.empty() && g.screen == Screen::InGame)
         {
             g.keys[VK_SPACE] = (g.frameCounter % 200) < 10;
+            if (g.opt.demoClass == "shield")   // lean on the ability key
+                g.keys['1'] = true;
             const PlayerState& me = g.game.players[g.myId];
             const PlayerState& du = g.game.players[1];
             if (me.active && du.active)

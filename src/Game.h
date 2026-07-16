@@ -49,6 +49,7 @@ enum : uint8_t
     BtnRight   = 1 << 3,
     BtnFire    = 1 << 4,
     BtnBoost   = 1 << 5,   // SHIFT: 2x speed, drains the fuel bar
+    BtnAbility1 = 1 << 6,  // "1": first ability slot (SHIELD)
 };
 
 struct InputCmd
@@ -107,6 +108,10 @@ enum class Stat : uint8_t
     // SOLDIER legendary: physics grenades lobbed over cover
     GrenadeCount,     // grenades each soldier carries per life (0 = none)
     GrenadeCooldown,  // seconds between throws
+    // SHIELD PROFICIENCY: the deflector barrier ability (key 1)
+    ShieldWidth,      // barrier face width in world units
+    ShieldDuration,   // seconds the barrier stays up
+    ShieldCooldown,   // seconds between uses (starts at activation)
     Count
 };
 constexpr int StatCount = int(Stat::Count);
@@ -129,7 +134,7 @@ struct StatMod
 // and unlocks the family. A player holds at most kMaxClasses classes.
 constexpr uint8_t ClassNone = 0xFF;
 enum : uint8_t { ClassSoldier = 0, ClassBouncy, ClassNecro, ClassRadar,
-                 ClassCount };
+                 ClassShield, ClassCount };
 constexpr int kMaxClasses = 2;
 constexpr int RarityClass = 5;    // rolled between rare and epic
 
@@ -151,6 +156,10 @@ enum class UpgradeId : uint8_t
     FastLock, WideScan, Payload, SharpPing, NestedArray,
     FissionShells,
     FragPack,
+    ShieldClass,
+    WideBarrier,
+    LongWatch,
+    RapidRedeploy,
     Count
 };
 constexpr int UpgradeCount = int(UpgradeId::Count);
@@ -250,6 +259,8 @@ struct PlayerState
     // AdvanceMovement so client prediction replays it identically (the value
     // is replicated quantized and rebased like boost fuel).
     float possessTimer = 0;
+    float shieldTimer = 0;        // barrier remaining (input-driven, predicted)
+    float shieldWait = 0;         // ability cooldown remaining
     float possessDps = 0;         // host-only, baked from the ghost's owner
     uint8_t possessedBy = 0xFF;   // host-only, damage attribution
 };
@@ -291,6 +302,7 @@ struct Projectile
     // BOUNCY: chance per bounce to split off ONE half-damage twin exiting
     // at a deviated angle. A rocket splits at most once; twins never split.
     float splitChance = 0.0f;
+    uint8_t deflected = 0;     // shield ricochet: orange, new allegiance
 };
 
 // Lay out the radar circle tree for a rocket (sim, rendering and VFX all
@@ -394,6 +406,9 @@ constexpr float GhostOrbitStart = 5.5f;   // spiral start radius
 constexpr float GhostCloseRate = 2.4f;    // radius shrink per second
 constexpr float GhostOrbitSpeed = 7.0f;   // tangential units/s
 constexpr float GhostLifetime = 4.0f;     // seconds before it gives up
+constexpr float ShieldDist = 2.3f;        // barrier face offset from hull
+constexpr float ShieldSlow = 0.65f;       // fixed 35% slow while raised
+constexpr float ShieldBoostMalus = 0.8f;  // boost 20% weaker on top of that
 constexpr int   MaxGrenades = 12;
 constexpr float GrenadeRadius = 0.22f;
 constexpr float GrenadeGravity = 22.0f;   // gamey arcs: fast up, fast down

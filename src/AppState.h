@@ -130,6 +130,7 @@ struct App
     int meshGhost = -1, meshWedge = -1;
     // grenades (FRAG PACK) + the launcher prop welded to the soldier's hand
     int meshGrenade = -1;
+    int meshShieldSlat = -1, meshShieldPost = -1;   // barrier lattice
     float grenadeScale = 1.0f;
     int meshLauncher = -1;
     int rigWristR = -1;                        // launcher attach joint

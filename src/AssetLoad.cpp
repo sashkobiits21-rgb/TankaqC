@@ -1519,6 +1519,31 @@ void DrawIconGlyph(IconCanvas& c, int icon)
         c.Fill(5, 4, 10, 4, W); c.Fill(5, 11, 10, 11, W);
         c.Fill(4, 5, 4, 10, W); c.Fill(11, 5, 11, 10, W);
         break;
+    case 46: // RAPID REDEPLOY: shield with a refresh chevron
+        c.Fill(3, 2, 12, 3, W); c.Fill(3, 4, 3, 8, W); c.Fill(12, 4, 12, 8, W);
+        c.Fill(4, 9, 5, 10, W); c.Fill(10, 9, 11, 10, W);
+        c.Fill(6, 11, 9, 12, W); c.Fill(7, 13, 8, 13, W);
+        c.Fill(6, 5, 9, 5, W); c.Fill(5, 6, 6, 7, W); c.Fill(9, 6, 10, 7, W);
+        break;
+    case 45: // LONG WATCH: shield with a clock dial
+        c.Fill(3, 2, 12, 3, W); c.Fill(3, 4, 3, 8, W); c.Fill(12, 4, 12, 8, W);
+        c.Fill(4, 9, 5, 10, W); c.Fill(10, 9, 11, 10, W);
+        c.Fill(6, 11, 9, 12, W); c.Fill(7, 13, 8, 13, W);
+        c.Fill(7, 5, 8, 8, W); c.Fill(9, 8, 10, 8, W);
+        break;
+    case 44: // WIDE BARRIER: shield stretched by side arrows
+        c.Fill(5, 3, 10, 4, W); c.Fill(5, 5, 5, 9, W); c.Fill(10, 5, 10, 9, W);
+        c.Fill(6, 10, 9, 11, W); c.Fill(7, 12, 8, 12, W);
+        c.Fill(1, 6, 3, 7, W); c.Fill(2, 5, 2, 8, W);
+        c.Fill(12, 6, 14, 7, W); c.Fill(13, 5, 13, 8, W);
+        break;
+    case 43: // SHIELD CLASS: the tower shield
+        c.Fill(3, 2, 12, 4, W);
+        c.Fill(3, 5, 4, 9, W); c.Fill(11, 5, 12, 9, W);
+        c.Fill(4, 9, 6, 11, W); c.Fill(9, 9, 11, 11, W);
+        c.Fill(6, 11, 9, 13, W);
+        c.Fill(7, 6, 8, 9, 0x2E4B33FFu);   // dark keel line
+        break;
     case 42: // FRAG PACK: pineapple grenade, pin and spoon
         c.Fill(6, 2, 9, 3, W);                                  // fuze head
         c.Fill(10, 2, 12, 2, W); c.Fill(12, 3, 12, 4, W);       // pin ring

@@ -28,7 +28,7 @@ namespace tankaq::net
 // base 0) -- derived-stat contract change.
 // v18: FISSION SHELLS (SplitChance stat), ghost 2 s fuse + faster spiral,
 // necro-killed soldiers rise as ghosts -- derived-stat contract change.
-constexpr uint8_t ProtocolVersion = 20;
+constexpr uint8_t ProtocolVersion = 21;
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t
@@ -155,6 +155,8 @@ struct PlayerNet
     uint8_t fuel255 = 0;       // boost fuel / capacity, quantized to 0..255
     uint8_t regenWait32 = 0;   // regen delay remaining, 1/32 s units
     uint8_t possess32 = 0;     // possession remaining, 1/32 s (0 = free)
+    uint8_t shield16 = 0;      // barrier remaining, 1/16 s (0 = down)
+    uint8_t shieldCd4 = 0;     // ability cooldown remaining, 1/4 s
 };
 
 struct ProjectileNet
@@ -163,6 +165,7 @@ struct ProjectileNet
     uint8_t radar16 = 0;      // radar ring radius * 16 (0 = not radar)
     uint8_t radarRings = 0;   // packed extra circles
     uint8_t lock255 = 0;      // lock progress * 255 (countdown fill)
+    uint8_t deflected = 0;    // shield ricochet: renders orange
     float x = 0, y = 0, z = 0;
     float yaw = 0;
 };

@@ -42,6 +42,9 @@ const float kBaseStats[StatCount] = {
     1.0f,               // RadarRings: one packed circle by default
     0.0f,               // GrenadeCount: soldiers carry none until FRAG PACK
     5.0f,               // GrenadeCooldown: a throw every 5 s
+    4.0f,               // ShieldWidth
+    4.0f,               // ShieldDuration
+    12.0f,              // ShieldCooldown
 };
 
 int gDebugBounces = 0;   // --bounces=N dev knob (added on top of the stat)
@@ -149,6 +152,15 @@ const UpgradeType kUpgradePool[UpgradeCount] = {
       { { S(SplitChance), 0.25f, 1 } }, 1, ClassBouncy },
     { U(FragPack),     "FRAG PACK", "SOLDIERS LOB 2 GRENADES PER LIFE", 4, 95,
       { { S(GrenadeCount), 2, 1 } }, 1, ClassSoldier },
+    // SHIELD PROFICIENCY: card + family (enum order is pool order)
+    { U(ShieldClass),  "SHIELD CLASS", "UNLOCK THE BARRIER +WIDE BARRIER",
+      RarityClass, 80, {}, 0, ClassNone, ClassShield, U(WideBarrier) },
+    { U(WideBarrier),  "WIDE BARRIER", "+30% SHIELD WIDTH",           1, 30,
+      { { S(ShieldWidth), 0, 1.3f } }, 1, ClassShield },
+    { U(LongWatch),    "LONG WATCH", "+1.5S SHIELD DURATION",         2, 45,
+      { { S(ShieldDuration), 1.5f, 1 } }, 1, ClassShield },
+    { U(RapidRedeploy), "RAPID REDEPLOY", "-20% SHIELD COOLDOWN",     2, 45,
+      { { S(ShieldCooldown), 0, 0.8f } }, 1, ClassShield },
 };
 #undef S
 #undef U
@@ -299,6 +311,9 @@ void GameState::RecalcStats(int id)
     p.stats[int(Stat::SoldierCooldown)] = std::max(0.5f, p.stats[int(Stat::SoldierCooldown)]);
     p.stats[int(Stat::GrenadeCount)] = std::max(0.0f, p.stats[int(Stat::GrenadeCount)]);
     p.stats[int(Stat::GrenadeCooldown)] = std::max(1.0f, p.stats[int(Stat::GrenadeCooldown)]);
+    p.stats[int(Stat::ShieldWidth)] = std::clamp(p.stats[int(Stat::ShieldWidth)], 1.5f, 14.0f);
+    p.stats[int(Stat::ShieldDuration)] = std::clamp(p.stats[int(Stat::ShieldDuration)], 1.0f, 15.0f);
+    p.stats[int(Stat::ShieldCooldown)] = std::max(3.0f, p.stats[int(Stat::ShieldCooldown)]);
     p.stats[int(Stat::BounceDamage)] = std::max(0.25f, p.stats[int(Stat::BounceDamage)]);
     p.stats[int(Stat::BounceSpeed)] = std::max(0.25f, p.stats[int(Stat::BounceSpeed)]);
     p.stats[int(Stat::SplitChance)] = std::clamp(p.stats[int(Stat::SplitChance)],
@@ -1822,6 +1837,20 @@ void GameState::AdvanceMovement(int id, const InputCmd& inRaw)
         in.turretYaw = ang;                        // head spins too
         in.buttons &= uint8_t(~(BtnFire | BtnBoost));
     }
+    // SHIELD (key 1): timers advance HERE so client prediction replays them
+    // identically after rebasing from the snapshot -- the same contract as
+    // boost fuel and possession. Activation is input-driven and free of any
+    // host-only randomness, so pressing 1 feels instant on clients too.
+    p.shieldWait = std::max(0.0f, p.shieldWait - TickDt);
+    if (p.shieldTimer > 0.0f)
+        p.shieldTimer = std::max(0.0f, p.shieldTimer - TickDt);
+    if ((in.buttons & BtnAbility1) && p.shieldWait <= 0.0f
+        && p.shieldTimer <= 0.0f && HasClass(p, ClassShield))
+    {
+        p.shieldTimer = p.stats[int(Stat::ShieldDuration)];
+        p.shieldWait = p.stats[int(Stat::ShieldCooldown)];
+    }
+
     // The client resolves camera-relative WASD into a world-space vector, so
     // the host (and prediction replay) integrate the same numbers.
     float dx = in.moveX, dz = in.moveZ;
@@ -1855,7 +1884,14 @@ void GameState::AdvanceMovement(int id, const InputCmd& inRaw)
         if (len > 1.0f) { dx /= len; dz /= len; }
         float speed = p.stats[int(Stat::MoveSpeed)];
         if (boosting)
-            speed *= p.stats[int(Stat::BoostSpeed)];
+        {
+            float bs = p.stats[int(Stat::BoostSpeed)];
+            if (p.shieldTimer > 0.0f)   // boost 20% weaker behind the barrier
+                bs = 1.0f + (bs - 1.0f) * ShieldBoostMalus;
+            speed *= bs;
+        }
+        if (p.shieldTimer > 0.0f)
+            speed *= ShieldSlow;        // fixed 35% slow (not upgradeable)
         p.x += dx * speed * TickDt;
         p.z += dz * speed * TickDt;
         p.hullYaw = MoveTowardsAngle(p.hullYaw, atan2f(dx, dz),
@@ -2179,6 +2215,39 @@ void GameState::Tick(const InputCmd* inputs)
             TickRadar(*this, pr);
             if (!pr.active)
                 continue;
+        }
+        // SHIELD deflection: a raised barrier catches enemy rockets, hands
+        // them a bonus ricochet, flips their allegiance (they can never hurt
+        // the shieldman again -- but hurt everyone else, shooter included)
+        // and paints them orange. The owner's own rockets pass right through.
+        for (int id = 0; id < MaxPlayers; ++id)
+        {
+            PlayerState& sp = players[id];
+            if (!sp.active || sp.health <= 0 || sp.shieldTimer <= 0.0f
+                || id == pr.owner)
+                continue;
+            float fx = sinf(sp.turretYaw), fz = cosf(sp.turretYaw);
+            float rx = pr.x - (sp.x + fx * ShieldDist);
+            float rz = pr.z - (sp.z + fz * ShieldDist);
+            float lon = rx * fx + rz * fz;    // along the barrier normal
+            float lat = rx * fz - rz * fx;    // across the face
+            if (fabsf(lat) > sp.stats[int(Stat::ShieldWidth)] * 0.5f
+                || fabsf(lon) > 0.45f)
+                continue;
+            float vx = sinf(pr.yaw), vz = cosf(pr.yaw);
+            float vn = vx * fx + vz * fz;
+            if (vn >= 0.0f)                   // already outbound
+                continue;
+            vx -= 2.0f * vn * fx;
+            vz -= 2.0f * vn * fz;
+            pr.yaw = atan2f(vx, vz);
+            float push = 0.5f - lon;          // pop out of the face plane
+            pr.x += fx * push;
+            pr.z += fz * push;
+            pr.bounces += 1;                  // one free ricochet, always
+            pr.owner = uint8_t(id);           // now it fights for the shieldman
+            pr.deflected = 1;                 // orange from here on
+            break;
         }
         bool spent = false;
         for (int id = 0; id < MaxPlayers && !spent; ++id)

@@ -284,6 +284,44 @@ void BuildHud(FrameData& frame)
                           : UiColor{ 1.0f, 0.55f, 0.15f, 0.95f });
     }
 
+    // ability toolbar: one slot per ability the player owns, key-labelled,
+    // with the cooldown veil + seconds. Predicted timers = instant feedback.
+    if ((g.game.phase == PhasePlaying || g.game.phase == PhaseOvertime)
+        && HasClass(me, ClassShield))
+    {
+        float bx = w * 0.5f - 26, by = float(g.height) - 132;
+        bool up = me.shieldTimer > 0.0f;
+        bool ready = !up && me.shieldWait <= 0.0f;
+        g.ui.Rect(bx - 3, by - 3, 58, 58, { 0, 0, 0, 0.55f });
+        AddIconQuad(frame, int(UpgradeId::ShieldClass), bx + 26, by + 26,
+                    24, ready || up ? 1.0f : 0.45f, 0.0f);
+        if (up)
+        {
+            // active: green frame + remaining-duration sliver
+            g.ui.RectOutline(bx - 3, by - 3, 58, 58, 2,
+                             { 0.35f, 1.0f, 0.5f, 0.95f });
+            float frac2 = me.shieldTimer
+                        / std::max(0.1f, me.stats[int(Stat::ShieldDuration)]);
+            g.ui.Rect(bx, by + 55, 52.0f * frac2, 4,
+                      { 0.35f, 1.0f, 0.5f, 0.9f });
+        }
+        else if (!ready)
+        {
+            // cooling down: dark veil sinks with the timer + seconds left
+            float cd = me.stats[int(Stat::ShieldCooldown)];
+            float frac2 = std::clamp(me.shieldWait / std::max(0.1f, cd),
+                                     0.0f, 1.0f);
+            g.ui.Rect(bx, by, 52, 52.0f * frac2, { 0, 0, 0, 0.72f });
+            sprintf_s(buf, "%.0f", ceilf(me.shieldWait));
+            g.ui.TextCentered(bx + 26, by + 20, 2.4f,
+                              { 1, 1, 1, 0.9f }, buf);
+        }
+        else
+            g.ui.RectOutline(bx - 3, by - 3, 58, 58, 2,
+                             { 1, 1, 1, 0.55f });
+        g.ui.TextCentered(bx + 26, by + 62, 1.4f, { 1, 1, 1, 0.65f }, "1");
+    }
+
     // kill scores on the circle + match timer in its center
     DrawScoreCircle();
 
