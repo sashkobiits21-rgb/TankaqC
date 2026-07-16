@@ -128,6 +128,12 @@ struct App
     // necromancer + radar visuals
     int meshSkull = -1, meshJaw = -1, meshPuddle = -1, meshRing = -1;
     int meshGhost = -1, meshWedge = -1;
+    // grenades (FRAG PACK) + the launcher prop welded to the soldier's hand
+    int meshGrenade = -1;
+    float grenadeScale = 1.0f;
+    int meshLauncher = -1;
+    int rigWristR = -1;                        // launcher attach joint
+    DirectX::XMFLOAT4X4 rigWristBind;          // inverse of its inverseBind
     // rigged skull (assets/Skull/Skull.glb): 3-bone jaw, one looping
     // OpenAndClose clip; falls back to the procedural cranium+jaw if absent
     SkinnedModel skullModel;
@@ -138,6 +144,8 @@ struct App
     Animator skullAnim[MaxSkulls];             // staggered chomp per slot
     bool prevSkullActive[MaxSkulls]{};         // burst on skull death
     DirectX::XMFLOAT3 prevSkullPos[MaxSkulls]{};
+    bool prevGrenadeActive[MaxGrenades]{};     // boom on grenade fuse-out
+    DirectX::XMFLOAT3 prevGrenadePos[MaxGrenades]{};
     float prevProjRadar[MaxProjectiles]{};     // per-circle explosion VFX
     float prevProjYaw[MaxProjectiles]{};       // tree layout at death time
     uint8_t prevProjRings[MaxProjectiles]{};

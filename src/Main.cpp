@@ -243,6 +243,18 @@ void ApplySnapshot(const net::MsgSnapshot& s)
         gh.active = in.active != 0;
         if (gh.active) { gh.owner = in.owner; gh.x = in.x; gh.z = in.z; }
     }
+    for (int i = 0; i < MaxGrenades; ++i)
+    {
+        const net::GrenadeNet& in = s.grenades[i];
+        GrenadeState& gr = g.game.grenades[i];
+        gr.active = in.active != 0;
+        if (gr.active)
+        {
+            gr.owner = in.owner;
+            gr.x = in.x; gr.y = in.y; gr.z = in.z;
+            gr.fuse = in.fuse255 == 255 ? -1.0f : in.fuse255 / 100.0f;
+        }
+    }
     for (int i = 0; i < MaxProjectiles; ++i)
     {
         g.game.projectiles[i].radarRange = s.projectiles[i].radar16 / 16.0f;
@@ -430,6 +442,17 @@ net::MsgSnapshot BuildSnapshot()
         out.active = gh.active ? 1 : 0;
         out.owner = gh.owner;
         out.x = gh.x; out.z = gh.z;
+    }
+    for (int i = 0; i < MaxGrenades; ++i)
+    {
+        const GrenadeState& gr = g.game.grenades[i];
+        net::GrenadeNet& out = s.grenades[i];
+        out.active = gr.active ? 1 : 0;
+        out.owner = gr.owner;
+        out.x = gr.x; out.y = gr.y; out.z = gr.z;
+        out.fuse255 = gr.fuse < 0.0f
+            ? 255
+            : uint8_t(std::clamp(int(gr.fuse * 100.0f), 0, 254));
     }
     for (int i = 0; i < MaxSoldiers; ++i)
     {
@@ -715,6 +738,24 @@ void UpdateVfxFromSim()
         g.prevSkullActive[i] = sk.active;
         if (sk.active)
             g.prevSkullPos[i] = XMFLOAT3(sk.x, SkullY, sk.z);
+    }
+    // grenades pop with the full explosion treatment where they fused out
+    for (int i = 0; i < MaxGrenades; ++i)
+    {
+        const GrenadeState& gr = g.game.grenades[i];
+        if (g.prevGrenadeActive[i] && !gr.active && InSession())
+        {
+            if (g.bursts.size() >= 16)
+                g.bursts.erase(g.bursts.begin());
+            g.bursts.push_back({ g.prevGrenadePos[i], g.time });
+            snd::Play(snd::Sfx::Explosion,
+                      SndDistVol(g.prevGrenadePos[i].x,
+                                 g.prevGrenadePos[i].z, 0.9f),
+                      0.85f * SndJitter(0.08f));
+        }
+        g.prevGrenadeActive[i] = gr.active;
+        if (gr.active)
+            g.prevGrenadePos[i] = XMFLOAT3(gr.x, gr.y, gr.z);
     }
 
     // prune dead effects
@@ -1222,6 +1263,50 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
             { 0.75f, 0.85f, 1.15f, 0.85f }, true });
     }
 
+    // grenades: interpolated ballistic hops, red pulse once the fuse is lit
+    for (int i = 0; i < MaxGrenades; ++i)
+    {
+        const GrenadeState& gr = g.game.grenades[i];
+        if (!gr.active)
+            continue;
+        float gx = gr.x, gy = gr.y, gz = gr.z;
+        bool armed = gr.fuse >= 0.0f;
+        if (clientMode)
+        {
+            if (g.haveTwoSnaps && g.snapPrev.grenades[i].active
+                && g.snapCurr.grenades[i].active)
+            {
+                const net::GrenadeNet& a = g.snapPrev.grenades[i];
+                const net::GrenadeNet& b = g.snapCurr.grenades[i];
+                float t = std::clamp(float((g.time - g.snapCurrTime)
+                                           / (SnapshotEveryTicks * TickDt)),
+                                     0.0f, 1.0f);
+                gx = a.x + (b.x - a.x) * t;
+                gy = a.y + (b.y - a.y) * t;
+                gz = a.z + (b.z - a.z) * t;
+                armed = b.fuse255 != 255;
+            }
+        }
+        else if (g.prevTick.grenades[i].active)
+        {
+            const GrenadeState& a = g.prevTick.grenades[i];
+            gx = a.x + (gr.x - a.x) * g.tickAlpha;
+            gy = a.y + (gr.y - a.y) * g.tickAlpha;
+            gz = a.z + (gr.z - a.z) * g.tickAlpha;
+        }
+        XMFLOAT4 tint{ 0.36f, 0.42f, 0.28f, 0.3f };
+        if (armed && fmodf(float(g.time) * 8.0f, 1.0f) < 0.45f)
+            tint = { 1.0f, 0.25f, 0.15f, 0.6f };   // fuse lit: red strobe
+        frame.objects.push_back({ g.meshGrenade >= 0 ? g.meshGrenade
+                                                     : g.meshProj,
+            g.texWhite,
+            Store(XMMatrixScaling(g.grenadeScale, g.grenadeScale,
+                                  g.grenadeScale)
+                  * XMMatrixRotationY(float(g.time) * 6.0f + float(i))
+                  * XMMatrixTranslation(gx, gy, gz)),
+            tint, true });
+    }
+
     // soldier summons: skinned, animated locally from the replicated state
     // (fire-and-forget visuals -- the host only ships position/state/flags)
     if (!g.meshRigParts.empty() && g.rigModel.valid)
@@ -1311,7 +1396,9 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
             an.Pose(frame.palettes.back());
             int paletteIdx = int(frame.palettes.size()) - 1;
 
-            XMMATRIX world = XMMatrixRotationY(syaw)
+            XMMATRIX world = XMMatrixScaling(g.rigScale, g.rigScale,
+                                             g.rigScale)
+                           * XMMatrixRotationY(syaw)
                            * XMMatrixTranslation(sx, 0.0f, sz);
             for (size_t p = 0; p < g.meshRigParts.size(); ++p)
             {
@@ -1326,6 +1413,18 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
                                  Store(world), tint, true };
                 ro.paletteIndex = paletteIdx;
                 frame.objects.push_back(ro);
+            }
+
+            // rocket launcher riding the wrist: recover the joint's global
+            // from the palette (palette = inverseBind * global)
+            if (g.meshLauncher >= 0 && g.rigWristR >= 0)
+            {
+                XMMATRIX pal = XMLoadFloat4x4(
+                    &frame.palettes[paletteIdx].m[g.rigWristR]);
+                XMMATRIX global = XMLoadFloat4x4(&g.rigWristBind) * pal;
+                frame.objects.push_back({ g.meshLauncher, g.texWhite,
+                    Store(global * world),
+                    { 0.30f, 0.32f, 0.28f, 0.25f }, true });
             }
 
             // launcher muzzle flash (the rocket itself is a real projectile
@@ -1927,6 +2026,33 @@ bool CreateAssets()
                                     wedge.indices.data(), wedge.indices.size());
     }
 
+    // grenade prop (FRAG PACK): CC0 "Frag Grenade West" by Pichuliru
+    {
+        MeshData gm = LoadStaticGLB("assets/Grenade.glb");
+        if (!gm.verts.empty())
+        {
+            float ext = 0.01f, minY = 1e9f, maxY = -1e9f;
+            for (const Vertex& v : gm.verts)
+            {
+                ext = std::max({ ext, fabsf(v.px), fabsf(v.pz) });
+                minY = std::min(minY, v.py);
+                maxY = std::max(maxY, v.py);
+            }
+            float cy = (minY + maxY) * 0.5f;
+            for (Vertex& v : gm.verts)
+                v.py -= cy;
+            ext = std::max(ext, (maxY - minY) * 0.5f);
+            g.meshGrenade = r->CreateMesh(gm.verts.data(), gm.verts.size(),
+                                          gm.indices.data(),
+                                          gm.indices.size());
+            g.grenadeScale = 0.30f / ext;
+            Log("Grenade prop: %zu verts, scale %.3f", gm.verts.size(),
+                g.grenadeScale);
+        }
+        else
+            Log("Assets: no Grenade.glb -- rocket-mesh fallback");
+    }
+
     // the user-authored rigged skull: 3-bone jaw, one OpenAndClose clip
     // looping forever (until the collision that ends the skull). The current
     // export has NO UVs, so its textures cannot map yet -- parts draw with a
@@ -2024,7 +2150,7 @@ bool CreateAssets()
     // always load it, resolve the clips the summon needs BY NAME (loud on
     // miss), and pre-configure one Animator per soldier slot.
     {
-        g.rigModel = LoadSkinnedGLB("assets/soldier.glb");
+        g.rigModel = LoadSkinnedGLB("assets/soldier.glb");   // SWAT operator
         g.rigScale = 1.0f;
         if (!g.rigModel.valid)
             g.rigModel = LoadSkinnedGLB("assets/test_rig.glb");
@@ -2055,6 +2181,78 @@ bool CreateAssets()
                 g.texRig = r->CreateTexture(g.rigModel.texture.rgba.data(),
                                             g.rigModel.texture.width,
                                             g.rigModel.texture.height);
+            // measure the bind-pose height THROUGH rootTransform: FBX
+            // conversions park a scale-100/axis-flip there, and the palette
+            // applies it -- raw vertex extents alone would double the scale
+            float rigMaxY = 0.01f;
+            XMMATRIX rigRoot = XMLoadFloat4x4(&g.rigModel.rootTransform);
+            for (const SkinnedPart& part : g.rigModel.parts)
+                for (const SkinnedVertex& v : part.verts)
+                {
+                    XMVECTOR p = XMVector3TransformCoord(
+                        XMVectorSet(v.px, v.py, v.pz, 1), rigRoot);
+                    rigMaxY = std::max(rigMaxY, XMVectorGetY(p));
+                }
+            g.rigScale = 1.78f / rigMaxY;   // normalize to soldier height
+            Log("Rig height (root-transformed): %.3f -> scale %.3f",
+                rigMaxY, g.rigScale);
+
+            // the launcher prop: geometry lifted from the old toon soldier
+            // (also CC0), rebased into hand-local space via the inverse bind
+            // of the joint it was skinned to -- so it can ride ANY rig
+            {
+                SkinnedModel toon = LoadSkinnedGLB("assets/soldier_toon.glb");
+                if (toon.valid)
+                    for (const SkinnedPart& part : toon.parts)
+                    {
+                        if (part.name.find("RocketLauncher")
+                                == std::string::npos
+                            || part.verts.empty())
+                            continue;
+                        int hand = part.verts[0].joints[0];
+                        XMMATRIX inv = XMLoadFloat4x4(
+                            &toon.joints[hand].inverseBind);
+                        MeshData md;
+                        md.verts.reserve(part.verts.size());
+                        for (const SkinnedVertex& sv : part.verts)
+                        {
+                            Vertex v{};
+                            XMVECTOR p = XMVector3TransformCoord(
+                                XMVectorSet(sv.px, sv.py, sv.pz, 1), inv);
+                            XMVECTOR nr = XMVector3Normalize(
+                                XMVector3TransformNormal(
+                                    XMVectorSet(sv.nx, sv.ny, sv.nz, 0),
+                                    inv));
+                            v.px = XMVectorGetX(p);
+                            v.py = XMVectorGetY(p);
+                            v.pz = XMVectorGetZ(p);
+                            v.nx = XMVectorGetX(nr);
+                            v.ny = XMVectorGetY(nr);
+                            v.nz = XMVectorGetZ(nr);
+                            v.u = sv.u; v.v = sv.v;
+                            md.verts.push_back(v);
+                        }
+                        md.indices = part.indices;
+                        ComputeTangents(md);
+                        g.meshLauncher = r->CreateMesh(md.verts.data(),
+                                                       md.verts.size(),
+                                                       md.indices.data(),
+                                                       md.indices.size());
+                        break;
+                    }
+                g.rigWristR = FindJoint(g.rigModel, "Wrist.R");
+                if (g.rigWristR < 0)
+                    g.rigWristR = FindJoint(g.rigModel, "LowerArm.R");
+                if (g.rigWristR >= 0)
+                {
+                    XMMATRIX ib = XMLoadFloat4x4(
+                        &g.rigModel.joints[g.rigWristR].inverseBind);
+                    XMStoreFloat4x4(&g.rigWristBind,
+                                    XMMatrixInverse(nullptr, ib));
+                }
+                Log("Launcher prop: mesh %d on wrist joint %d",
+                    g.meshLauncher, g.rigWristR);
+            }
             for (size_t j = 0; j < g.rigModel.jointNames.size(); ++j)
                 Log("Rig joint %zu: %s (parent %d)", j,
                     g.rigModel.jointNames[j].c_str(),
@@ -2083,6 +2281,8 @@ bool CreateAssets()
             g.soldierClips.shoot = g.rigModel.FindClip("Idle_Shoot");
             if (g.soldierClips.shoot < 0) g.soldierClips.shoot = clip("Shoot");
             g.soldierClips.death = clip("Death");
+            if (g.soldierClips.duck < 0)   // SWAT set: cover = gun-ready idle
+                g.soldierClips.duck = g.rigModel.FindClip("Idle_Gun");
 
             // shared aim chain (torso twist toward the target)
             int aimChain[2] = { joint("Abdomen"), joint("Torso") };
@@ -2121,6 +2321,8 @@ bool CreateAssets()
                 int ua = joint("UpperArm.L");
                 int la = joint("LowerArm.L");
                 int ha = FindJoint(g.rigModel, "Hand.L");
+                if (ha < 0)
+                    ha = FindJoint(g.rigModel, "Wrist.L");
                 if (ha < 0) ha = joint("Index1.L");   // log only if both miss
                 if (ua >= 0 && la >= 0 && ha >= 0)
                 {
@@ -2859,6 +3061,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                     g.game.RecalcStats(g.myId);
                     Log("demo: granted RADAR class (rings %d)",
                         int(me.stats[int(Stat::RadarRings)] + 0.5f));
+                }
+                else if (g.opt.demoClass == "soldier")
+                {
+                    PlayerState& me = g.game.players[g.myId];
+                    me.owned.push_back(uint8_t(UpgradeId::SoldierClass));
+                    me.owned.push_back(uint8_t(UpgradeId::FragPack));
+                    g.game.RecalcStats(g.myId);
+                    Log("demo: granted SOLDIER class + FRAG PACK");
                 }
                 if (!g.opt.demoClass.empty() && g.game.players[1].active)
                 {

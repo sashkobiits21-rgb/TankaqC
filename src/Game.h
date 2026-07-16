@@ -104,6 +104,9 @@ enum class Stat : uint8_t
     RadarDamage,      // BONUS on the root circle (base = rocket damage;
                       // halves per tree level)
     RadarRings,       // extra circles packed inside (3 slots per parent)
+    // SOLDIER legendary: physics grenades lobbed over cover
+    GrenadeCount,     // grenades each soldier carries per life (0 = none)
+    GrenadeCooldown,  // seconds between throws
     Count
 };
 constexpr int StatCount = int(Stat::Count);
@@ -147,6 +150,7 @@ enum class UpgradeId : uint8_t
     BoneFurnace, CausticBrew, LingeringRot, DeepGrip, SoulLeech,
     FastLock, WideScan, Payload, SharpPing, NestedArray,
     FissionShells,
+    FragPack,
     Count
 };
 constexpr int UpgradeCount = int(UpgradeId::Count);
@@ -347,6 +351,23 @@ struct SoldierState
     uint8_t lastHitBy = 0xFF;   // killer attribution (necromancer ghosts)
     // baked from the owner's stats at spawn time
     float speed = 4.0f, damage = 10.0f, fireRate = 1.0f;
+    int grenades = 0;             // throws left this life (FRAG PACK)
+    float grenadeWait = 0;        // seconds until the next throw
+};
+
+// A lobbed grenade: real ballistics (gravity, restitution) bouncing off the
+// ground, arena walls, obstacle boxes and tanks. The 2 s fuse only starts
+// at the FIRST bounce; the blast hits every enemy in the radius for double
+// the throwing soldier's rocket damage. Fire-and-forget: host-simulated,
+// replicated, never corrected.
+struct GrenadeState
+{
+    bool active = false;
+    uint8_t owner = 0;            // summoner (damage + kill credit)
+    float x = 0, y = 0, z = 0;
+    float vx = 0, vy = 0, vz = 0;
+    float fuse = -1.0f;           // <0 until the first bounce arms it
+    float dmg = 20.0f;            // baked: 2x the soldier's rocket damage
 };
 
 // 2D line-of-sight: does the segment cross any obstacle box (expanded by
@@ -373,6 +394,15 @@ constexpr float GhostOrbitStart = 5.5f;   // spiral start radius
 constexpr float GhostCloseRate = 2.4f;    // radius shrink per second
 constexpr float GhostOrbitSpeed = 7.0f;   // tangential units/s
 constexpr float GhostLifetime = 4.0f;     // seconds before it gives up
+constexpr int   MaxGrenades = 12;
+constexpr float GrenadeRadius = 0.22f;
+constexpr float GrenadeGravity = 22.0f;   // gamey arcs: fast up, fast down
+constexpr float GrenadeRestitution = 0.42f;
+constexpr float GrenadeFriction = 0.72f;  // ground-contact horizontal damping
+constexpr float GrenadeFuse = 2.0f;       // armed at the FIRST bounce
+constexpr float GrenadeBlastRadius = 2.6f;
+constexpr float GrenadeThrowRange = 15.0f;
+constexpr float GrenadeObstacleTop = 1.5f;   // boxes block below this height
 
 struct SkullState
 {
@@ -419,6 +449,7 @@ struct GameState
     SkullState skulls[MaxSkulls];
     PuddleState puddles[MaxPuddles];
     GhostState ghosts[MaxGhosts];
+    GrenadeState grenades[MaxGrenades];
     uint32_t tick = 0;
     uint8_t phase = PhaseLobby;
     uint8_t winner = 0xFF;

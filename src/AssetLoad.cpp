@@ -74,6 +74,47 @@ static bool ReadPrimitives(const cgltf_node* node, MeshData& out)
     return !out.verts.empty();
 }
 
+MeshData LoadStaticGLB(const std::string& path)
+{
+    MeshData out;
+    cgltf_options opt{};
+    cgltf_data* data = nullptr;
+    if (cgltf_parse_file(&opt, path.c_str(), &data) != cgltf_result_success)
+        return out;
+    if (cgltf_load_buffers(&opt, data, path.c_str()) != cgltf_result_success)
+    {
+        cgltf_free(data);
+        return out;
+    }
+    for (size_t n = 0; n < data->nodes_count; ++n)
+    {
+        const cgltf_node& node = data->nodes[n];
+        if (!node.mesh)
+            continue;
+        size_t first = out.verts.size();
+        if (!ReadPrimitives(&node, out))
+            continue;
+        float m16[16];
+        cgltf_node_transform_world(&node, m16);
+        XMMATRIX w = XMMATRIX(m16);   // column-major floats == row-major use
+        for (size_t v = first; v < out.verts.size(); ++v)
+        {
+            Vertex& vv = out.verts[v];
+            XMVECTOR p = XMVector3TransformCoord(
+                XMVectorSet(vv.px, vv.py, vv.pz, 1), w);
+            XMVECTOR nr = XMVector3Normalize(XMVector3TransformNormal(
+                XMVectorSet(vv.nx, vv.ny, vv.nz, 0), w));
+            vv.px = XMVectorGetX(p); vv.py = XMVectorGetY(p);
+            vv.pz = XMVectorGetZ(p);
+            vv.nx = XMVectorGetX(nr); vv.ny = XMVectorGetY(nr);
+            vv.nz = XMVectorGetZ(nr);
+        }
+    }
+    cgltf_free(data);
+    ComputeTangents(out);
+    return out;
+}
+
 TankModel LoadTankModel(const std::string& glbPath, const std::string& metaPath)
 {
     TankModel model;
@@ -1477,6 +1518,16 @@ void DrawIconGlyph(IconCanvas& c, int icon)
         c.Fill(7, 7, 8, 8, W);
         c.Fill(5, 4, 10, 4, W); c.Fill(5, 11, 10, 11, W);
         c.Fill(4, 5, 4, 10, W); c.Fill(11, 5, 11, 10, W);
+        break;
+    case 42: // FRAG PACK: pineapple grenade, pin and spoon
+        c.Fill(6, 2, 9, 3, W);                                  // fuze head
+        c.Fill(10, 2, 12, 2, W); c.Fill(12, 3, 12, 4, W);       // pin ring
+        c.Fill(4, 4, 11, 12, W);                                // body
+        c.Fill(3, 5, 3, 11, W); c.Fill(12, 5, 12, 11, W);
+        c.Fill(5, 13, 10, 13, W);
+        c.Fill(5, 6, 10, 6, 0x3A4030FFu);                       // frag lines
+        c.Fill(5, 9, 10, 9, 0x3A4030FFu);
+        c.Fill(7, 5, 7, 12, 0x3A4030FFu);
         break;
     case 41: // FISSION SHELLS: shell forking into two arrows
         c.Fill(7, 10, 8, 13, W);                               // stem

@@ -468,6 +468,60 @@ int RunClassTest()
         g4.projectiles[0].active = false;
     }
 
+    // ---- FRAG PACK: soldiers lob physics grenades over the field ----
+    {
+        GameState g9{};
+        g9.SpawnPlayer(0);
+        g9.SpawnPlayer(1);
+        g9.phase = PhasePlaying;
+        g9.matchEndTick = g9.tick + 100000000u;
+        InputCmd idle[MaxPlayers]{};
+        PlayerState& own = g9.players[0];
+        own.owned.push_back(uint8_t(UpgradeId::SoldierClass));
+        own.owned.push_back(uint8_t(UpgradeId::FragPack));
+        g9.RecalcStats(0);
+        check(int(own.stats[int(Stat::GrenadeCount)] + 0.5f) == 2,
+              "FRAG PACK arms soldiers with 2 grenades per life");
+        own.x = 0; own.z = -24;
+        g9.players[1].x = 0; g9.players[1].z = -16;   // 8 u: lob range
+        check(g9.SpawnSoldier(0), "soldier spawned for the grenade test");
+        bool seen = false, armedMidair = false;
+        for (int t = 0; t < TickRate * 8; ++t)
+        {
+            g9.Tick(idle);
+            for (const GrenadeState& gr : g9.grenades)
+            {
+                seen |= gr.active;
+                armedMidair |= gr.active && gr.fuse >= 0.0f;
+            }
+        }
+        check(seen, "soldier lobbed a grenade");
+        check(armedMidair, "first bounce armed the 2 s fuse");
+        check(g9.soldiers[0].active && g9.soldiers[0].grenades == 0,
+              "both grenades expended (2 per life, cooldown paced)");
+
+        // a manual drop right beside the enemy: exact blast arithmetic
+        // (2x the soldier rocket damage), no rockets muddying the water
+        for (SoldierState& s : g9.soldiers) s.active = false;
+        for (GrenadeState& gr : g9.grenades) gr.active = false;
+        g9.players[0].soldierSpawnWait = 9999.0f;   // no fresh auto-summons
+        g9.players[1].health = 100;   // phase-1 kills reset via respawn
+        int hp1 = g9.players[1].health;
+        GrenadeState& gr = g9.grenades[0];
+        gr = GrenadeState{};
+        gr.active = true;
+        gr.owner = 0;
+        gr.x = g9.players[1].x;
+        gr.z = g9.players[1].z - 2.2f;   // clear of the hull collider
+        gr.y = 1.0f;
+        gr.vy = -4.0f;
+        gr.dmg = 20.0f;   // = 2 x the 10-damage base rocket
+        for (int t = 0; t < TickRate * 3; ++t) g9.Tick(idle);
+        check(!g9.grenades[0].active, "grenade exploded 2 s after impact");
+        check(g9.players[1].health == hp1 - 20,
+              "blast hits for exactly double the rocket damage");
+    }
+
     // ---- match length: default 10:00, the host pick sets the horn ----
     {
         GameState g7{};

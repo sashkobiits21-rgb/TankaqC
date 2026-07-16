@@ -91,6 +91,10 @@ struct SkinnedModel
 
 SkinnedModel LoadSkinnedGLB(const std::string& path);
 
+// Unrigged GLB props (grenade etc.): every mesh node baked through its world
+// transform into one MeshData. Empty result on failure.
+MeshData LoadStaticGLB(const std::string& path);
+
 // Procedural meshes (unit-ish sizes, uv-mapped).
 MeshData MakeBox(float halfX, float halfY, float halfZ, float uvScale);
 MeshData MakeGroundPlane(float halfSize, float uvTiles);

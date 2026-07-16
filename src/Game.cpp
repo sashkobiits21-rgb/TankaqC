@@ -40,6 +40,8 @@ const float kBaseStats[StatCount] = {
     0.0f,               // RadarDamage: BONUS on the root circle -- the base
                         // is the rocket's own damage (halves per tree level)
     1.0f,               // RadarRings: one packed circle by default
+    0.0f,               // GrenadeCount: soldiers carry none until FRAG PACK
+    5.0f,               // GrenadeCooldown: a throw every 5 s
 };
 
 int gDebugBounces = 0;   // --bounces=N dev knob (added on top of the stat)
@@ -145,6 +147,8 @@ const UpgradeType kUpgradePool[UpgradeCount] = {
       { { S(RadarRings), 1, 1 } }, 1, ClassRadar },
     { U(FissionShells), "FISSION SHELLS", "+25% TWIN SPLIT ON BOUNCE",   3, 70,
       { { S(SplitChance), 0.25f, 1 } }, 1, ClassBouncy },
+    { U(FragPack),     "FRAG PACK", "SOLDIERS LOB 2 GRENADES PER LIFE", 4, 95,
+      { { S(GrenadeCount), 2, 1 } }, 1, ClassSoldier },
 };
 #undef S
 #undef U
@@ -293,6 +297,8 @@ void GameState::RecalcStats(int id)
     p.stats[int(Stat::SoldierFireRate)] = std::max(0.1f, p.stats[int(Stat::SoldierFireRate)]);
     p.stats[int(Stat::SoldierMax)] = std::max(1.0f, p.stats[int(Stat::SoldierMax)]);
     p.stats[int(Stat::SoldierCooldown)] = std::max(0.5f, p.stats[int(Stat::SoldierCooldown)]);
+    p.stats[int(Stat::GrenadeCount)] = std::max(0.0f, p.stats[int(Stat::GrenadeCount)]);
+    p.stats[int(Stat::GrenadeCooldown)] = std::max(1.0f, p.stats[int(Stat::GrenadeCooldown)]);
     p.stats[int(Stat::BounceDamage)] = std::max(0.25f, p.stats[int(Stat::BounceDamage)]);
     p.stats[int(Stat::BounceSpeed)] = std::max(0.25f, p.stats[int(Stat::BounceSpeed)]);
     p.stats[int(Stat::SplitChance)] = std::clamp(p.stats[int(Stat::SplitChance)],
@@ -342,6 +348,8 @@ void GameState::StartMatch()
         pu.active = false;
     for (GhostState& gh : ghosts)
         gh.active = false;
+    for (GrenadeState& gr : grenades)
+        gr.active = false;
     phase = PhasePlaying;
     winner = 0xFF;
     matchEndTick = tick + uint32_t(matchMinutes) * 60u * TickRate;
@@ -371,6 +379,8 @@ void GameState::ToLobby()
         pu.active = false;
     for (GhostState& gh : ghosts)
         gh.active = false;
+    for (GrenadeState& gr : grenades)
+        gr.active = false;
     phase = PhaseLobby;
 }
 
@@ -1128,6 +1138,8 @@ bool GameState::SpawnSoldier(int ownerId)
         slot->speed = own.stats[int(Stat::SoldierSpeed)];
         slot->damage = own.stats[int(Stat::SoldierDamage)];
         slot->fireRate = own.stats[int(Stat::SoldierFireRate)];
+        slot->grenades = int(own.stats[int(Stat::GrenadeCount)] + 0.5f);
+        slot->grenadeWait = 1.5f;   // settle in before the first lob
         return true;
     }
     return false;
@@ -1371,8 +1383,160 @@ static void SoldierTryFire(GameState& gs, SoldierState& s)
     }
 }
 
+// ------------------------------------------------------------- grenades
+// Lob a grenade at the soldier's target: a ballistic arc with a random yaw
+// offset (deterministic hash -- fire-and-forget entities replicate, so the
+// host's roll is the only roll). No line-of-sight check on purpose: lobbing
+// OVER walls is the whole point of a grenade.
+static void SoldierTryGrenade(GameState& gs, SoldierState& s)
+{
+    if (s.grenades <= 0 || s.grenadeWait > 0.0f || s.targetId >= MaxPlayers)
+        return;
+    const PlayerState& t = gs.players[s.targetId];
+    if (!t.active || t.health <= 0)
+        return;
+    float dx = t.x - s.x, dz = t.z - s.z;
+    float dist = sqrtf(dx * dx + dz * dz);
+    if (dist < 3.5f || dist > GrenadeThrowRange)
+        return;
+    GrenadeState* slot = nullptr;
+    for (GrenadeState& gr : gs.grenades)
+        if (!gr.active) { slot = &gr; break; }
+    if (!slot)
+        return;
+    uint32_t h = (gs.tick * 2654435761u) ^ uint32_t(s.owner * 977 + 31);
+    h ^= h >> 16; h *= 2246822519u; h ^= h >> 13;
+    float offset = (float(h & 0xFFFF) / 65535.0f - 0.5f) * 0.5f;
+    float yaw = atan2f(dx, dz) + offset;
+    float T = 0.9f + 0.25f * (dist / GrenadeThrowRange);   // flight time
+    GrenadeState gr{};
+    gr.active = true;
+    gr.owner = s.owner;
+    gr.x = s.x; gr.y = 1.5f; gr.z = s.z;
+    gr.vx = sinf(yaw) * (dist / T);
+    gr.vz = cosf(yaw) * (dist / T);
+    gr.vy = 0.5f * GrenadeGravity * T - 1.5f / T;   // land near y=0
+    gr.fuse = -1.0f;                                // armed at first bounce
+    gr.dmg = s.damage * 2.0f;                       // 2x the rocket hit
+    *slot = gr;
+    --s.grenades;
+    s.grenadeWait = gs.players[s.owner].stats[int(Stat::GrenadeCooldown)];
+}
+
+static void GrenadeExplode(GameState& gs, GrenadeState& gr)
+{
+    for (int id = 0; id < MaxPlayers; ++id)
+    {
+        PlayerState& p = gs.players[id];
+        if (!p.active || p.health <= 0 || id == gr.owner)
+            continue;
+        float dx = p.x - gr.x, dz = p.z - gr.z;
+        float rr = GrenadeBlastRadius + TankRadius * 0.5f;
+        if (dx * dx + dz * dz < rr * rr)
+            gs.ApplyDamage(gr.owner, id, int(gr.dmg + 0.5f), 2);
+    }
+    for (SoldierState& s : gs.soldiers)
+    {
+        if (!s.active || s.state == SoldierDying || s.owner == gr.owner)
+            continue;
+        float dx = s.x - gr.x, dz = s.z - gr.z;
+        float rr = GrenadeBlastRadius + SoldierRadius;
+        if (dx * dx + dz * dz < rr * rr)
+        {
+            s.health -= gr.dmg;
+            s.lastHitBy = gr.owner;
+        }
+    }
+    gr.active = false;
+}
+
+static void TickGrenade(GameState& gs, GrenadeState& gr)
+{
+    if (gr.fuse >= 0.0f)
+    {
+        gr.fuse -= TickDt;
+        if (gr.fuse <= 0.0f)
+        {
+            GrenadeExplode(gs, gr);
+            return;
+        }
+    }
+    gr.vy -= GrenadeGravity * TickDt;
+    gr.x += gr.vx * TickDt;
+    gr.y += gr.vy * TickDt;
+    gr.z += gr.vz * TickDt;
+    bool bounced = false;
+
+    // ground
+    if (gr.y < GrenadeRadius && gr.vy < 0.0f)
+    {
+        gr.y = GrenadeRadius;
+        gr.vy = -gr.vy * GrenadeRestitution;
+        gr.vx *= GrenadeFriction;
+        gr.vz *= GrenadeFriction;
+        if (gr.vy < 0.6f) gr.vy = 0.0f;   // stop micro-bouncing, just slide
+        bounced = true;
+    }
+    // arena walls
+    float lim = ArenaHalf - GrenadeRadius;
+    if (gr.x < -lim) { gr.x = -lim; gr.vx = -gr.vx * GrenadeRestitution; bounced = true; }
+    if (gr.x >  lim) { gr.x =  lim; gr.vx = -gr.vx * GrenadeRestitution; bounced = true; }
+    if (gr.z < -lim) { gr.z = -lim; gr.vz = -gr.vz * GrenadeRestitution; bounced = true; }
+    if (gr.z >  lim) { gr.z =  lim; gr.vz = -gr.vz * GrenadeRestitution; bounced = true; }
+    // obstacle boxes (only while below their top face)
+    if (gr.y < GrenadeObstacleTop)
+        for (const Obstacle& o : kObstacles)
+        {
+            float px = gr.x - o.cx, pz = gr.z - o.cz;
+            float ox = o.hx + GrenadeRadius - fabsf(px);
+            float oz = o.hz + GrenadeRadius - fabsf(pz);
+            if (ox <= 0.0f || oz <= 0.0f)
+                continue;
+            if (ox < oz)
+            {
+                gr.x += (px > 0 ? ox : -ox);
+                gr.vx = -gr.vx * GrenadeRestitution;
+            }
+            else
+            {
+                gr.z += (pz > 0 ? oz : -oz);
+                gr.vz = -gr.vz * GrenadeRestitution;
+            }
+            bounced = true;
+        }
+    // tanks: shove off the hull, radial reflection
+    if (gr.y < 1.6f)
+        for (int id = 0; id < MaxPlayers; ++id)
+        {
+            const PlayerState& p = gs.players[id];
+            if (!p.active || p.health <= 0)
+                continue;
+            float dx = gr.x - p.x, dz = gr.z - p.z;
+            float rr = TankRadius + GrenadeRadius;
+            float d2 = dx * dx + dz * dz;
+            if (d2 >= rr * rr || d2 < 1e-6f)
+                continue;
+            float d = sqrtf(d2);
+            float nx = dx / d, nz = dz / d;
+            gr.x = p.x + nx * rr;
+            gr.z = p.z + nz * rr;
+            float vn = gr.vx * nx + gr.vz * nz;
+            if (vn < 0.0f)
+            {
+                gr.vx -= (1.0f + GrenadeRestitution) * vn * nx;
+                gr.vz -= (1.0f + GrenadeRestitution) * vn * nz;
+            }
+            bounced = true;
+        }
+    if (bounced && gr.fuse < 0.0f)
+        gr.fuse = GrenadeFuse;   // first contact arms the 2 s fuse
+}
+
 void GameState::TickSoldier(SoldierState& s)
 {
+    s.grenadeWait = std::max(0.0f, s.grenadeWait - TickDt);
+    if (s.state != SoldierDying)
+        SoldierTryGrenade(*this, s);
     s.fireCooldown = std::max(0.0f, s.fireCooldown - TickDt);
     s.muzzleFlash = std::max(0.0f, s.muzzleFlash - TickDt);
     s.hitFlash = std::max(0.0f, s.hitFlash - TickDt);
@@ -2058,6 +2222,9 @@ void GameState::Tick(const InputCmd* inputs)
     for (SoldierState& s : soldiers)
         if (s.active)
             TickSoldier(s);
+    for (GrenadeState& gr : grenades)
+        if (gr.active)
+            TickGrenade(*this, gr);
     for (SkullState& sk : skulls)
         if (sk.active)
             TickSkull(*this, sk);

@@ -28,7 +28,7 @@ namespace tankaq::net
 // base 0) -- derived-stat contract change.
 // v18: FISSION SHELLS (SplitChance stat), ghost 2 s fuse + faster spiral,
 // necro-killed soldiers rise as ghosts -- derived-stat contract change.
-constexpr uint8_t ProtocolVersion = 19;
+constexpr uint8_t ProtocolVersion = 20;
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t
@@ -202,6 +202,14 @@ struct SoldierNet
     float yaw = 0;
 };
 
+struct GrenadeNet
+{
+    uint8_t active = 0;
+    uint8_t owner = 0;
+    uint8_t fuse255 = 255;    // 255 = not armed yet; else fuse * 100
+    float x = 0, y = 0, z = 0;
+};
+
 struct MsgSnapshot
 {
     uint8_t type = uint8_t(MsgType::Snapshot);
@@ -217,6 +225,7 @@ struct MsgSnapshot
     SkullNet skulls[MaxSkulls];
     PuddleNet puddles[MaxPuddles];
     GhostNet ghosts[MaxGhosts];
+    GrenadeNet grenades[MaxGrenades];
 };
 
 #pragma pack(pop)
