@@ -175,6 +175,7 @@ void ApplySnapshot(const net::MsgSnapshot& s)
     g.game.phase = s.phase;
     g.game.winner = s.winner;
     g.game.targetPlayers = s.targetPlayers;
+    g.game.matchMinutes = s.matchMinutes;
     g.game.matchEndTick = s.matchEndTick;
     for (int i = 0; i < MaxPlayers; ++i)
     {
@@ -366,6 +367,7 @@ net::MsgSnapshot BuildSnapshot()
     s.phase = g.game.phase;
     s.winner = g.game.winner;
     s.targetPlayers = g.game.targetPlayers;
+    s.matchMinutes = g.game.matchMinutes;
     s.matchEndTick = g.game.matchEndTick;
     for (int i = 0; i < MaxPlayers; ++i)
     {
@@ -2923,6 +2925,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             case UiIdReady:
                 if (g.game.phase == PhaseLobby)
                     ToggleReady();
+                break;
+            case UiIdMatchLen:
+                // host cycles the match length: 5 -> 10 -> 15 -> 20 -> 5
+                if (g.isHost && g.game.phase == PhaseLobby)
+                {
+                    snd::Play(snd::Sfx::Click, 0.5f, SndJitter(0.06f));
+                    constexpr int n = int(sizeof(kMatchMinutes));
+                    int cur = 0;
+                    for (int k = 0; k < n; ++k)
+                        if (kMatchMinutes[k] == g.game.matchMinutes)
+                            cur = k;
+                    g.game.matchMinutes = kMatchMinutes[(cur + 1) % n];
+                }
                 break;
             case UiIdOwnedArrow:
                 g.ownedRowHidden = !g.ownedRowHidden;

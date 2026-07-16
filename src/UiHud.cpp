@@ -162,6 +162,20 @@ static void BuildLobbyUi(FrameData& frame)
     DrawButton(g.ui, btn, readyHov);
     if (g.isHost && g.online)
         DrawMatchmakingToggle(w * 0.5f + 160, h - 128, 260, 56);
+
+    // match length: the host cycles 5/10/15/20; everyone sees the pick
+    sprintf_s(buf, "MATCH: %d MIN", int(g.game.matchMinutes));
+    if (g.isHost)
+    {
+        UiButton lenBtn{ w * 0.5f - 420, h - 128, 260, 56, buf };
+        UiHotRect(UiIdMatchLen, lenBtn.x, lenBtn.y, lenBtn.w, lenBtn.h);
+        bool lenHov = lenBtn.Contains(float(g.mouseX), float(g.mouseY));
+        if (lenHov)
+            g.hoverKeyNow = 3004;
+        DrawButton(g.ui, lenBtn, lenHov);
+    }
+    else
+        g.ui.TextCentered(w * 0.5f, 138, 1.6f, { 1, 1, 1, 0.7f }, buf);
     g.ui.TextCentered(w * 0.5f, h - 62, 1.4f, { 1, 1, 1, 0.5f },
                       "R toggles ready - match starts when everyone is ready");
 }

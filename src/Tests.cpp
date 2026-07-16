@@ -182,7 +182,7 @@ int RunClassTest()
         check(alive2 <= 2, "no chain reaction after the split");
     }
 
-    // ---- ghosts: 2 s fuse (escapable), soldiers rise for their killer ----
+    // ---- ghosts: 4 s fuse (escapable), soldiers rise for their killer ----
     {
         GameState g6{};
         g6.SpawnPlayer(0);
@@ -193,14 +193,14 @@ int RunClassTest()
         g6.matchEndTick = g6.tick + 100000000u;
         InputCmd idle[MaxPlayers]{};
         // a ghost far from its prey runs out of life before contact --
-        // the 2 s fuse is the escape window (close spawns still connect)
+        // the 4 s fuse is the escape window (close spawns still connect)
         g6.ghosts[0] = GhostState{};
         g6.ghosts[0].active = true;
         g6.ghosts[0].owner = 0;
-        g6.ghosts[0].x = g6.players[1].x + 12.0f;
+        g6.ghosts[0].x = g6.players[1].x + 14.0f;
         g6.ghosts[0].z = g6.players[1].z;
-        for (int t = 0; t < TickRate * 2 + 8; ++t) g6.Tick(idle);
-        check(!g6.ghosts[0].active, "ghost vanishes after its 2 s fuse");
+        for (int t = 0; t < TickRate * 4 + 8; ++t) g6.Tick(idle);
+        check(!g6.ghosts[0].active, "ghost vanishes after its 4 s fuse");
         check(g6.players[1].possessTimer <= 0.0f,
               "distant ghost expired without possessing");
         // an enemy soldier killed by the necromancer's puddle rises
@@ -436,6 +436,49 @@ int RunClassTest()
         check(detonated, "nested radar rocket detonated");
         check(tgt.health == hp0 - 51,
               "tree damage: rocket 34 + half-depth child 17");
+
+        // the countdown only runs with a live target inside: teleport the
+        // victim out mid-charge and the lock must fully reset
+        {
+            Projectile pr{};
+            pr.active = true;
+            pr.owner = 0;
+            pr.x = tgt.x;
+            pr.z = tgt.z - 1.8f;
+            pr.y = 0.17f;
+            pr.yaw = 0;
+            pr.life = 30.0f;
+            pr.speed = 0.0f;
+            pr.damage = 34;
+            pr.radarRange = op.stats[int(Stat::RadarRange)];
+            pr.radarDamage = op.stats[int(Stat::RadarDamage)];
+            pr.radarLockNeed = 5.0f;   // long fuse: no detonation here
+            pr.radarRings = 1;
+            g4.projectiles[0] = pr;
+        }
+        for (int t = 0; t < 8; ++t) g4.Tick(idle);
+        check(g4.projectiles[0].radarLock > 0.0f,
+              "lock charges while a target sits in range");
+        tgt.x = 60.0f; tgt.z = 60.0f;    // step out of every ring
+        g4.Tick(idle);
+        check(g4.projectiles[0].active
+                  && g4.projectiles[0].radarLock == 0.0f
+                  && g4.projectiles[0].radarLockFrac == 0.0f,
+              "lock resets the moment no target is in range");
+        g4.projectiles[0].active = false;
+    }
+
+    // ---- match length: default 10:00, the host pick sets the horn ----
+    {
+        GameState g7{};
+        g7.SpawnPlayer(0);
+        g7.StartMatch();
+        check(g7.matchEndTick - g7.tick == 10u * 60u * TickRate,
+              "fresh matches default to 10:00");
+        g7.matchMinutes = 20;
+        g7.StartMatch();
+        check(g7.matchEndTick - g7.tick == 20u * 60u * TickRate,
+              "the host 20-minute pick sets the horn");
     }
 
     Log("classtest done: %d failure(s)", fails);

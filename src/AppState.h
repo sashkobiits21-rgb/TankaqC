@@ -74,6 +74,7 @@ enum : int
     UiIdShopPanel,    // whole supply-line panel (cards resolved inside)
     UiIdOwnedArrow,   // owned-strip collapse arrow
     UiIdCode,         // click-to-copy game code banner
+    UiIdMatchLen,     // host lobby MATCH: N MIN cycle button
 };
 
 struct App

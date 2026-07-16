@@ -28,7 +28,7 @@ namespace tankaq::net
 // base 0) -- derived-stat contract change.
 // v18: FISSION SHELLS (SplitChance stat), ghost 2 s fuse + faster spiral,
 // necro-killed soldiers rise as ghosts -- derived-stat contract change.
-constexpr uint8_t ProtocolVersion = 18;
+constexpr uint8_t ProtocolVersion = 19;
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t
@@ -208,6 +208,7 @@ struct MsgSnapshot
     uint8_t phase = PhaseLobby;
     uint8_t winner = 0xFF;
     uint8_t targetPlayers = 0;    // gathering queue size (0 = no queue)
+    uint8_t matchMinutes = 10;    // host lobby pick (5/10/15/20)
     uint32_t tick = 0;
     uint32_t matchEndTick = 0;
     PlayerNet players[MaxPlayers];

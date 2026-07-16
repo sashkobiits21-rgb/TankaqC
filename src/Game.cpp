@@ -344,7 +344,7 @@ void GameState::StartMatch()
         gh.active = false;
     phase = PhasePlaying;
     winner = 0xFF;
-    matchEndTick = tick + MatchDurationTicks;
+    matchEndTick = tick + uint32_t(matchMinutes) * 60u * TickRate;
 }
 
 void GameState::StartGathering(int playersWanted)

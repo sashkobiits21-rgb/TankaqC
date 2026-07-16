@@ -17,12 +17,14 @@ constexpr int   StatRecalcTicks = 8;         // host recalcs stats every 8 ticks
 enum : uint8_t
 {
     PhaseLobby = 0,      // ready-up, tanks parked in a lineup
-    PhasePlaying,        // 5-minute kill-count match
+    PhasePlaying,        // timed kill-count match (host picks the length)
     PhaseOvertime,       // tied at the horn: first kill wins
     PhaseEnded,          // winner banner, auto-return to lobby
     PhaseGathering,      // quick-match queue: waiting for targetPlayers
 };
-constexpr uint32_t MatchDurationTicks = 5 * 60 * TickRate;
+// Match length: the host cycles through kMatchMinutes in the lobby.
+constexpr uint8_t kMatchMinutes[] = { 5, 10, 15, 20 };
+constexpr uint8_t DefaultMatchMinutes = 10;
 constexpr uint32_t EndedReturnTicks = 6 * TickRate;
 constexpr int   SnapshotEveryTicks = 3;      // 20 Hz
 constexpr float ArenaHalf = 30.0f;
@@ -370,7 +372,7 @@ constexpr float PuddleRadius = 1.7f;
 constexpr float GhostOrbitStart = 5.5f;   // spiral start radius
 constexpr float GhostCloseRate = 2.4f;    // radius shrink per second
 constexpr float GhostOrbitSpeed = 7.0f;   // tangential units/s
-constexpr float GhostLifetime = 2.0f;     // seconds before it gives up
+constexpr float GhostLifetime = 4.0f;     // seconds before it gives up
 
 struct SkullState
 {
@@ -421,6 +423,7 @@ struct GameState
     uint8_t phase = PhaseLobby;
     uint8_t winner = 0xFF;
     uint8_t targetPlayers = 0;    // quick-match queue size (0 = no queue)
+    uint8_t matchMinutes = DefaultMatchMinutes;   // host lobby choice
     uint32_t matchEndTick = 0;
     uint32_t endedTick = 0;
     bool lagCompEnabled = true;   // host: input catch-up on direction changes
@@ -431,7 +434,7 @@ struct GameState
 
     void SpawnPlayer(int id);
     void RemovePlayer(int id);
-    // Host: fresh 5-minute match (full per-player reset, ring spawns).
+    // Host: fresh match, matchMinutes long (full per-player reset, ring spawns).
     void StartMatch();
     // Host: back to the ready-up lineup.
     void ToLobby();
