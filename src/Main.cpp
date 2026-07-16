@@ -1093,7 +1093,8 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
     }
 
     // ------------------------------------------------ necromancer visuals
-    // skulls: green cranium + flapping jaw, homing at head height
+    // skulls: the rigged model chomping its OpenAndClose loop, homing at
+    // head height (procedural cranium+jaw only if the GLB is missing)
     for (int i = 0; i < MaxSkulls; ++i)
     {
         const SkullState& sk = g.game.skulls[i];
@@ -1123,20 +1124,44 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
             syaw = LerpAngle(a.yaw, sk.yaw, g.tickAlpha);
         }
         float bob = sinf(float(g.time) * 5.0f + float(i)) * 0.08f;
-        XMFLOAT4 green{ 0.35f, 1.0f, 0.35f, 0.25f };
-        frame.objects.push_back({ g.meshSkull, g.texWhite,
-            Store(XMMatrixRotationY(syaw)
-                  * XMMatrixTranslation(sx, SkullY + bob, sz)),
-            green, true });
-        // jaw: hinged at the back, chomping
-        float open = 0.30f + 0.28f * sinf(float(g.time) * 8.0f + float(i) * 1.7f);
-        XMMATRIX jaw = XMMatrixTranslation(0, 0, 0.20f)      // hinge offset
-                     * XMMatrixRotationX(open)               // chomp
-                     * XMMatrixTranslation(0, -0.24f, -0.03f)
-                     * XMMatrixRotationY(syaw)
-                     * XMMatrixTranslation(sx, SkullY + bob, sz);
-        frame.objects.push_back({ g.meshJaw, g.texWhite, Store(jaw),
-                                  green, true });
+        if (g.skullModel.valid && !g.meshSkullParts.empty())
+        {
+            Animator& an = g.skullAnim[i];
+            an.Update(g.frameDt);
+            frame.palettes.emplace_back();
+            an.Pose(frame.palettes.back());
+            int paletteIdx = int(frame.palettes.size()) - 1;
+            XMMATRIX world =
+                XMMatrixScaling(g.skullScale, g.skullScale, g.skullScale)
+                * XMMatrixRotationY(syaw)
+                * XMMatrixTranslation(sx, SkullY + bob, sz);
+            for (size_t pi = 0; pi < g.meshSkullParts.size(); ++pi)
+            {
+                RenderObject ro{ g.meshSkullParts[pi],
+                                 g.texSkull >= 0 ? g.texSkull : g.texWhite,
+                                 Store(world),
+                                 { 0.85f, 0.95f, 0.72f, 0 }, true };
+                ro.paletteIndex = paletteIdx;
+                frame.objects.push_back(ro);
+            }
+        }
+        else
+        {
+            XMFLOAT4 green{ 0.35f, 1.0f, 0.35f, 0.25f };
+            frame.objects.push_back({ g.meshSkull, g.texWhite,
+                Store(XMMatrixRotationY(syaw)
+                      * XMMatrixTranslation(sx, SkullY + bob, sz)),
+                green, true });
+            float open = 0.30f
+                       + 0.28f * sinf(float(g.time) * 8.0f + float(i) * 1.7f);
+            XMMATRIX jaw = XMMatrixTranslation(0, 0, 0.20f)
+                         * XMMatrixRotationX(open)
+                         * XMMatrixTranslation(0, -0.24f, -0.03f)
+                         * XMMatrixRotationY(syaw)
+                         * XMMatrixTranslation(sx, SkullY + bob, sz);
+            frame.objects.push_back({ g.meshJaw, g.texWhite, Store(jaw),
+                                      green, true });
+        }
     }
 
     // acid puddles: flat green discs, shrinking out in their last second
@@ -1893,6 +1918,53 @@ bool CreateAssets()
         MeshData wedge = MakePieWedge();
         g.meshWedge = r->CreateMesh(wedge.verts.data(), wedge.verts.size(),
                                     wedge.indices.data(), wedge.indices.size());
+    }
+
+    // the user-authored rigged skull: 3-bone jaw, one OpenAndClose clip
+    // looping forever (until the collision that ends the skull). The current
+    // export has NO UVs, so its textures cannot map yet -- parts draw with a
+    // bone tint until a re-export with UVs lands (texture hookup is ready).
+    {
+        g.skullModel = LoadSkinnedGLB("assets/Skull/Skull.glb");
+        if (g.skullModel.valid)
+        {
+            float mx = 0.01f;
+            bool hasUv = false;
+            for (const SkinnedPart& part : g.skullModel.parts)
+            {
+                g.meshSkullParts.push_back(
+                    r->CreateSkinnedMesh(part.verts.data(), part.verts.size(),
+                                         part.indices.data(),
+                                         part.indices.size()));
+                for (const SkinnedVertex& v : part.verts)
+                {
+                    mx = std::max({ mx, fabsf(v.px), fabsf(v.py), fabsf(v.pz) });
+                    hasUv |= v.u != 0.0f || v.v != 0.0f;
+                }
+            }
+            g.skullScale = 0.62f / mx;   // normalize to gameplay size
+            if (!hasUv)
+                Log("Skull.glb has no UVs: textures skipped (re-export with "
+                    "UVs checked to enable them)");
+            int clip = g.skullModel.FindClip("OpenAndClose");
+            if (clip < 0)
+                clip = g.skullModel.clips.empty() ? -1 : 0;
+            for (int i = 0; i < MaxSkulls; ++i)
+            {
+                Animator& an = g.skullAnim[i];
+                an.model = &g.skullModel;
+                if (clip >= 0)
+                {
+                    an.PlayLayer(0, clip, true, 1.0f);
+                    an.layers[0].time = float(i) * 0.37f;   // staggered chomp
+                }
+            }
+            Log("Skull rig ready: %zu parts, %zu joints, scale %.3f",
+                g.skullModel.parts.size(), g.skullModel.joints.size(),
+                g.skullScale);
+        }
+        else
+            Log("Assets: no Skull/Skull.glb -- procedural skull fallback");
     }
 
     // The soldier rig is GAMEPLAY now (summons), not just the --rigtest demo:

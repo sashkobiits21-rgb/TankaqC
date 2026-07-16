@@ -127,6 +127,13 @@ struct App
     // necromancer + radar visuals
     int meshSkull = -1, meshJaw = -1, meshPuddle = -1, meshRing = -1;
     int meshGhost = -1, meshWedge = -1;
+    // rigged skull (assets/Skull/Skull.glb): 3-bone jaw, one looping
+    // OpenAndClose clip; falls back to the procedural cranium+jaw if absent
+    SkinnedModel skullModel;
+    std::vector<int> meshSkullParts;
+    float skullScale = 1.0f;
+    int texSkull = -1;                         // stays -1 until UVs exist
+    Animator skullAnim[MaxSkulls];             // staggered chomp per slot
     bool prevSkullActive[MaxSkulls]{};         // burst on skull death
     DirectX::XMFLOAT3 prevSkullPos[MaxSkulls]{};
     float prevProjRadar[MaxProjectiles]{};     // per-circle explosion VFX
