@@ -1359,6 +1359,14 @@ void DrawIconGlyph(IconCanvas& c, int icon)
         c.Fill(5, 4, 10, 4, W); c.Fill(5, 11, 10, 11, W);
         c.Fill(4, 5, 4, 10, W); c.Fill(11, 5, 11, 10, W);
         break;
+    case 41: // FISSION SHELLS: shell forking into two arrows
+        c.Fill(7, 10, 8, 13, W);                               // stem
+        for (int i = 0; i < 4; ++i)
+        { c.Fill(6 - i, 8 - i, 7 - i, 9 - i, W);
+          c.Fill(8 + i, 8 - i, 9 + i, 9 - i, W); }
+        c.Fill(2, 2, 4, 2, W); c.Fill(2, 3, 2, 4, W);          // arrowheads
+        c.Fill(11, 2, 13, 2, W); c.Fill(13, 3, 13, 4, W);
+        break;
     case 40: // NESTED ARRAY: concentric squares
         c.Fill(2, 2, 13, 2, W); c.Fill(2, 13, 13, 13, W);
         c.Fill(2, 3, 2, 12, W); c.Fill(13, 3, 13, 12, W);

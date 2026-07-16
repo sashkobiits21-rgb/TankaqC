@@ -28,6 +28,7 @@ const float kBaseStats[StatCount] = {
     10.0f,              // SoldierCooldown: 10 s between spawns
     1.0f,               // BounceDamage: x1 per ricochet until upgraded
     1.0f,               // BounceSpeed
+    0.0f,               // SplitChance: no fission until upgraded
     5.0f,               // SkullRate: a skull every 5 s
     5.0f,               // SkullDamage: direct contact damage
     4.0f,               // AcidDps
@@ -142,6 +143,8 @@ const UpgradeType kUpgradePool[UpgradeCount] = {
       { { S(RadarLock), -0.1f, 1 } }, 1, ClassRadar },
     { U(NestedArray),  "NESTED ARRAY", "+1 NESTED RADAR RING",         4, 95,
       { { S(RadarRings), 1, 1 } }, 1, ClassRadar },
+    { U(FissionShells), "FISSION SHELLS", "+25% TWIN SPLIT ON BOUNCE",   3, 70,
+      { { S(SplitChance), 0.25f, 1 } }, 1, ClassBouncy },
 };
 #undef S
 #undef U
@@ -292,6 +295,8 @@ void GameState::RecalcStats(int id)
     p.stats[int(Stat::SoldierCooldown)] = std::max(0.5f, p.stats[int(Stat::SoldierCooldown)]);
     p.stats[int(Stat::BounceDamage)] = std::max(0.25f, p.stats[int(Stat::BounceDamage)]);
     p.stats[int(Stat::BounceSpeed)] = std::max(0.25f, p.stats[int(Stat::BounceSpeed)]);
+    p.stats[int(Stat::SplitChance)] = std::clamp(p.stats[int(Stat::SplitChance)],
+                                                 0.0f, 1.0f);
     p.stats[int(Stat::SkullRate)] = std::max(0.8f, p.stats[int(Stat::SkullRate)]);
     p.stats[int(Stat::SkullDamage)] = std::max(1.0f, p.stats[int(Stat::SkullDamage)]);
     p.stats[int(Stat::AcidDps)] = std::max(0.5f, p.stats[int(Stat::AcidDps)]);
@@ -691,6 +696,8 @@ bool SegmentBlockedByObstacles(float x0, float z0, float x1, float z1,
     return false;
 }
 
+static void SpawnGhost(GameState& gs, int owner, float x, float z);
+
 void GameState::ApplyDamage(int shooterId, int victimId, int rawDamage,
                             int hitMoney)
 {
@@ -711,16 +718,7 @@ void GameState::ApplyDamage(int shooterId, int victimId, int rawDamage,
             // NECROMANCER: a ghost rises from every tank the necromancer
             // kills and goes hunting for its next victim
             if (HasClass(shooter, ClassNecro))
-                for (GhostState& gh : ghosts)
-                    if (!gh.active)
-                    {
-                        gh = GhostState{};
-                        gh.active = true;
-                        gh.owner = uint8_t(shooterId);
-                        gh.x = t.x;
-                        gh.z = t.z;
-                        break;
-                    }
+                SpawnGhost(*this, shooterId, t.x, t.z);
             if (phase == PhaseOvertime)   // sudden death: first kill
             {
                 phase = PhaseEnded;
@@ -754,6 +752,21 @@ static int NearestEnemyTank(const GameState& gs, int owner, float x, float z)
         if (d2 < bestD2) { bestD2 = d2; best = id; }
     }
     return best;
+}
+
+static void SpawnGhost(GameState& gs, int owner, float x, float z)
+{
+    for (GhostState& gh : gs.ghosts)
+    {
+        if (gh.active)
+            continue;
+        gh = GhostState{};
+        gh.active = true;
+        gh.owner = uint8_t(owner);
+        gh.x = x;
+        gh.z = z;
+        return;
+    }
 }
 
 static void SpawnPuddle(GameState& gs, int owner, float x, float z)
@@ -822,6 +835,7 @@ static void TickSkull(GameState& gs, SkullState& sk)
             if (dx * dx + dz * dz < r * r)
             {
                 s.health -= sk.dmg;
+                s.lastHitBy = sk.owner;
                 burst = true;
                 break;
             }
@@ -866,7 +880,10 @@ static void TickPuddle(GameState& gs, PuddleState& pu)
         float dx = s.x - pu.x, dz = s.z - pu.z;
         float r = PuddleRadius + SoldierRadius;
         if (dx * dx + dz * dz < r * r)
+        {
             s.health -= pu.dps * TickDt;
+            s.lastHitBy = pu.owner;
+        }
     }
 }
 
@@ -875,6 +892,12 @@ static void TickPuddle(GameState& gs, PuddleState& pu)
 // PossessDuration, drives itself with deterministic chaos and cannot fire.
 static void TickGhost(GameState& gs, GhostState& gh)
 {
+    gh.life -= TickDt;
+    if (gh.life <= 0.0f)
+    {
+        gh.active = false;   // the window to escape it
+        return;
+    }
     if (gh.targetId >= MaxPlayers || !gs.players[gh.targetId].active
         || gs.players[gh.targetId].health <= 0)
     {
@@ -1025,7 +1048,10 @@ static void TickRadar(GameState& gs, Projectile& pr)
                 sum += rootDmg / float(1 << dep[k]);
         }
         if (sum > 0.0f)
+        {
             s.health -= sum;
+            s.lastHitBy = pr.owner;
+        }
     }
     pr.active = false;   // the detonation consumes the rocket
 }
@@ -1360,6 +1386,12 @@ void GameState::TickSoldier(SoldierState& s)
     }
     if (s.health <= 0.0f || !players[s.owner].active)
     {
+        // fallen soldiers rise for the necromancer who slew them
+        if (s.health <= 0.0f && s.lastHitBy < MaxPlayers
+            && s.lastHitBy != s.owner
+            && players[s.lastHitBy].active
+            && HasClass(players[s.lastHitBy], ClassNecro))
+            SpawnGhost(*this, s.lastHitBy, s.x, s.z);
         s.state = SoldierDying;
         s.deathTimer = SoldierDeathTime;
         return;
@@ -1923,6 +1955,7 @@ void GameState::Tick(const InputCmd* inputs)
                 pr.bounces = int(p.stats[int(Stat::Bounces)] + 0.5f);
                 pr.bounceDmg = p.stats[int(Stat::BounceDamage)];
                 pr.bounceSpd = p.stats[int(Stat::BounceSpeed)];
+                pr.splitChance = p.stats[int(Stat::SplitChance)];
                 if (HasClass(p, ClassRadar))
                 {
                     pr.radarRange = p.stats[int(Stat::RadarRange)];
@@ -1943,10 +1976,38 @@ void GameState::Tick(const InputCmd* inputs)
     {
         if (!pr.active)
             continue;
+        int bouncesBefore = pr.bounces;
         if (!StepProjectile(pr, TickDt))
         {
             pr.active = false;
             continue;
+        }
+        // FISSION SHELLS: each bounce may split off ONE half-damage twin
+        // exiting at a deviated angle. One split per rocket, twins sterile.
+        if (pr.bounces < bouncesBefore && pr.splitChance > 0.0f)
+        {
+            int slot = int(&pr - &projectiles[0]);
+            uint32_t h = tick * 2654435761u ^ uint32_t(slot * 97 + 13);
+            h ^= h << 13; h ^= h >> 17; h ^= h << 5;
+            if (float(h & 0xFFFF) / 65535.0f < pr.splitChance)
+            {
+                for (Projectile& c : projectiles)
+                {
+                    if (c.active)
+                        continue;
+                    c = pr;
+                    c.damage = std::max(1, pr.damage / 2);
+                    c.splitChance = 0.0f;      // twins never split
+                    c.radarRange = 0.0f;       // and carry no radar tree
+                    c.radarLock = 0.0f;
+                    c.radarLockFrac = 0.0f;
+                    c.radarRings = 0;
+                    float dev = ((h >> 16) & 1) ? 0.28f : -0.28f;
+                    c.yaw = WrapAngle(pr.yaw + dev);
+                    pr.splitChance = 0.0f;     // one split per rocket
+                    break;
+                }
+            }
         }
         // RADAR rockets scan while flying; a full ring lock detonates
         if (pr.radarRange > 0.0f)
@@ -1982,6 +2043,7 @@ void GameState::Tick(const InputCmd* inputs)
             if (dx * dx + dz * dz < r * r && pr.y < 2.2f)
             {
                 s.health -= float(pr.damage);
+                s.lastHitBy = pr.owner;
                 s.hitFlash = 0.3f;
                 if (s.health <= 0.0f && pr.owner < MaxPlayers
                     && players[pr.owner].active)

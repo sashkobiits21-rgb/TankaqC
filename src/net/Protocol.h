@@ -26,7 +26,9 @@ namespace tankaq::net
 // v16: radar lock progress byte per projectile (countdown fill visual).
 // v17: radar root damage = the rocket's own damage (+ RadarDamage bonus,
 // base 0) -- derived-stat contract change.
-constexpr uint8_t ProtocolVersion = 17;
+// v18: FISSION SHELLS (SplitChance stat), ghost 2 s fuse + faster spiral,
+// necro-killed soldiers rise as ghosts -- derived-stat contract change.
+constexpr uint8_t ProtocolVersion = 18;
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t

@@ -88,6 +88,7 @@ enum class Stat : uint8_t
     // BOUNCY class: per-ricochet multipliers baked into the rocket at fire
     BounceDamage,     // damage multiplier applied on every wall bounce
     BounceSpeed,      // speed multiplier applied on every wall bounce
+    SplitChance,      // chance per bounce to split off ONE half-damage twin
     // NECROMANCER class
     SkullRate,        // seconds between skull launches
     SkullDamage,      // direct contact damage when a skull hits a body
@@ -143,6 +144,7 @@ enum class UpgradeId : uint8_t
     NecroClass, RadarClass,
     BoneFurnace, CausticBrew, LingeringRot, DeepGrip, SoulLeech,
     FastLock, WideScan, Payload, SharpPing, NestedArray,
+    FissionShells,
     Count
 };
 constexpr int UpgradeCount = int(UpgradeId::Count);
@@ -280,6 +282,9 @@ struct Projectile
     float radarLock = 0.0f;
     float radarLockFrac = 0.0f;      // lock progress 0..1 (replicated for
                                      // the clockwise countdown fill)
+    // BOUNCY: chance per bounce to split off ONE half-damage twin exiting
+    // at a deviated angle. A rocket splits at most once; twins never split.
+    float splitChance = 0.0f;
 };
 
 // Lay out the radar circle tree for a rocket (sim, rendering and VFX all
@@ -337,6 +342,7 @@ struct SoldierState
     float muzzleFlash = 0;        // seconds of muzzle flash left (visual)
     float hitFlash = 0;
     float deathTimer = 0;
+    uint8_t lastHitBy = 0xFF;   // killer attribution (necromancer ghosts)
     // baked from the owner's stats at spawn time
     float speed = 4.0f, damage = 10.0f, fireRate = 1.0f;
 };
@@ -361,9 +367,10 @@ constexpr float SkullSpeed = 9.0f;
 constexpr float SkullRadius = 0.62f;
 constexpr float SkullY = 1.2f;            // hover height
 constexpr float PuddleRadius = 1.7f;
-constexpr float GhostOrbitStart = 7.0f;   // spiral start radius
-constexpr float GhostCloseRate = 1.4f;    // radius shrink per second
+constexpr float GhostOrbitStart = 5.5f;   // spiral start radius
+constexpr float GhostCloseRate = 2.4f;    // radius shrink per second
 constexpr float GhostOrbitSpeed = 7.0f;   // tangential units/s
+constexpr float GhostLifetime = 2.0f;     // seconds before it gives up
 
 struct SkullState
 {
@@ -392,6 +399,7 @@ struct GhostState
     float x = 0, z = 0;
     float angle = 0;      // orbit phase around the target
     float orbitR = GhostOrbitStart;
+    float life = GhostLifetime;   // vanishes when it runs out: RUN
 };
 
 // One tick of projectile flight: lifetime, movement, and the wall/obstacle

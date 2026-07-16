@@ -142,6 +142,92 @@ int RunClassTest()
         check(out.damage == 115, "RUBBER SHELLS damage applied on bounce");
     }
 
+    // ---- FISSION SHELLS: a bounce splits off one sterile half-damage twin
+    {
+        GameState g5{};
+        g5.SpawnPlayer(0);
+        g5.phase = PhasePlaying;
+        g5.matchEndTick = g5.tick + 100000;
+        Projectile pr{};
+        pr.active = true; pr.owner = 0;
+        pr.x = ArenaHalf - 0.2f; pr.z = 0; pr.y = 0.17f;
+        pr.yaw = XM_PI * 0.5f;
+        pr.life = 1.5f; pr.speed = 10.0f; pr.damage = 100; pr.bounces = 2;
+        pr.splitChance = 1.0f;   // always
+        g5.projectiles[0] = pr;
+        InputCmd idle[MaxPlayers]{};
+        for (int t = 0; t < 8; ++t) g5.Tick(idle);
+        int alive = 0, twin = -1;
+        for (int i = 0; i < MaxProjectiles; ++i)
+            if (g5.projectiles[i].active)
+            {
+                ++alive;
+                if (i != 0) twin = i;
+            }
+        check(alive == 2, "bounce split off exactly one twin");
+        check(twin >= 0 && g5.projectiles[twin].damage == 50,
+              "twin carries half damage");
+        check(twin >= 0 && g5.projectiles[twin].splitChance == 0.0f,
+              "twins are sterile (never split again)");
+        check(g5.projectiles[0].splitChance == 0.0f,
+              "parent spent its one split");
+        check(twin >= 0
+              && fabsf(WrapAngle(g5.projectiles[twin].yaw
+                                 - g5.projectiles[0].yaw)) > 0.1f,
+              "twin exits at a deviated angle");
+        // both keep flying; no further splits on the next bounce
+        for (int t = 0; t < TickRate; ++t) g5.Tick(idle);
+        int alive2 = 0;
+        for (const Projectile& q : g5.projectiles) if (q.active) ++alive2;
+        check(alive2 <= 2, "no chain reaction after the split");
+    }
+
+    // ---- ghosts: 2 s fuse (escapable), soldiers rise for their killer ----
+    {
+        GameState g6{};
+        g6.SpawnPlayer(0);
+        g6.SpawnPlayer(1);
+        g6.players[0].owned.push_back(uint8_t(UpgradeId::NecroClass));
+        g6.RecalcStats(0);
+        g6.phase = PhasePlaying;
+        g6.matchEndTick = g6.tick + 100000000u;
+        InputCmd idle[MaxPlayers]{};
+        // a ghost far from its prey runs out of life before contact --
+        // the 2 s fuse is the escape window (close spawns still connect)
+        g6.ghosts[0] = GhostState{};
+        g6.ghosts[0].active = true;
+        g6.ghosts[0].owner = 0;
+        g6.ghosts[0].x = g6.players[1].x + 12.0f;
+        g6.ghosts[0].z = g6.players[1].z;
+        for (int t = 0; t < TickRate * 2 + 8; ++t) g6.Tick(idle);
+        check(!g6.ghosts[0].active, "ghost vanishes after its 2 s fuse");
+        check(g6.players[1].possessTimer <= 0.0f,
+              "distant ghost expired without possessing");
+        // an enemy soldier killed by the necromancer's puddle rises
+        for (GhostState& gh : g6.ghosts) gh.active = false;
+        SoldierState& sl = g6.soldiers[0];
+        sl = SoldierState{};
+        sl.active = true;
+        sl.owner = 1;
+        sl.x = 0; sl.z = -10;
+        sl.health = 2.0f;
+        g6.puddles[0] = PuddleState{};
+        g6.puddles[0].active = true;
+        g6.puddles[0].owner = 0;
+        g6.puddles[0].x = 0;
+        g6.puddles[0].z = -10;
+        g6.puddles[0].life = 3.0f;
+        g6.puddles[0].dps = 6.0f;
+        bool rose = false;
+        for (int t = 0; t < TickRate * 2 && !rose; ++t)
+        {
+            g6.Tick(idle);
+            for (const GhostState& gh : g6.ghosts)
+                rose |= gh.active && gh.owner == 0;
+        }
+        check(rose, "a soldier slain by the necromancer rises as a ghost");
+    }
+
     // ---- soldier summon: spawn cadence, engagement, death, replacement ----
     {
         GameState g2{};
