@@ -1934,19 +1934,34 @@ bool CreateAssets()
         if (g.skullModel.valid)
         {
             float mx = 0.01f;
+            float minY = 1e9f, maxY = -1e9f;
             bool hasUv = false;
             for (const SkinnedPart& part : g.skullModel.parts)
+                for (const SkinnedVertex& v : part.verts)
+                {
+                    mx = std::max({ mx, fabsf(v.px), fabsf(v.py), fabsf(v.pz) });
+                    minY = std::min(minY, v.py);
+                    maxY = std::max(maxY, v.py);
+                    hasUv |= v.u != 0.0f || v.v != 0.0f;
+                }
+            if (!hasUv)
             {
+                // no UVs in the export: generate a spherical projection
+                // (u = azimuth, v = 0 at the crown) and paint a matching
+                // procedural bone texture -- blood scratches on top included
+                float spanY = std::max(0.01f, maxY - minY);
+                for (SkinnedPart& part : g.skullModel.parts)
+                    for (SkinnedVertex& v : part.verts)
+                    {
+                        v.u = atan2f(v.px, v.pz) * (0.5f / XM_PI) + 0.5f;
+                        v.v = 1.0f - (v.py - minY) / spanY;
+                    }
+            }
+            for (const SkinnedPart& part : g.skullModel.parts)
                 g.meshSkullParts.push_back(
                     r->CreateSkinnedMesh(part.verts.data(), part.verts.size(),
                                          part.indices.data(),
                                          part.indices.size()));
-                for (const SkinnedVertex& v : part.verts)
-                {
-                    mx = std::max({ mx, fabsf(v.px), fabsf(v.py), fabsf(v.pz) });
-                    hasUv |= v.u != 0.0f || v.v != 0.0f;
-                }
-            }
             g.skullScale = 0.62f / mx;   // normalize to gameplay size
             if (hasUv)
             {
@@ -1968,8 +1983,20 @@ bool CreateAssets()
                     col.width, col.height, nra.width, nra.height);
             }
             else
-                Log("Skull.glb has no UVs: textures skipped (re-export with "
-                    "UVs checked to enable them)");
+            {
+                // painted PNGs cannot map without authored UVs; use the
+                // generated projection + procedural bone/blood texture (the
+                // PNG set takes over automatically once UVs are exported)
+                ImageData bone = MakeSkullTexture(512);
+                g.texSkull = r->CreateTexture(bone.rgba.data(),
+                                              bone.width, bone.height);
+                ImageData nra = MakeNormalRoughFromTexture(bone, 1.8f,
+                                                           0.55f, 0.9f);
+                g.texSkullNRA = r->CreateTexture(nra.rgba.data(),
+                                                 nra.width, nra.height);
+                Log("Skull.glb has no UVs: spherical projection + procedural "
+                    "bone/blood texture (authored PNGs need a UV export)");
+            }
             int clip = g.skullModel.FindClip("OpenAndClose");
             if (clip < 0)
                 clip = g.skullModel.clips.empty() ? -1 : 0;

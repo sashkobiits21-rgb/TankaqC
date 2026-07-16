@@ -108,6 +108,7 @@ ImageData LoadImageFile(const std::string& path);
 ImageData MakeNraFromMaps(const ImageData& normal, const ImageData& rough);
 
 // Procedural textures.
+ImageData MakeSkullTexture(int size);   // bone + blood scratches on the crown
 ImageData MakeGroundTexture(int size);
 ImageData MakeWallTexture(int size);
 ImageData MakeSolidTexture(uint8_t r, uint8_t g, uint8_t b);

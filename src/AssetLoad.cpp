@@ -1049,6 +1049,79 @@ MeshData MakeRing(float radius, float width, int segments)
     return m;
 }
 
+// Bone-colored skull texture for spherically-projected UVs (u = azimuth,
+// v = 0 at the crown): weathered bone, faint cracks, and BLOOD SCRATCHES
+// clawed across the top -- deterministic, seam-aware in u.
+ImageData MakeSkullTexture(int size)
+{
+    ImageData img;
+    img.width = img.height = size;
+    img.rgba.resize(size_t(size) * size * 4);
+    uint32_t rng = 0xB10D5EEDu;
+    auto rnd = [&rng]()
+    {
+        rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+        return float(rng & 0xFFFFFF) / 16777215.0f;
+    };
+    // base: aged bone with soft mottling, darker toward the jaw (v -> 1)
+    for (int y = 0; y < size; ++y)
+        for (int x = 0; x < size; ++x)
+        {
+            float v = float(y) / size;
+            float mottle = 0.5f
+                + 0.28f * sinf(x * 0.113f + sinf(y * 0.071f) * 2.1f)
+                + 0.22f * sinf(y * 0.157f + sinf(x * 0.089f) * 1.7f);
+            float shade = 0.86f + 0.08f * mottle - 0.10f * v;
+            size_t i = (size_t(y) * size + x) * 4;
+            img.rgba[i + 0] = uint8_t(std::clamp(shade * 235.0f, 0.0f, 255.0f));
+            img.rgba[i + 1] = uint8_t(std::clamp(shade * 224.0f, 0.0f, 255.0f));
+            img.rgba[i + 2] = uint8_t(std::clamp(shade * 198.0f, 0.0f, 255.0f));
+            img.rgba[i + 3] = 255;
+        }
+    auto stroke = [&](float u0, float v0, float ang, int steps, float width,
+                      uint8_t cr, uint8_t cg, uint8_t cb, float wander)
+    {
+        float x = u0 * size, y = v0 * size;
+        for (int s = 0; s < steps; ++s)
+        {
+            ang += (rnd() - 0.5f) * wander;
+            x += cosf(ang) * 1.5f;
+            y += sinf(ang) * 1.5f;
+            int w = std::max(1, int(width * (1.0f - float(s) / steps) + 0.5f));
+            for (int dy = -w; dy <= w; ++dy)
+                for (int dx = -w; dx <= w; ++dx)
+                {
+                    if (dx * dx + dy * dy > w * w)
+                        continue;
+                    int px = (int(x) + dx % size + size) % size;   // u wraps
+                    int py = std::clamp(int(y) + dy, 0, size - 1);
+                    size_t i = (size_t(py) * size + px) * 4;
+                    // darker rim, saturated core
+                    bool core = dx * dx + dy * dy <= (w - 1) * (w - 1);
+                    img.rgba[i + 0] = core ? cr : uint8_t(cr * 0.55f);
+                    img.rgba[i + 1] = core ? cg : uint8_t(cg * 0.55f);
+                    img.rgba[i + 2] = core ? cb : uint8_t(cb * 0.55f);
+                }
+        }
+    };
+    // blood scratches: clawed across the crown (small v = top of the skull)
+    for (int k = 0; k < 3; ++k)   // three claw groups of three
+    {
+        float u0 = rnd();
+        float v0 = 0.04f + rnd() * 0.10f;
+        float ang = 0.5f + rnd() * 0.6f;              // raking downward
+        for (int c = 0; c < 3; ++c)
+            stroke(u0 + c * 0.018f, v0 + c * 0.008f, ang,
+                   45 + int(rnd() * 30), 2.4f,
+                   142, 18, 14, 0.28f);
+    }
+    // a few dry cracks lower down
+    for (int k = 0; k < 4; ++k)
+        stroke(rnd(), 0.35f + rnd() * 0.4f, rnd() * 6.28f,
+               60 + int(rnd() * 40), 1.0f, 96, 84, 66, 0.55f);
+    return img;
+}
+
 ImageData LoadImageFile(const std::string& path)
 {
     ImageData img;
