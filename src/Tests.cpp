@@ -733,12 +733,18 @@ int RunClassTest()
         gt.matchEndTick = gt.tick + 100000000u;
         gt.players[0].owned.push_back(uint8_t(UpgradeId::Terrorist));
         gt.RecalcStats(0);
+        gt.SpawnPlayer(3);
         gt.players[0].x = 0; gt.players[0].z = -24;
-        gt.players[1].x = 0; gt.players[1].z = -21;    // 3 u out
+        gt.players[1].x = 0; gt.players[1].z = -21.5f; // 2.5 u: plateau
         gt.players[2].x = 20; gt.players[2].z = 20;    // far out of reach
+        gt.players[3].x = 0; gt.players[3].z = -18.5f; // 5.5 u: halfway down
         gt.ApplyDamage(1, 0, 10000, 0);
-        check(gt.players[1].health == 59,
-              "3 u from the blast: 41 damage (linear falloff)");
+        check(gt.players[1].health == 0,
+              "inside one tank length: the blast takes 100%% max HP");
+        check(gt.players[0].score == 1,
+              "the terrorist scores the posthumous kill");
+        check(gt.players[3].health == 50,
+              "5.5 u out: falloff leaves a 50-damage hit");
         check(gt.players[2].health == 100,
               "outside the radius: untouched");
 

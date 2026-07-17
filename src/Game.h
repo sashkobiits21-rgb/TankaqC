@@ -143,7 +143,8 @@ constexpr int kMaxClasses = 2;
 
 // UNIQUE rule-benders ------------------------------------------------------
 constexpr float TerroristRadius = 8.0f;   // death blast reach
-constexpr float TerroristMaxDmg = 65.0f;  // at point blank, linear falloff
+constexpr float TerroristPlateau = 3.0f;  // full damage inside one tank
+                                          // length; linear falloff beyond
 constexpr float VampireLifesteal = 0.10f; // fraction of damage dealt
 constexpr float VampireBurnFrac = 0.10f;  // of max HP, per second in the sun
 constexpr float StealthSlow = 0.65f;      // -35% speed, fixed

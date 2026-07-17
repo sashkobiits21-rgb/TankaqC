@@ -846,8 +846,13 @@ void GameState::ApplyDamage(int shooterId, int victimId, int rawDamage,
                 float dist = sqrtf(dx * dx + dz * dz);
                 if (dist >= TerroristRadius)
                     continue;
-                int blast = int(TerroristMaxDmg
-                                * (1.0f - dist / TerroristRadius) + 0.5f);
+                // 100% of the victim's max HP point-blank; full strength
+                // holds for one tank length, then falls off linearly
+                float frac = dist <= TerroristPlateau
+                    ? 1.0f
+                    : 1.0f - (dist - TerroristPlateau)
+                             / (TerroristRadius - TerroristPlateau);
+                int blast = int(MaxHealthFor(e) * frac + 0.5f);
                 if (blast > 0)
                     ApplyDamage(victimId, id, blast, 2);
             }
@@ -860,8 +865,11 @@ void GameState::ApplyDamage(int shooterId, int victimId, int rawDamage,
                 float dist = sqrtf(dx * dx + dz * dz);
                 if (dist >= TerroristRadius)
                     continue;
-                s.health -= TerroristMaxDmg
-                          * (1.0f - dist / TerroristRadius);
+                float frac = dist <= TerroristPlateau
+                    ? 1.0f
+                    : 1.0f - (dist - TerroristPlateau)
+                             / (TerroristRadius - TerroristPlateau);
+                s.health -= 100.0f * frac;
                 s.lastHitBy = uint8_t(victimId);
             }
         }
