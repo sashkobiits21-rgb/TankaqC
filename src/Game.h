@@ -460,6 +460,12 @@ struct GhostState
 // copy of these rules: the host simulation and the client's provisional
 // (predicted) rockets both call this, so they can never drift apart.
 bool StepProjectile(Projectile& pr, float dt);
+// One tick of SHIELD deflection for a rocket: checks every raised barrier,
+// reflects/flips/paints on a hit. THE single copy: the host projectile loop
+// and the client's provisional (predicted) rockets both call it, so the
+// bounce is visible the instant the shell meets the face on every screen.
+struct GameState;
+bool ShieldDeflectStep(GameState& gs, Projectile& pr);
 
 struct GameState
 {

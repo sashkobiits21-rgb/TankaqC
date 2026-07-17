@@ -148,8 +148,8 @@ const UpgradeType kUpgradePool[UpgradeCount] = {
       { { S(RadarLock), -0.1f, 1 } }, 1, ClassRadar },
     { U(NestedArray),  "NESTED ARRAY", "+1 NESTED RADAR RING",         4, 95,
       { { S(RadarRings), 1, 1 } }, 1, ClassRadar },
-    { U(FissionShells), "FISSION SHELLS", "+25% TWIN SPLIT ON BOUNCE",   3, 70,
-      { { S(SplitChance), 0.25f, 1 } }, 1, ClassBouncy },
+    { U(FissionShells), "FISSION SHELLS", "+20% TWIN SPLIT PER BOUNCE",  3, 70,
+      { { S(SplitChance), 0.20f, 1 } }, 1, ClassBouncy },
     { U(FragPack),     "FRAG PACK", "SOLDIERS LOB 2 GRENADES PER LIFE", 4, 95,
       { { S(GrenadeCount), 2, 1 } }, 1, ClassSoldier },
     // SHIELD PROFICIENCY: card + family (enum order is pool order)
@@ -314,6 +314,8 @@ void GameState::RecalcStats(int id)
     p.stats[int(Stat::ShieldWidth)] = std::clamp(p.stats[int(Stat::ShieldWidth)], 1.5f, 14.0f);
     p.stats[int(Stat::ShieldDuration)] = std::clamp(p.stats[int(Stat::ShieldDuration)], 1.0f, 15.0f);
     p.stats[int(Stat::ShieldCooldown)] = std::max(3.0f, p.stats[int(Stat::ShieldCooldown)]);
+    p.stats[int(Stat::SplitChance)] =
+        std::clamp(p.stats[int(Stat::SplitChance)], 0.0f, 2.0f);
     p.stats[int(Stat::BounceDamage)] = std::max(0.25f, p.stats[int(Stat::BounceDamage)]);
     p.stats[int(Stat::BounceSpeed)] = std::max(0.25f, p.stats[int(Stat::BounceSpeed)]);
     p.stats[int(Stat::SplitChance)] = std::clamp(p.stats[int(Stat::SplitChance)],
@@ -1123,6 +1125,59 @@ static int GatherCoverSpots(CoverSpot* out, int cap)
         }
     }
     return n;
+}
+
+// SHIELD deflection: a raised barrier catches enemy rockets, hands them a
+// bonus ricochet, flips their allegiance (they can never hurt the shieldman
+// again -- but hurt everyone else, shooter included) and paints them orange.
+// The owner's own rockets pass right through. Robustness: the face uses the
+// FRESHEST aim (not the jitter-lagged turret), and the test is the tick's
+// SEGMENT against the face plane -- fast shells cannot tunnel between two
+// positions, and the shell's own radius counts at the edges.
+bool ShieldDeflectStep(GameState& gs, Projectile& pr)
+{
+    for (int id = 0; id < MaxPlayers; ++id)
+    {
+        PlayerState& sp = gs.players[id];
+        if (!sp.active || sp.health <= 0 || sp.shieldTimer <= 0.0f
+            || id == pr.owner)
+            continue;
+        float fx = sinf(sp.shieldAimYaw), fz = cosf(sp.shieldAimYaw);
+        float cxp = sp.x + fx * ShieldDist;
+        float czp = sp.z + fz * ShieldDist;
+        float step = pr.speed * TickDt;
+        float vx = sinf(pr.yaw) * step, vz = cosf(pr.yaw) * step;
+        float vn = vx * fx + vz * fz;
+        if (vn >= 0.0f)                   // outbound or parallel
+            continue;
+        float lonNow = (pr.x - cxp) * fx + (pr.z - czp) * fz;
+        float lonPrev = lonNow - vn;      // where this tick started
+        if (lonNow > 0.30f || lonPrev < -0.30f)
+            continue;                     // never met the face this tick
+        float latNow = (pr.x - cxp) * fz - (pr.z - czp) * fx;
+        float latPrev = latNow - (vx * fz - vz * fx);
+        float t = (lonPrev - lonNow) > 1e-6f
+            ? std::clamp(lonPrev / (lonPrev - lonNow), 0.0f, 1.0f)
+            : 0.0f;
+        float lat = latPrev + (latNow - latPrev) * t;
+        float halfW = sp.stats[int(Stat::ShieldWidth)] * 0.5f
+                    + ProjectileRadius + 0.15f;
+        if (fabsf(lat) > halfW)
+            continue;
+        float rvx = sinf(pr.yaw), rvz = cosf(pr.yaw);
+        float rn = rvx * fx + rvz * fz;
+        rvx -= 2.0f * rn * fx;
+        rvz -= 2.0f * rn * fz;
+        pr.yaw = atan2f(rvx, rvz);
+        // re-emerge in front of the face at the crossing point
+        pr.x = cxp + fz * lat + fx * 0.4f;
+        pr.z = czp - fx * lat + fz * 0.4f;
+        pr.bounces += 1;                  // one free ricochet, always
+        pr.owner = uint8_t(id);           // now it fights for the shieldman
+        pr.deflected = 1;                 // orange from here on
+        return true;
+    }
+    return false;
 }
 
 bool GameState::SpawnSoldier(int ownerId)
@@ -2186,14 +2241,23 @@ void GameState::Tick(const InputCmd* inputs)
             continue;
         }
         // FISSION SHELLS: each bounce may split off ONE half-damage twin
-        // exiting at a deviated angle. One split per rocket, twins sterile.
+        // exiting at deviated angles. REAL rockets can split on EVERY
+        // bounce; the spawned twins are always sterile. Chance above 100%
+        // spills into a chance for a SECOND twin on the same bounce
+        // (120% = twin + 20% for another; 200% = always two twins).
         if (pr.bounces < bouncesBefore && pr.splitChance > 0.0f)
         {
             int slot = int(&pr - &projectiles[0]);
             uint32_t h = tick * 2654435761u ^ uint32_t(slot * 97 + 13);
             h ^= h << 13; h ^= h >> 17; h ^= h << 5;
-            if (float(h & 0xFFFF) / 65535.0f < pr.splitChance)
-            {
+            uint32_t h2 = h * 2246822519u ^ 0x9E3779B9u;
+            h2 ^= h2 >> 15; h2 *= 2654435761u; h2 ^= h2 >> 13;
+            float p1 = std::min(pr.splitChance, 1.0f);
+            float p2 = std::clamp(pr.splitChance - 1.0f, 0.0f, 1.0f);
+            float roll1 = float(h & 0xFFFF) / 65535.0f;
+            float roll2 = float(h2 & 0xFFFF) / 65535.0f;
+            int spawn = (roll1 < p1 ? 1 : 0) + (roll2 < p2 ? 1 : 0);
+            for (int k = 0; k < spawn; ++k)
                 for (Projectile& c : projectiles)
                 {
                     if (c.active)
@@ -2205,12 +2269,11 @@ void GameState::Tick(const InputCmd* inputs)
                     c.radarLock = 0.0f;
                     c.radarLockFrac = 0.0f;
                     c.radarRings = 0;
-                    float dev = ((h >> 16) & 1) ? 0.28f : -0.28f;
+                    float dev = (k == 0 ? 0.28f : 0.52f)
+                              * (((h >> 16 >> k) & 1) ? 1.0f : -1.0f);
                     c.yaw = WrapAngle(pr.yaw + dev);
-                    pr.splitChance = 0.0f;     // one split per rocket
                     break;
                 }
-            }
         }
         // RADAR rockets scan while flying; a full ring lock detonates
         if (pr.radarRange > 0.0f)
@@ -2219,55 +2282,7 @@ void GameState::Tick(const InputCmd* inputs)
             if (!pr.active)
                 continue;
         }
-        // SHIELD deflection: a raised barrier catches enemy rockets, hands
-        // them a bonus ricochet, flips their allegiance (they can never hurt
-        // the shieldman again -- but hurt everyone else, shooter included)
-        // and paints them orange. The owner's own rockets pass right through.
-        // Robustness: the face uses the FRESHEST aim (not the jitter-lagged
-        // turret), and the test is the tick's SEGMENT against the face
-        // plane -- fast shells cannot tunnel between two positions, and the
-        // shell's own radius counts at the edges.
-        for (int id = 0; id < MaxPlayers; ++id)
-        {
-            PlayerState& sp = players[id];
-            if (!sp.active || sp.health <= 0 || sp.shieldTimer <= 0.0f
-                || id == pr.owner)
-                continue;
-            float fx = sinf(sp.shieldAimYaw), fz = cosf(sp.shieldAimYaw);
-            float cxp = sp.x + fx * ShieldDist;
-            float czp = sp.z + fz * ShieldDist;
-            float step = pr.speed * TickDt;
-            float vx = sinf(pr.yaw) * step, vz = cosf(pr.yaw) * step;
-            float vn = vx * fx + vz * fz;
-            if (vn >= 0.0f)                   // outbound or parallel
-                continue;
-            float lonNow = (pr.x - cxp) * fx + (pr.z - czp) * fz;
-            float lonPrev = lonNow - vn;      // where this tick started
-            if (lonNow > 0.30f || lonPrev < -0.30f)
-                continue;                     // never met the face this tick
-            float latNow = (pr.x - cxp) * fz - (pr.z - czp) * fx;
-            float latPrev = latNow - (vx * fz - vz * fx);
-            float t = (lonPrev - lonNow) > 1e-6f
-                ? std::clamp(lonPrev / (lonPrev - lonNow), 0.0f, 1.0f)
-                : 0.0f;
-            float lat = latPrev + (latNow - latPrev) * t;
-            float halfW = sp.stats[int(Stat::ShieldWidth)] * 0.5f
-                        + ProjectileRadius + 0.15f;
-            if (fabsf(lat) > halfW)
-                continue;
-            float rvx = sinf(pr.yaw), rvz = cosf(pr.yaw);
-            float rn = rvx * fx + rvz * fz;
-            rvx -= 2.0f * rn * fx;
-            rvz -= 2.0f * rn * fz;
-            pr.yaw = atan2f(rvx, rvz);
-            // re-emerge in front of the face at the crossing point
-            pr.x = cxp + fz * lat + fx * 0.4f;
-            pr.z = czp - fx * lat + fz * 0.4f;
-            pr.bounces += 1;                  // one free ricochet, always
-            pr.owner = uint8_t(id);           // now it fights for the shieldman
-            pr.deflected = 1;                 // orange from here on
-            break;
-        }
+        ShieldDeflectStep(*this, pr);
         bool spent = false;
         for (int id = 0; id < MaxPlayers && !spent; ++id)
         {

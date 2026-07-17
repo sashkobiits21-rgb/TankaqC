@@ -218,6 +218,7 @@ void ApplySnapshot(const net::MsgSnapshot& s)
             p.possessTimer = in.possess32 / 32.0f;   // ghost-tint on remotes
             p.shieldTimer = in.shield16 / 16.0f;     // barrier draw on remotes
             p.shieldWait = in.shieldCd4 / 4.0f;
+            p.shieldAimYaw = in.turretYaw;   // provisional deflection face
         }
     }
 
@@ -3055,6 +3056,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                     if (!pv.sim.active)
                         continue;
                     bool aliveLocal = StepProjectile(pv.sim, TickDt);
+                    // predicted shells bounce off raised shields HERE, so
+                    // the shooter SEES the deflection instantly; the host's
+                    // authoritative (deflected, orange) twin then takes over
+                    ShieldDeflectStep(g.game, pv.sim);
                     bool expired = pv.matchedSlot < 0 && g.time - pv.born > 0.7;
                     if (!aliveLocal || expired)
                     {

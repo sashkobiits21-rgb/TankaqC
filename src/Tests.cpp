@@ -154,7 +154,7 @@ int RunClassTest()
         pr.x = ArenaHalf - 0.2f; pr.z = 0; pr.y = 0.17f;
         pr.yaw = XM_PI * 0.5f;
         pr.life = 1.5f; pr.speed = 10.0f; pr.damage = 100; pr.bounces = 2;
-        pr.splitChance = 1.0f;   // always
+        pr.splitChance = 2.0f;   // 200%: always TWO twins per bounce
         g5.projectiles[0] = pr;
         InputCmd idle[MaxPlayers]{};
         for (int t = 0; t < 8; ++t) g5.Tick(idle);
@@ -165,22 +165,26 @@ int RunClassTest()
                 ++alive;
                 if (i != 0) twin = i;
             }
-        check(alive == 2, "bounce split off exactly one twin");
+        check(alive == 3, "200% chance splits off two twins on one bounce");
         check(twin >= 0 && g5.projectiles[twin].damage == 50,
-              "twin carries half damage");
+              "twins carry half damage");
         check(twin >= 0 && g5.projectiles[twin].splitChance == 0.0f,
               "twins are sterile (never split again)");
-        check(g5.projectiles[0].splitChance == 0.0f,
-              "parent spent its one split");
+        check(g5.projectiles[0].splitChance == 2.0f,
+              "the REAL rocket keeps its split chance for later bounces");
         check(twin >= 0
               && fabsf(WrapAngle(g5.projectiles[twin].yaw
                                  - g5.projectiles[0].yaw)) > 0.1f,
-              "twin exits at a deviated angle");
-        // both keep flying; no further splits on the next bounce
+              "twins exit at deviated angles");
+        // the parent bounces AGAIN within its life: it splits again, and
+        // only sterile twins accumulate (no chain reaction from twins)
         for (int t = 0; t < TickRate; ++t) g5.Tick(idle);
-        int alive2 = 0;
-        for (const Projectile& q : g5.projectiles) if (q.active) ++alive2;
-        check(alive2 <= 2, "no chain reaction after the split");
+        int realWithChance = 0, sterile = 0;
+        for (const Projectile& q : g5.projectiles)
+            if (q.active)
+                (q.splitChance > 0.0f ? realWithChance : sterile)++;
+        check(realWithChance <= 1,
+              "twins never became splitters themselves");
     }
 
     // ---- ghosts: 4 s fuse (escapable), soldiers rise for their killer ----

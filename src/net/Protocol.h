@@ -33,7 +33,10 @@ namespace tankaq::net
 // slot-tagged quantized records (x/z 1/128 fixed point, yaw uint16). The
 // in-memory MsgSnapshot struct is unchanged -- Pack/Unpack translate at the
 // socket. Rocket pool grows 24 -> 96 with FLAT bandwidth.
-constexpr uint8_t ProtocolVersion = 22;
+// v23: FISSION reworked -- real rockets split on EVERY bounce (twins stay
+// sterile), +20% per card, overflow chance above 100% rolls a second twin.
+// Pool values are part of the derived-stats contract.
+constexpr uint8_t ProtocolVersion = 23;
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t
