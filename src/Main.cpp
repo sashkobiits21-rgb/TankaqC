@@ -3430,11 +3430,31 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                     g.game.RecalcStats(g.myId);
                     Log("demo: granted SHIELD class");
                 }
+                else if (g.opt.demoClass == "stealth"
+                         && g.game.players[1].active)
+                {
+                    // the DUMMY cloaks; it parks so the center block sits
+                    // between it and the player -- it must vanish on screen
+                    g.game.players[1].owned.push_back(
+                        uint8_t(UpgradeId::Stealth));
+                    g.game.RecalcStats(1);
+                    Log("demo: granted STEALTH to the dummy");
+                }
                 if (!g.opt.demoClass.empty() && g.game.players[1].active)
                 {
                     // park the dummy on-camera so the whole exchange films
                     g.game.players[1].x = 15.0f;
                     g.game.players[1].z = 14.0f;
+                    if (g.opt.demoClass == "stealth")
+                    {
+                        // straight across the center block from the player
+                        // hug the LONG wall: the dummy sits right behind
+                        // it (the sliver case from the field report)
+                        PlayerState& me2 = g.game.players[g.myId];
+                        me2.x = 14.0f; me2.z = 16.0f;
+                        g.game.players[1].x = 14.0f;
+                        g.game.players[1].z = 6.2f;
+                    }
                 }
             }
             if ((g.opt.shopTest || g.opt.autoDrive || g.opt.soldierTest

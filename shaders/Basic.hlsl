@@ -197,7 +197,7 @@ bool LosBlocked(float2 a, float2 b)
     for (int k = 0; k < n; ++k)
     {
         float4 box = gLosBoxes[k];
-        float tmin = 0.02, tmax = 0.98;      // exclude both endpoints
+        float tmin = 0.004, tmax = 0.996;    // exclude only the endpoints
         // slab X
         if (abs(d.x) < 1e-5)
         {
