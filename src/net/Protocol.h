@@ -36,7 +36,9 @@ namespace tankaq::net
 // v23: FISSION reworked -- real rockets split on EVERY bounce (twins stay
 // sterile), +20% per card, overflow chance above 100% rolls a second twin.
 // Pool values are part of the derived-stats contract.
-constexpr uint8_t ProtocolVersion = 23;
+// v24: UNIQUE rarity (gold, 2%): TRIPLE DOCTRINE / PURE ARSENAL / DRUNKEN /
+// VAMPIRE / TERRORIST / STEALTH. Pool + RecalcStats semantics change.
+constexpr uint8_t ProtocolVersion = 24;
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t

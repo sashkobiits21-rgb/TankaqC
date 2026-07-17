@@ -640,6 +640,146 @@ int RunClassTest()
               "the host 20-minute pick sets the horn");
     }
 
+    // ---- UNIQUE rule-benders ----
+    {
+        // TRIPLE DOCTRINE: cap 3 classes, normal upgrades leave the pool
+        GameState gu{};
+        gu.SpawnPlayer(0);
+        PlayerState& p = gu.players[0];
+        p.owned.push_back(uint8_t(UpgradeId::TripleDoctrine));
+        gu.RecalcStats(0);
+        check(MaxClassesFor(p) == 3, "TRIPLE DOCTRINE raises the cap to 3");
+        p.money = 999;
+        bool normalSeen = false;
+        for (int i = 0; i < 300; ++i)
+        {
+            gu.GenerateOffer(0);
+            const Offer& o = p.offers[0];
+            if (!o.active) continue;
+            const UpgradeType& u = kUpgradePool[o.type];
+            if (u.rarity <= 4 && u.classReq == ClassNone
+                && u.classGrant == ClassNone)
+                normalSeen = true;
+        }
+        check(!normalSeen,
+              "no plain normal upgrades offered under TRIPLE DOCTRINE");
+
+        // PURE ARSENAL: class cards vanish, normal upgrades hit twice as hard
+        GameState ga{};
+        ga.SpawnPlayer(0);
+        ga.SpawnPlayer(1);
+        int normalIdx = -1;
+        for (int i = 0; i < UpgradeCount; ++i)
+        {
+            const UpgradeType& u = kUpgradePool[i];
+            if (u.rarity <= 4 && u.classReq == ClassNone
+                && u.classGrant == ClassNone && u.modCount == 1
+                && u.mods[0].factor > 1.01f)
+            { normalIdx = i; break; }
+        }
+        check(normalIdx >= 0, "found a factor-based normal upgrade to probe");
+        Stat probeStat = kUpgradePool[normalIdx].mods[0].stat;
+        float f = kUpgradePool[normalIdx].mods[0].factor;
+        ga.players[1].owned.push_back(uint8_t(normalIdx));
+        ga.RecalcStats(1);
+        ga.players[0].owned.push_back(uint8_t(UpgradeId::PureArsenal));
+        ga.players[0].owned.push_back(uint8_t(normalIdx));
+        ga.RecalcStats(0);
+        float plain = ga.players[1].stats[int(probeStat)];
+        float amped = ga.players[0].stats[int(probeStat)];
+        float wantRatio = (1.0f + (f - 1.0f) * 2.0f) / f;
+        check(fabsf(amped / plain - wantRatio) < 0.01f,
+              "PURE ARSENAL doubles a normal factor's bonus");
+        ga.players[0].money = 999;
+        bool cardSeen = false;
+        for (int i = 0; i < 300; ++i)
+        {
+            ga.GenerateOffer(0);
+            const Offer& o = ga.players[0].offers[0];
+            if (o.active && kUpgradePool[o.type].classGrant != ClassNone)
+                cardSeen = true;
+        }
+        check(!cardSeen, "no class cards offered under PURE ARSENAL");
+
+        // VAMPIRE: lifesteal on hits, sunburn in the open, safe in shade
+        GameState gv{};
+        gv.SpawnPlayer(0);
+        gv.SpawnPlayer(1);
+        gv.phase = PhasePlaying;
+        gv.matchEndTick = gv.tick + 100000000u;
+        PlayerState& vamp = gv.players[0];
+        vamp.owned.push_back(uint8_t(UpgradeId::Vampire));
+        gv.RecalcStats(0);
+        vamp.health = 50;
+        gv.ApplyDamage(0, 1, 40, 0);
+        check(vamp.health == 54, "VAMPIRE drinks 10% of the wound");
+        const Obstacle& ob = kObstacles[0];
+        float sx = ob.cx - 0.489f / 0.636f * ob.height * 0.5f;
+        float sz = ob.cz - 0.372f / 0.636f * ob.height * 0.5f;
+        check(!InSunlight(sx, sz), "a box shades its shadow volume");
+        check(InSunlight(0.0f, -20.0f), "mid-lane ground is sunlit");
+        vamp.x = 0; vamp.z = -20; vamp.health = 100;
+        InputCmd idle[MaxPlayers]{};
+        for (int t = 0; t < TickRate * 2; ++t) gv.Tick(idle);
+        check(vamp.health <= 82 && vamp.health >= 78,
+              "sunlight burns ~10%% max HP per second");
+
+        // TERRORIST: the death blast falls off with distance
+        GameState gt{};
+        gt.SpawnPlayer(0);
+        gt.SpawnPlayer(1);
+        gt.SpawnPlayer(2);
+        gt.phase = PhasePlaying;
+        gt.matchEndTick = gt.tick + 100000000u;
+        gt.players[0].owned.push_back(uint8_t(UpgradeId::Terrorist));
+        gt.RecalcStats(0);
+        gt.players[0].x = 0; gt.players[0].z = -24;
+        gt.players[1].x = 0; gt.players[1].z = -21;    // 3 u out
+        gt.players[2].x = 20; gt.players[2].z = 20;    // far out of reach
+        gt.ApplyDamage(1, 0, 10000, 0);
+        check(gt.players[1].health == 59,
+              "3 u from the blast: 41 damage (linear falloff)");
+        check(gt.players[2].health == 100,
+              "outside the radius: untouched");
+
+        // DRUNKEN wanders 0.8x..1.3x; STEALTH is a fixed 0.65x + damage cut
+        GameState gd{};
+        gd.SpawnPlayer(0);
+        gd.SpawnPlayer(1);
+        gd.SpawnPlayer(2);
+        gd.phase = PhasePlaying;
+        gd.matchEndTick = gd.tick + 100000000u;
+        gd.players[0].owned.push_back(uint8_t(UpgradeId::Drunken));
+        gd.players[2].owned.push_back(uint8_t(UpgradeId::Stealth));
+        gd.RecalcStats(0);
+        gd.RecalcStats(2);
+        float dmg0 = gd.players[1].stats[int(Stat::Damage)];
+        check(fabsf(gd.players[2].stats[int(Stat::Damage)] - dmg0 * 0.85f)
+                  < 0.01f,
+              "STEALTH cuts rocket damage by 15%%");
+        // one PROVEN lane (z = -28 ran clean for stealth), used in turns
+        // so box layouts can never skew a runner
+        auto run3s = [&](int who)
+        {
+            for (int i = 0; i < 3; ++i)
+            {
+                gd.players[i].x = (i == who) ? -20.0f : 20.0f;
+                gd.players[i].z = (i == who) ? -28.0f : 20.0f + i * 4.0f;
+            }
+            InputCmd go[MaxPlayers]{};
+            go[who].moveX = 1;
+            for (int t = 0; t < TickRate * 3; ++t) gd.Tick(go);
+            return gd.players[who].x + 20.0f;
+        };
+        float dSober = run3s(1);
+        float dDrunk = run3s(0);
+        float dSneak = run3s(2);
+        check(dDrunk > dSober * 0.72f && dDrunk < dSober * 1.35f,
+              "DRUNKEN speed stays inside the -20%%..+30%% band");
+        check(fabsf(dSneak - dSober * 0.65f) < dSober * 0.03f,
+              "STEALTH drives at exactly 65%%");
+    }
+
     // ---- packed snapshot wire: round-trip fidelity ----
     {
         net::MsgSnapshot a{};

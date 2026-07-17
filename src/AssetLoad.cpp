@@ -1644,6 +1644,40 @@ void DrawIconGlyph(IconCanvas& c, int icon)
         c.Fill(5, 4, 10, 4, W); c.Fill(5, 11, 10, 11, W);
         c.Fill(4, 5, 4, 10, W); c.Fill(11, 5, 11, 10, W);
         break;
+    case 52: // STEALTH: half-faded tank silhouette behind a wall edge
+        c.Fill(2, 3, 7, 12, W);
+        c.Fill(9, 5, 10, 6, W); c.Fill(12, 5, 13, 6, W);
+        c.Fill(9, 8, 10, 9, W); c.Fill(12, 8, 13, 9, W);
+        c.Fill(9, 11, 13, 12, W);
+        break;
+    case 51: // TERRORIST: burst star
+        c.Fill(7, 2, 8, 13, W); c.Fill(2, 7, 13, 8, W);
+        c.Fill(4, 4, 5, 5, W); c.Fill(10, 4, 11, 5, W);
+        c.Fill(4, 10, 5, 11, W); c.Fill(10, 10, 11, 11, W);
+        c.Fill(6, 6, 9, 9, 0xD8342CFFu);
+        break;
+    case 50: // VAMPIRE: fangs under a brow
+        c.Fill(2, 4, 13, 6, W);
+        c.Fill(4, 7, 5, 10, W); c.Fill(10, 7, 11, 10, W);
+        c.Fill(4, 11, 5, 12, 0xD8342CFFu);
+        c.Fill(10, 11, 11, 12, 0xD8342CFFu);
+        break;
+    case 49: // DRUNKEN: tilted mug, sloshing
+        c.Fill(4, 5, 10, 12, W); c.Fill(11, 6, 12, 9, W);
+        c.Fill(3, 3, 5, 4, W); c.Fill(7, 2, 9, 3, W); c.Fill(11, 3, 12, 4, W);
+        break;
+    case 48: // PURE ARSENAL: fat X2 shell
+        c.Fill(3, 3, 4, 12, W); c.Fill(5, 7, 6, 8, W);
+        c.Fill(7, 3, 8, 12, W);
+        c.Fill(10, 3, 13, 4, W); c.Fill(12, 5, 13, 7, W);
+        c.Fill(10, 8, 13, 9, W); c.Fill(10, 10, 11, 12, W);
+        c.Fill(10, 11, 13, 12, W);
+        break;
+    case 47: // TRIPLE DOCTRINE: three stacked chevrons
+        c.Fill(3, 2, 12, 3, W); c.Fill(5, 4, 10, 5, W);
+        c.Fill(3, 6, 12, 7, W); c.Fill(5, 8, 10, 9, W);
+        c.Fill(3, 10, 12, 11, W); c.Fill(5, 12, 10, 13, W);
+        break;
     case 46: // RAPID REDEPLOY: shield with a refresh chevron
         c.Fill(3, 2, 12, 3, W); c.Fill(3, 4, 3, 8, W); c.Fill(12, 4, 12, 8, W);
         c.Fill(4, 9, 5, 10, W); c.Fill(10, 9, 11, 10, W);

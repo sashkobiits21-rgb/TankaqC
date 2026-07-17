@@ -13,13 +13,14 @@ using namespace DirectX;
 namespace tankaq
 {
 
-const UiColor kRarityCol[6] = {
+const UiColor kRarityCol[7] = {
     { 0.35f, 0.37f, 0.35f, 0.96f },   // common
     { 0.15f, 0.40f, 0.20f, 0.96f },   // uncommon
     { 0.14f, 0.28f, 0.55f, 0.96f },   // rare
     { 0.40f, 0.17f, 0.52f, 0.96f },   // epic
     { 0.62f, 0.35f, 0.10f, 0.96f },   // legendary
     { 0.07f, 0.44f, 0.47f, 0.96f },   // class card (teal)
+    { 0.72f, 0.58f, 0.09f, 0.96f },   // UNIQUE (gold rule-benders)
 };
 
 void OpenShop()
@@ -305,7 +306,7 @@ void BuildShop(FrameData& frame)
         float dx = std::max(fx.ox - fx.x, fx.x + fx.w - fx.ox);
         float dy = std::max(fx.oy - fx.y, fx.y + fx.h - fx.oy);
         float maxR = sqrtf(dx * dx + dy * dy) + 8.0f;
-        UiColor bg = kRarityCol[std::clamp(fx.rarity, 0, 5)];
+        UiColor bg = kRarityCol[std::clamp(fx.rarity, 0, 6)];
         UiBurnQuad q{ fx.x, fx.y, fx.w, fx.h, bg.r, bg.g, bg.b, bg.a,
                       fx.ox, fx.oy, progress, maxR };
         frame.uiBurn.push_back(q);

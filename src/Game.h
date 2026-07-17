@@ -140,7 +140,19 @@ constexpr uint8_t ClassNone = 0xFF;
 enum : uint8_t { ClassSoldier = 0, ClassBouncy, ClassNecro, ClassRadar,
                  ClassShield, ClassCount };
 constexpr int kMaxClasses = 2;
+
+// UNIQUE rule-benders ------------------------------------------------------
+constexpr float TerroristRadius = 8.0f;   // death blast reach
+constexpr float TerroristMaxDmg = 65.0f;  // at point blank, linear falloff
+constexpr float VampireLifesteal = 0.10f; // fraction of damage dealt
+constexpr float VampireBurnFrac = 0.10f;  // of max HP, per second in the sun
+constexpr float StealthSlow = 0.65f;      // -35% speed, fixed
+constexpr float StealthDamageMul = 0.85f; // -15% rocket damage, fixed
+constexpr float DrunkenMin = 0.80f;       // speed wander band
+constexpr float DrunkenMax = 1.30f;
+constexpr int   DrunkenSegTicks = 96;     // new sway target every 1.5 s
 constexpr int RarityClass = 5;    // rolled between rare and epic
+constexpr int RarityUnique = 6;   // gold rule-benders, 2% band, stackable
 
 // Stable identity for every upgrade. The wire sends these as uint8 pool
 // indices, so ORDER IS THE PROTOCOL: append new entries before Count, never
@@ -164,6 +176,12 @@ enum class UpgradeId : uint8_t
     WideBarrier,
     LongWatch,
     RapidRedeploy,
+    TripleDoctrine,
+    PureArsenal,
+    Drunken,
+    Vampire,
+    Terrorist,
+    Stealth,
     Count
 };
 constexpr int UpgradeCount = int(UpgradeId::Count);
@@ -266,6 +284,7 @@ struct PlayerState
     float shieldTimer = 0;        // barrier remaining (input-driven, predicted)
     float shieldWait = 0;         // ability cooldown remaining
     float shieldAimYaw = 0;       // host: freshest aim, drives the deflector
+    float sunAccum = 0;           // VAMPIRE: fractional sun burn carry
     float possessDps = 0;         // host-only, baked from the ghost's owner
     uint8_t possessedBy = 0xFF;   // host-only, damage attribution
 };
@@ -467,6 +486,27 @@ bool StepProjectile(Projectile& pr, float dt);
 struct GameState;
 bool ShieldDeflectStep(GameState& gs, Projectile& pr);
 
+// Owned-upgrade scan (uniques are one-copy, so presence == effect).
+inline bool HasUpgrade(const PlayerState& p, UpgradeId u)
+{
+    for (uint8_t t : p.owned)
+        if (t == uint8_t(u))
+            return true;
+    return false;
+}
+// TRIPLE DOCTRINE raises the class cap for its owner alone.
+inline int MaxClassesFor(const PlayerState& p)
+{
+    return HasUpgrade(p, UpgradeId::TripleDoctrine) ? 3 : kMaxClasses;
+}
+// Sim-side sunlight test against the STATIC geometry (obstacles + walls),
+// exact interval math along the fixed sun direction. Deterministic: the
+// VAMPIRE burn must resolve identically on every peer.
+bool InSunlight(float x, float z);
+// DRUNKEN speed sway: deterministic from (tick, player) so prediction
+// replays the exact same stagger. Smoothly wanders DrunkenMin..DrunkenMax.
+float DrunkenFactor(uint32_t tick, int id);
+
 struct GameState
 {
     PlayerState players[MaxPlayers];
@@ -534,4 +574,4 @@ float MoveTowardsAngle(float current, float target, float maxDelta);
 // Lobby lineup slot for a player id (tanks face the lobby camera).
 void LobbySpot(int id, float& x, float& z, float& yaw);
 
-} // namespace tankaq
+} //

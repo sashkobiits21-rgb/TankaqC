@@ -161,6 +161,26 @@ const UpgradeType kUpgradePool[UpgradeCount] = {
       { { S(ShieldDuration), 1.5f, 1 } }, 1, ClassShield },
     { U(RapidRedeploy), "RAPID REDEPLOY", "-20% SHIELD COOLDOWN",     2, 45,
       { { S(ShieldCooldown), 0, 0.8f } }, 1, ClassShield },
+    // UNIQUE rule-benders: gold band, 2% roll, one copy each, stackable
+    // with other uniques (only the two contradictory ones exclude).
+    { U(TripleDoctrine), "TRIPLE DOCTRINE",
+      "3 CLASSES - NORMAL UPGRADES GONE",                             6, 120,
+      {}, 0 },
+    { U(PureArsenal),  "PURE ARSENAL",
+      "NORMAL UPGRADES 2X - NO CLASSES",                              6, 120,
+      {}, 0 },
+    { U(Drunken),      "DRUNKEN",
+      "SPEED AND CAMERA SWAY -20%..+30%",                             6, 120,
+      {}, 0 },
+    { U(Vampire),      "VAMPIRE",
+      "10% LIFESTEAL - BURN IN SUNLIGHT",                             6, 120,
+      {}, 0 },
+    { U(Terrorist),    "TERRORIST",
+      "DEATH BLAST - CLOSER IS DEADLIER",                             6, 120,
+      {}, 0 },
+    { U(Stealth),      "STEALTH",
+      "WALLS HIDE YOU  -35% SPD -15% DMG",                            6, 120,
+      {}, 0 },
 };
 #undef S
 #undef U
@@ -179,7 +199,8 @@ const char* ValidateUpgradePool()
         bool isCard = u.classGrant != ClassNone;
         if (isCard != (u.rarity == RarityClass))
             return "class cards (and only cards) use the CLASS rarity";
-        if (!isCard && (u.rarity < 0 || u.rarity > 4))
+        if (!isCard && (u.rarity < 0 || u.rarity > 4)
+            && u.rarity != RarityUnique)
             return "bad rarity";
         if (u.baseCost <= 0 || u.modCount < 0 || u.modCount > MaxModsPerUpgrade)
             return "bad cost/modCount";
@@ -278,13 +299,20 @@ void GameState::RecalcStats(int id)
         addTotal[s] = 0.0f;
         mulTotal[s] = 1.0f;
     }
+    bool arsenal = HasUpgrade(p, UpgradeId::PureArsenal);
     for (uint8_t type : p.owned)
     {
         const UpgradeType& u = kUpgradePool[type];
+        // PURE ARSENAL: normal (class-free) upgrades land twice as hard --
+        // amounts double, factors double their deviation from 1 (a 1.25x
+        // becomes 1.5x, a 0.9x cooldown cut becomes 0.8x)
+        float amp = (arsenal && u.rarity <= 4 && u.classReq == ClassNone
+                     && u.classGrant == ClassNone) ? 2.0f : 1.0f;
         for (int m = 0; m < u.modCount; ++m)
         {
-            addTotal[int(u.mods[m].stat)] += u.mods[m].amount;
-            mulTotal[int(u.mods[m].stat)] *= u.mods[m].factor;
+            addTotal[int(u.mods[m].stat)] += u.mods[m].amount * amp;
+            mulTotal[int(u.mods[m].stat)] *=
+                1.0f + (u.mods[m].factor - 1.0f) * amp;
         }
     }
     // order: base + additions first, then multiplications
@@ -316,6 +344,8 @@ void GameState::RecalcStats(int id)
     p.stats[int(Stat::ShieldCooldown)] = std::max(3.0f, p.stats[int(Stat::ShieldCooldown)]);
     p.stats[int(Stat::SplitChance)] =
         std::clamp(p.stats[int(Stat::SplitChance)], 0.0f, 2.0f);
+    if (HasUpgrade(p, UpgradeId::Stealth))   // fixed, not upgradeable away
+        p.stats[int(Stat::Damage)] *= StealthDamageMul;
     p.stats[int(Stat::BounceDamage)] = std::max(0.25f, p.stats[int(Stat::BounceDamage)]);
     p.stats[int(Stat::BounceSpeed)] = std::max(0.25f, p.stats[int(Stat::BounceSpeed)]);
     p.stats[int(Stat::SplitChance)] = std::clamp(p.stats[int(Stat::SplitChance)],
@@ -429,25 +459,45 @@ void GameState::GenerateOffer(int id)
         const UpgradeType& u = kUpgradePool[i];
         if (u.classGrant != ClassNone)
         {
-            if (CountClasses(p) >= kMaxClasses)
+            if (CountClasses(p) >= MaxClassesFor(p))
                 return false;
             for (uint8_t t : p.owned)
                 if (t == i)
                     return false;   // never re-offer an owned class card
+            // PURE ARSENAL swore off classes entirely
+            if (HasUpgrade(p, UpgradeId::PureArsenal))
+                return false;
         }
         if (u.classReq != ClassNone && !HasClass(p, u.classReq))
+            return false;
+        if (u.rarity == RarityUnique)
+        {
+            for (uint8_t t : p.owned)
+                if (t == i)
+                    return false;   // one copy of each unique
+            // the two contradictory rule-benders exclude each other
+            if ((UpgradeId(i) == UpgradeId::TripleDoctrine
+                 && HasUpgrade(p, UpgradeId::PureArsenal))
+                || (UpgradeId(i) == UpgradeId::PureArsenal
+                    && HasUpgrade(p, UpgradeId::TripleDoctrine)))
+                return false;
+        }
+        // TRIPLE DOCTRINE: normal (class-free) upgrades are gone for good
+        if (HasUpgrade(p, UpgradeId::TripleDoctrine) && u.rarity <= 4
+            && u.classReq == ClassNone && u.classGrant == ClassNone)
             return false;
         return true;
     };
 
-    // rarity roll: common 36 / uncommon 23 / rare 17 / CLASS 10 / epic 9 /
-    // legendary 5 -- class cards sit between rare and epic as requested
+    // rarity roll: common 35 / uncommon 23 / rare 17 / CLASS 10 / epic 8 /
+    // legendary 5 / UNIQUE 2 -- gold rule-benders are the rarest sight
     uint32_t r = NextRand() % 100;
-    int rarity = r < 36 ? 0
-               : r < 59 ? 1
-               : r < 76 ? 2
-               : r < 86 ? RarityClass
-               : r < 95 ? 3 : 4;
+    int rarity = r < 35 ? 0
+               : r < 58 ? 1
+               : r < 75 ? 2
+               : r < 85 ? RarityClass
+               : r < 93 ? 3
+               : r < 98 ? 4 : RarityUnique;
     // uniform pick among eligible pool entries of that rarity; an empty class
     // band (both classes taken) degrades to rare, any other empty band falls
     // back to a uniform pick over everything eligible
@@ -508,11 +558,24 @@ bool GameState::TryPurchase(int id, int slot)
     // re-validated at purchase time, not just at roll time.
     if (u.classGrant != ClassNone)
     {
-        if (CountClasses(p) >= kMaxClasses)
+        if (CountClasses(p) >= MaxClassesFor(p))
             return false;
         for (uint8_t t : p.owned)
             if (t == o.type)
                 return false;
+        if (HasUpgrade(p, UpgradeId::PureArsenal))
+            return false;
+    }
+    if (u.rarity == RarityUnique)
+    {
+        for (uint8_t t : p.owned)
+            if (t == o.type)
+                return false;
+        if ((UpgradeId(o.type) == UpgradeId::TripleDoctrine
+             && HasUpgrade(p, UpgradeId::PureArsenal))
+            || (UpgradeId(o.type) == UpgradeId::PureArsenal
+                && HasUpgrade(p, UpgradeId::TripleDoctrine)))
+            return false;
     }
     if (p.money < o.cost)
         return false;
@@ -734,10 +797,17 @@ void GameState::ApplyDamage(int shooterId, int victimId, int rawDamage,
     int dmg = int(rawDamage * t.stats[int(Stat::DamageTaken)] + 0.5f);
     t.health -= std::max(1, dmg);
     t.hitFlash = 0.35f;
-    if (shooterId >= 0 && shooterId < MaxPlayers && players[shooterId].active)
+    if (shooterId >= 0 && shooterId < MaxPlayers && shooterId != victimId
+        && players[shooterId].active)
     {
         PlayerState& shooter = players[shooterId];
         shooter.money = uint16_t(std::min(999, shooter.money + hitMoney));
+        // VAMPIRE: a tithe of every wound flows back as health
+        if (HasUpgrade(shooter, UpgradeId::Vampire) && shooter.health > 0)
+            shooter.health = std::min(
+                MaxHealthFor(shooter),
+                shooter.health
+                    + std::max(1, int(dmg * VampireLifesteal + 0.5f)));
         if (t.health <= 0)
         {
             ++shooter.score;
@@ -760,6 +830,41 @@ void GameState::ApplyDamage(int shooterId, int victimId, int rawDamage,
         t.respawnTimer = RespawnTime;
         t.possessTimer = 0;   // death exorcises
         t.dotAccum = 0;
+        // TERRORIST: the corpse IS the weapon -- linear falloff blast with
+        // posthumous kill credit (chained terrorists chain the recursion)
+        if (HasUpgrade(t, UpgradeId::Terrorist))
+        {
+            float bx = t.x, bz = t.z;
+            for (int id = 0; id < MaxPlayers; ++id)
+            {
+                if (id == victimId)
+                    continue;
+                PlayerState& e = players[id];
+                if (!e.active || e.health <= 0)
+                    continue;
+                float dx = e.x - bx, dz = e.z - bz;
+                float dist = sqrtf(dx * dx + dz * dz);
+                if (dist >= TerroristRadius)
+                    continue;
+                int blast = int(TerroristMaxDmg
+                                * (1.0f - dist / TerroristRadius) + 0.5f);
+                if (blast > 0)
+                    ApplyDamage(victimId, id, blast, 2);
+            }
+            for (SoldierState& s : soldiers)
+            {
+                if (!s.active || s.state == SoldierDying
+                    || s.owner == victimId)
+                    continue;
+                float dx = s.x - bx, dz = s.z - bz;
+                float dist = sqrtf(dx * dx + dz * dz);
+                if (dist >= TerroristRadius)
+                    continue;
+                s.health -= TerroristMaxDmg
+                          * (1.0f - dist / TerroristRadius);
+                s.lastHitBy = uint8_t(victimId);
+            }
+        }
     }
 }
 
@@ -815,6 +920,66 @@ static void SpawnPuddle(GameState& gs, int owner, float x, float z)
 
 // Skulls fly STRAIGHT at the nearest enemy (course refreshed every tick),
 // slam into whatever is in the way -- walls included -- and burst into acid.
+// ---------------------------------------------------------- unique helpers
+// Sunlight: exact interval test of the point against every static shadow
+// volume (obstacle boxes + the four arena walls) along the fixed sun
+// direction. A point at (x,z) is shaded when some u in [0,1] puts
+// (x,z) - u*L inside a footprint, L being the ground offset of the caster's
+// top edge. Deterministic pure geometry: every peer agrees.
+static bool ShadowedByBox(float px, float pz, float cx, float cz,
+                          float hx, float hz, float height)
+{
+    // frame.sunDir (0.489, 0.636, 0.372), pre-normalized; rays travel -sun
+    const float Lx = -0.489f / 0.636f * height;
+    const float Lz = -0.372f / 0.636f * height;
+    float lo = 0.0f, hi = 1.0f;
+    auto axis = [&](float p, float c, float h, float L)
+    {
+        if (fabsf(L) < 1e-6f)
+            return p >= c - h && p <= c + h;
+        float a = (p - (c + h)) / L;
+        float b = (p - (c - h)) / L;
+        if (a > b) std::swap(a, b);
+        lo = std::max(lo, a);
+        hi = std::min(hi, b);
+        return lo <= hi;
+    };
+    return axis(px, cx, hx, Lx) && axis(pz, cz, hz, Lz);
+}
+
+bool InSunlight(float x, float z)
+{
+    for (const Obstacle& o : kObstacles)
+        if (ShadowedByBox(x, z, o.cx, o.cz, o.hx, o.hz, o.height))
+            return false;
+    // the four arena walls (1.2 tall, thin bands on the boundary)
+    if (ShadowedByBox(x, z, 0, ArenaHalf, ArenaHalf, 0.5f, 1.2f)) return false;
+    if (ShadowedByBox(x, z, 0, -ArenaHalf, ArenaHalf, 0.5f, 1.2f)) return false;
+    if (ShadowedByBox(x, z, ArenaHalf, 0, 0.5f, ArenaHalf, 1.2f)) return false;
+    if (ShadowedByBox(x, z, -ArenaHalf, 0, 0.5f, ArenaHalf, 1.2f)) return false;
+    return true;
+}
+
+// DRUNKEN sway: each 1.5 s segment hashes a fresh target factor; the value
+// glides between segment targets with a smoothstep, so speed wanders
+// -20%..+30% with no jolts. Pure (tick, id) function: prediction-safe.
+float DrunkenFactor(uint32_t tick, int id)
+{
+    auto h01 = [](uint32_t seg, int pid)
+    {
+        uint32_t h = seg * 2654435761u ^ uint32_t(pid * 9176 + 41);
+        h ^= h << 13; h ^= h >> 17; h ^= h << 5;
+        return float(h & 0xFFFF) / 65535.0f;
+    };
+    uint32_t seg = tick / uint32_t(DrunkenSegTicks);
+    float a = DrunkenMin + (DrunkenMax - DrunkenMin) * h01(seg, id);
+    float b = DrunkenMin + (DrunkenMax - DrunkenMin) * h01(seg + 1, id);
+    float u = float(tick % uint32_t(DrunkenSegTicks))
+            / float(DrunkenSegTicks);
+    u = u * u * (3.0f - 2.0f * u);
+    return a + (b - a) * u;
+}
+
 static void TickSkull(GameState& gs, SkullState& sk)
 {
     sk.life -= TickDt;
@@ -1950,6 +2115,10 @@ void GameState::AdvanceMovement(int id, const InputCmd& inRaw)
         }
         if (p.shieldTimer > 0.0f)
             speed *= ShieldSlow;        // fixed 35% slow (not upgradeable)
+        if (HasUpgrade(p, UpgradeId::Stealth))
+            speed *= StealthSlow;       // the price of invisibility
+        if (HasUpgrade(p, UpgradeId::Drunken))
+            speed *= DrunkenFactor(tick, id);
         p.x += dx * speed * TickDt;
         p.z += dz * speed * TickDt;
         p.hullYaw = MoveTowardsAngle(p.hullYaw, atan2f(dx, dz),
@@ -2054,6 +2223,23 @@ void GameState::Tick(const InputCmd* inputs)
         p.fireCooldown = std::max(0.0f, p.fireCooldown - TickDt);
         p.hitFlash = std::max(0.0f, p.hitFlash - TickDt);
         p.muzzleFlash = std::max(0.0f, p.muzzleFlash - TickDt);
+
+        // VAMPIRE: daylight is lethal -- 10% of max HP per second unless a
+        // wall or box shades the tank (accumulate fractions, bite in ints)
+        if (HasUpgrade(p, UpgradeId::Vampire) && p.health > 0)
+        {
+            if (InSunlight(p.x, p.z))
+            {
+                p.sunAccum += MaxHealthFor(p) * VampireBurnFrac * TickDt;
+                while (p.sunAccum >= 1.0f && p.health > 0)
+                {
+                    p.sunAccum -= 1.0f;
+                    ApplyDamage(id, id, 1, 0);   // self: no score, no steal
+                }
+            }
+            else
+                p.sunAccum = 0.0f;
+        }
 
         // stat cache refresh on the host cadence (and on purchase elsewhere)
         if (tick % StatRecalcTicks == 0)
