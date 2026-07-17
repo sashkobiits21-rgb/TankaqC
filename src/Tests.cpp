@@ -690,6 +690,27 @@ int RunClassTest()
         float wantRatio = (1.0f + (f - 1.0f) * 2.0f) / f;
         check(fabsf(amped / plain - wantRatio) < 0.01f,
               "PURE ARSENAL doubles a normal factor's bonus");
+        // buying PURE ARSENAL burns every owned class + family upgrade
+        GameState gs2{};
+        gs2.SpawnPlayer(0);
+        PlayerState& s2 = gs2.players[0];
+        s2.owned.push_back(uint8_t(UpgradeId::SoldierClass));
+        s2.owned.push_back(uint8_t(UpgradeId::Recruiter));
+        s2.owned.push_back(uint8_t(normalIdx));
+        gs2.RecalcStats(0);
+        StripForUnique(s2, UpgradeId::PureArsenal);
+        bool classyLeft = false;
+        for (uint8_t t : s2.owned)
+            if (kUpgradePool[t].classGrant != ClassNone
+                || kUpgradePool[t].classReq != ClassNone)
+                classyLeft = true;
+        check(!classyLeft && s2.owned.size() == 1,
+              "PURE ARSENAL wipes owned classes and their families");
+        // and TRIPLE DOCTRINE burns the plain upgrades instead
+        StripForUnique(s2, UpgradeId::TripleDoctrine);
+        check(s2.owned.empty(),
+              "TRIPLE DOCTRINE wipes owned normal upgrades");
+
         ga.players[0].money = 999;
         bool cardSeen = false;
         for (int i = 0; i < 300; ++i)

@@ -38,7 +38,10 @@ namespace tankaq::net
 // Pool values are part of the derived-stats contract.
 // v24: UNIQUE rarity (gold, 2%): TRIPLE DOCTRINE / PURE ARSENAL / DRUNKEN /
 // VAMPIRE / TERRORIST / STEALTH. Pool + RecalcStats semantics change.
-constexpr uint8_t ProtocolVersion = 24;
+// v25: TEST match mode (mode-filtered matchmaking, free upgrade grants,
+// testMode byte in snapshots) + rule-bender owned-list strips resync over
+// OwnedSync.
+constexpr uint8_t ProtocolVersion = 25;
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t
@@ -53,6 +56,7 @@ enum class MsgType : uint8_t
     Ping,          // either direction, unreliable (latency probe)
     Pong,          // echo of Ping
     Upgrade,       // host -> all, reliable: a purchase was applied
+    TestGrant,     // client -> host, reliable: TEST mode free upgrade pick
     OwnedReset,    // host -> all, reliable: match start wiped all upgrades
     OwnedSync,     // host -> one client, reliable: full owned list (late join)
 };
@@ -92,6 +96,12 @@ struct MsgPurchase
 {
     uint8_t type = uint8_t(MsgType::Purchase);
     uint8_t slot = 0;      // offer slot index
+};
+
+struct MsgTestGrant
+{
+    uint8_t type = uint8_t(MsgType::TestGrant);
+    uint8_t upgrade = 0;   // pool index; host validates TEST mode + range
 };
 
 struct MsgReady
@@ -230,6 +240,7 @@ struct MsgSnapshot
     uint8_t winner = 0xFF;
     uint8_t targetPlayers = 0;    // gathering queue size (0 = no queue)
     uint8_t matchMinutes = 10;    // host lobby pick (5/10/15/20)
+    uint8_t testMode = 0;         // TEST match: free grants, no stakes
     uint32_t tick = 0;
     uint32_t matchEndTick = 0;
     PlayerNet players[MaxPlayers];

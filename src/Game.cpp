@@ -547,6 +547,27 @@ void GameState::GenerateOffer(int id)
         InsertOffer(id, o);
 }
 
+// The two contradictory rule-benders rewrite history when bought:
+// PURE ARSENAL burns every owned class card and class-family upgrade;
+// TRIPLE DOCTRINE burns every owned plain (class-free) upgrade. The host
+// resyncs the whole owned list afterwards (append-only events cannot
+// express removal), and every peer re-derives stats identically.
+void StripForUnique(PlayerState& p, UpgradeId bought)
+{
+    if (bought != UpgradeId::PureArsenal
+        && bought != UpgradeId::TripleDoctrine)
+        return;
+    bool arsenal = bought == UpgradeId::PureArsenal;
+    for (size_t i = p.owned.size(); i-- > 0; )
+    {
+        const UpgradeType& u = kUpgradePool[p.owned[i]];
+        bool isClassy = u.classGrant != ClassNone || u.classReq != ClassNone;
+        bool isNormal = u.rarity <= 4 && !isClassy;
+        if ((arsenal && isClassy) || (!arsenal && isNormal))
+            p.owned.erase(p.owned.begin() + i);
+    }
+}
+
 bool GameState::TryPurchase(int id, int slot)
 {
     if (id < 0 || id >= MaxPlayers || slot < 0 || slot >= NumOfferSlots)
@@ -589,6 +610,7 @@ bool GameState::TryPurchase(int id, int slot)
     // upgrade event so client owned lists stay identical)
     if (u.grant != UpgradeId::Count)
         p.owned.push_back(uint8_t(u.grant));
+    StripForUnique(p, UpgradeId(o.type));
 
     int prevMax = MaxHealthFor(p);
     RecalcStats(id);

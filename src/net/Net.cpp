@@ -51,18 +51,24 @@ public:
     int advertNeed = 0;    // our own lobby's queue size (0 = open host)
     int pass = 0;          // 1 = queues of wantNeed, 2 = open hosts (need==0)
 
-    void Search(int need)
+    int wantMode = 0;
+    int advertMode = 0;
+
+    void Search(int need, int mode)
     {
         wantNeed = need;
+        wantMode = mode;
         pass = 1;
         searching = true;
-        Log("Net: quick match - pass 1, %d-player queues", need);
+        Log("Net: quick match - pass 1, %d-player %s queues", need,
+            mode ? "TEST" : "normal");
         Request(need);
     }
 
-    void Create(int need)
+    void Create(int need, int mode)
     {
         advertNeed = need;
+        advertMode = mode;
         m_createResult.Set(
             SteamMatchmaking()->CreateLobby(k_ELobbyTypePublic, MaxLobbyPlayers),
             this, &LobbyWork::OnCreated);
@@ -79,6 +85,8 @@ private:
         mm->AddRequestLobbyListNumericalFilter("open", 1,
                                                k_ELobbyComparisonEqual);
         mm->AddRequestLobbyListNumericalFilter("need", need,
+                                               k_ELobbyComparisonEqual);
+        mm->AddRequestLobbyListNumericalFilter("mode", wantMode,
                                                k_ELobbyComparisonEqual);
         // Russia <-> America must see each other: no distance cutoff
         mm->AddRequestLobbyListDistanceFilter(k_ELobbyDistanceFilterWorldwide);
@@ -146,6 +154,8 @@ void LobbyWork::OnCreated(LobbyCreated_t* r, bool ioFailure)
     mm->SetLobbyData(lobby, "open", "1");
     mm->SetLobbyData(lobby, "players", "1");
     mm->SetLobbyData(lobby, "phase", "0");
+    sprintf_s(buf, "%d", advertMode);
+    mm->SetLobbyData(lobby, "mode", buf);
     Log("Net: public lobby advertised (%llu, need=%d)",
         (unsigned long long)lobbyId, advertNeed);
 }
@@ -307,7 +317,7 @@ void Net::Disconnect()
     m_clientState = ClientState::Idle;
 }
 
-void Net::QuickMatch(int need)
+void Net::QuickMatch(int need, int testMode)
 {
     if (!m_steamOk || !g_lobbyWork || g_lobbyWork->searching)
     {
@@ -315,14 +325,14 @@ void Net::QuickMatch(int need)
             onNoMatch();
         return;
     }
-    g_lobbyWork->Search(need);
+    g_lobbyWork->Search(need, testMode);
 }
 
-bool Net::CreatePublicLobby(int need)
+bool Net::CreatePublicLobby(int need, int testMode)
 {
     if (!m_steamOk || !g_lobbyWork || g_lobbyWork->lobbyId)
         return false;
-    g_lobbyWork->Create(need);
+    g_lobbyWork->Create(need, testMode);
     return true;
 }
 
@@ -599,6 +609,14 @@ void Net::Poll(const Events& ev)
                         ev.onPurchase(client->playerId,
                                       reinterpret_cast<const MsgPurchase*>(d)->slot);
                 }
+                else if (t == MsgType::TestGrant
+                         && m->m_cbSize >= int(sizeof(MsgTestGrant))
+                         && client->playerId >= 0)
+                {
+                    if (ev.onTestGrant)
+                        ev.onTestGrant(client->playerId,
+                            reinterpret_cast<const MsgTestGrant*>(d)->upgrade);
+                }
                 else if (t == MsgType::Ready && m->m_cbSize >= int(sizeof(MsgReady))
                          && client->playerId >= 0)
                 {
@@ -708,6 +726,18 @@ void Net::SendPurchaseToHost(int slot)
         m_hostConn, &msg, sizeof(msg), k_nSteamNetworkingSend_Reliable, nullptr);
 }
 
+void Net::SendTestGrantToHost(uint8_t upgrade)
+{
+    if (m_mode != Mode::Client || !m_hostConn
+        || m_clientState != ClientState::Connected)
+        return;
+    MsgTestGrant msg;
+    msg.upgrade = upgrade;
+    SteamNetworkingSockets()->SendMessageToConnection(
+        m_hostConn, &msg, sizeof(msg), k_nSteamNetworkingSend_Reliable,
+        nullptr);
+}
+
 void Net::BroadcastUpgrade(int playerId, uint8_t upgradeType)
 {
     if (m_mode != Mode::Host)
@@ -787,7 +817,7 @@ int PackSnapshot(const MsgSnapshot& s, uint8_t* out)
 {
     uint8_t* p = out;
     W8(p, s.type); W8(p, s.phase); W8(p, s.winner);
-    W8(p, s.targetPlayers); W8(p, s.matchMinutes);
+    W8(p, s.targetPlayers); W8(p, s.matchMinutes); W8(p, s.testMode);
     W32(p, s.tick); W32(p, s.matchEndTick);
     memcpy(p, s.players, sizeof(s.players)); p += sizeof(s.players);
 
@@ -856,7 +886,7 @@ int PackSnapshot(const MsgSnapshot& s, uint8_t* out)
 
 bool UnpackSnapshot(const uint8_t* data, int size, MsgSnapshot& out)
 {
-    constexpr int kHead = 5 + 8 + int(sizeof(out.players));
+    constexpr int kHead = 6 + 8 + int(sizeof(out.players));
     if (size < kHead + 6)
         return false;
     const uint8_t* p = data;
@@ -864,6 +894,7 @@ bool UnpackSnapshot(const uint8_t* data, int size, MsgSnapshot& out)
     out = MsgSnapshot{};
     out.type = R8(p); out.phase = R8(p); out.winner = R8(p);
     out.targetPlayers = R8(p); out.matchMinutes = R8(p);
+    out.testMode = R8(p);
     out.tick = R32(p); out.matchEndTick = R32(p);
     memcpy(out.players, p, sizeof(out.players)); p += sizeof(out.players);
 

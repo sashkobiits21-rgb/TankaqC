@@ -27,6 +27,7 @@ public:
         std::function<void(int playerId)> onPlayerLeft;
         std::function<void(int playerId, const MsgInput&)> onInput;
         std::function<void(int playerId, int slot)> onPurchase;
+        std::function<void(int playerId, uint8_t upgrade)> onTestGrant;
         std::function<void(int playerId, bool ready)> onReady;
         // client side
         std::function<void(int myPlayerId)> onWelcome;
@@ -54,7 +55,7 @@ public:
     // Search is two-pass: queues of the same size first (need == n), then
     // open-hosted games (need == 0, joinable at any size).
     void QuickMatch(int need);             // search worldwide, n players wanted
-    bool CreatePublicLobby(int need);      // host: advertise (0 = open host)
+    // (declared below with the mode parameter)
     void UpdateLobbyAdvert(int players, int phase);
     void LeaveLobby();                     // stop advertising
     bool hasPublicLobby() const;
@@ -66,8 +67,11 @@ public:
 
     void SendInputToHost(const MsgInput& msg);
     void SendPurchaseToHost(int slot);
+    void SendTestGrantToHost(uint8_t upgrade);
     void SendReadyToHost(bool ready);
     void BroadcastSnapshot(const MsgSnapshot& snap);
+    void QuickMatch(int need, int testMode);
+    bool CreatePublicLobby(int need, int testMode);
     // host: owned-upgrade replication (all reliable)
     void BroadcastUpgrade(int playerId, uint8_t upgradeType);
     void BroadcastOwnedReset();

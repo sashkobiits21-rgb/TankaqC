@@ -489,6 +489,9 @@ bool StepProjectile(Projectile& pr, float dt);
 // bounce is visible the instant the shell meets the face on every screen.
 struct GameState;
 bool ShieldDeflectStep(GameState& gs, Projectile& pr);
+// Buying PURE ARSENAL / TRIPLE DOCTRINE deletes the now-forbidden owned
+// upgrades (classes / normals respectively); no-op for anything else.
+void StripForUnique(PlayerState& p, UpgradeId bought);
 
 // Owned-upgrade scan (uniques are one-copy, so presence == effect).
 inline bool HasUpgrade(const PlayerState& p, UpgradeId u)
@@ -525,6 +528,7 @@ struct GameState
     uint8_t winner = 0xFF;
     uint8_t targetPlayers = 0;    // quick-match queue size (0 = no queue)
     uint8_t matchMinutes = DefaultMatchMinutes;   // host lobby choice
+    uint8_t testMode = 0;         // TEST match: sandbox, free upgrade picks
     uint32_t matchEndTick = 0;
     uint32_t endedTick = 0;
     bool lagCompEnabled = true;   // host: input catch-up on direction changes

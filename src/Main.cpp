@@ -176,6 +176,7 @@ void ApplySnapshot(const net::MsgSnapshot& s)
     g.game.winner = s.winner;
     g.game.targetPlayers = s.targetPlayers;
     g.game.matchMinutes = s.matchMinutes;
+    g.game.testMode = s.testMode;
     g.game.matchEndTick = s.matchEndTick;
     for (int i = 0; i < MaxPlayers; ++i)
     {
@@ -390,6 +391,7 @@ net::MsgSnapshot BuildSnapshot()
     s.winner = g.game.winner;
     s.targetPlayers = g.game.targetPlayers;
     s.matchMinutes = g.game.matchMinutes;
+    s.testMode = g.game.testMode;
     s.matchEndTick = g.game.matchEndTick;
     for (int i = 0; i < MaxPlayers; ++i)
     {
@@ -930,7 +932,8 @@ void StartFindMatch(int need)
     g.screen = Screen::Connecting;
     g.connectStart = g.time;
     g.statusLine.clear();
-    g.net.QuickMatch(g.searchNeed);
+    g.game.testMode = uint8_t(g.searchTest);   // if WE end up hosting
+    g.net.QuickMatch(g.searchNeed, g.searchTest);
 }
 
 void StartJoin(const std::string& target)
@@ -1746,8 +1749,59 @@ bool HostPurchase(int pid, int slot)
         UpgradeId grant = kUpgradePool[type].grant;
         if (grant != UpgradeId::Count)
             g.net.BroadcastUpgrade(pid, uint8_t(grant));
+        // the rule-benders REMOVED entries -- append-only events cannot
+        // say that, so ship the whole list again (reliable, in order)
+        if (UpgradeId(type) == UpgradeId::PureArsenal
+            || UpgradeId(type) == UpgradeId::TripleDoctrine)
+            for (int to = 0; to < MaxLobbyPlayers; ++to)
+                if (to != g.myId && g.game.players[to].active)
+                    g.net.SendOwnedSyncTo(to, pid,
+                        g.game.players[pid].owned.data(),
+                        int(g.game.players[pid].owned.size()));
     }
     return true;
+}
+
+// TEST mode: the pool menu grants upgrades for free, host-validated,
+// replicated exactly like purchases (upgrade events + strip resyncs).
+void HostTestGrant(int pid, uint8_t upg)
+{
+    if (!g.game.testMode || upg >= UpgradeCount)
+        return;
+    PlayerState& p = g.game.players[pid];
+    if (!p.active)
+        return;
+    p.owned.push_back(upg);
+    UpgradeId grant = kUpgradePool[upg].grant;
+    if (grant != UpgradeId::Count)
+        p.owned.push_back(uint8_t(grant));
+    StripForUnique(p, UpgradeId(upg));
+    g.game.RecalcStats(pid);
+    Log("TestGrant: player %d type %d (owned %zu)", pid, int(upg),
+        p.owned.size());
+    if (g.online)
+    {
+        g.net.BroadcastUpgrade(pid, upg);
+        if (grant != UpgradeId::Count)
+            g.net.BroadcastUpgrade(pid, uint8_t(grant));
+        if (UpgradeId(upg) == UpgradeId::PureArsenal
+            || UpgradeId(upg) == UpgradeId::TripleDoctrine)
+            for (int to = 0; to < MaxLobbyPlayers; ++to)
+                if (to != g.myId && g.game.players[to].active)
+                    g.net.SendOwnedSyncTo(to, pid, p.owned.data(),
+                                          int(p.owned.size()));
+    }
+}
+
+void RequestTestGrant(uint8_t upgrade)
+{
+    if (!g.game.testMode)
+        return;
+    if (g.isHost)
+        HostTestGrant(g.myId, upgrade);
+    else
+        g.net.SendTestGrantToHost(upgrade);
+    snd::Play(snd::Sfx::Click, 0.5f, SndJitter(0.06f));
 }
 
 std::vector<UiButton> MenuButtons()
@@ -1783,8 +1837,15 @@ std::vector<UiButton> MenuButtons()
         buttons.push_back({ x, y + 2 * (bh + gap), bw, bh, "LEAVE GAME" });
         buttons.push_back({ x, y + 3 * (bh + gap), bw, bh, "QUIT" });
     }
+    else if (g.screen == Screen::MatchMode)
+    {
+        buttons.push_back({ x, y + 0 * (bh + gap), bw, bh, "NORMAL MATCH" });
+        buttons.push_back({ x, y + 1 * (bh + gap), bw, bh, "TEST MATCH" });
+        buttons.push_back({ x, y + 2 * (bh + gap), bw, bh, "BACK" });
+    }
     else if (g.screen == Screen::MatchSize)
     {
+        // both modes field up to 4 players today; the cap is per mode
         buttons.push_back({ x, y + 0 * (bh + gap), bw, bh, "2 PLAYERS" });
         buttons.push_back({ x, y + 1 * (bh + gap), bw, bh, "3 PLAYERS" });
         buttons.push_back({ x, y + 2 * (bh + gap), bw, bh, "4 PLAYERS" });
@@ -1904,9 +1965,13 @@ void BuildMenu()
     if (g.screen == Screen::Settings)
         g.ui.TextCentered(w * 0.5f, h * 0.30f - 40, 2.2f, { 0.9f, 1, 0.85f, 1 },
                           "SETTINGS - effective GI samples = rays x temporal");
+    if (g.screen == Screen::MatchMode)
+        g.ui.TextCentered(w * 0.5f, h * 0.36f - 44, 2.4f, { 0.9f, 1, 0.85f, 1 },
+                          "MATCH MODE - play for real or test the arsenal?");
     if (g.screen == Screen::MatchSize)
         g.ui.TextCentered(w * 0.5f, h * 0.36f - 44, 2.4f, { 0.9f, 1, 0.85f, 1 },
-                          "MATCH SIZE - how many players?");
+                          g.searchTest ? "TEST MATCH - how many players?"
+                                       : "MATCH SIZE - how many players?");
 
     if (!g.statusLine.empty())
         g.ui.TextCentered(w * 0.5f, h * 0.33f, 1.8f, { 1, 0.7f, 0.5f, 1 }, g.statusLine);
@@ -1929,7 +1994,9 @@ void HandleMenuClick()
         if (!b.Contains(float(g.mouseX), float(g.mouseY)))
             continue;
         snd::Play(snd::Sfx::Click, 0.5f, SndJitter(0.06f));
-        if (b.label == "FIND MATCH") { g.screen = Screen::MatchSize; g.statusLine.clear(); }
+        if (b.label == "FIND MATCH") { g.screen = Screen::MatchMode; g.statusLine.clear(); }
+        else if (b.label == "NORMAL MATCH") { g.searchTest = 0; g.screen = Screen::MatchSize; }
+        else if (b.label == "TEST MATCH") { g.searchTest = 1; g.screen = Screen::MatchSize; }
         else if (b.label == "2 PLAYERS") StartFindMatch(2);
         else if (b.label == "3 PLAYERS") StartFindMatch(3);
         else if (b.label == "4 PLAYERS") StartFindMatch(4);
@@ -1940,7 +2007,7 @@ void HandleMenuClick()
             // (need = 0, joinable by searchers of any size; toggleable in lobby)
             StartHost();
             if (g.screen == Screen::InGame && g.online)
-                g.net.CreatePublicLobby(0);
+                g.net.CreatePublicLobby(0, 0);
         }
         else if (b.label == "JOIN GAME") { g.screen = Screen::JoinEntry; g.statusLine.clear(); }
         else if (b.label == "SETTINGS")
@@ -1954,6 +2021,10 @@ void HandleMenuClick()
         else if (b.label == "RESUME") g.screen = Screen::InGame;
         else if (b.label == "LEAVE GAME") LeaveToMenu(g.online ? "left the game" : "");
         else if (b.label == "CONNECT") { if (!g.joinText.empty()) StartJoin(g.joinText); }
+        else if (b.label == "BACK" && g.screen == Screen::MatchSize)
+        {
+            g.screen = Screen::MatchMode;
+        }
         else if (b.label == "BACK")
         {
             g.screen = g.screen == Screen::Settings ? g.settingsReturn
@@ -2075,8 +2146,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             else if (g.screen == Screen::Settings)
                 g.screen = g.settingsReturn;
             else if (g.screen == Screen::JoinEntry
-                     || g.screen == Screen::MatchSize)
+                     || g.screen == Screen::MatchMode)
                 g.screen = Screen::MainMenu;
+            else if (g.screen == Screen::MatchSize)
+                g.screen = Screen::MatchMode;
         }
         if (wp == VK_F5) g.post.giEnabled = !g.post.giEnabled;
         if (wp == VK_F6) g.post.aoEnabled = !g.post.aoEnabled;
@@ -2797,7 +2870,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         {
             g.net.SetJoinCap(g.searchNeed);
             g.game.StartGathering(g.searchNeed);
-            g.net.CreatePublicLobby(g.searchNeed);
+            g.net.CreatePublicLobby(g.searchNeed, g.searchTest);
             g.statusLine.clear();
         }
     };
@@ -2809,7 +2882,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     {
         (steamOk ? StartHost() : StartSolo());
         if (g.online)
-            g.net.CreatePublicLobby(0);   // hosting counts as matchmaking
+            g.net.CreatePublicLobby(0, 0);   // hosting counts as matchmaking
     }
     else if (!g.opt.join.empty() && steamOk)
         StartJoin(g.opt.join);
@@ -2870,6 +2943,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         if (HostPurchase(pid, slot))
             Log("Player %d bought offer slot %d (owned %zu upgrades)", pid, slot,
                 g.game.players[pid].owned.size());
+    };
+    ev.onTestGrant = [](int pid, uint8_t upgrade)
+    {
+        if (g.isHost)
+            HostTestGrant(pid, upgrade);
     };
     ev.onUpgrade = [](int pid, uint8_t type)
     {
@@ -3406,7 +3484,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                     }
                     else
                     {
-                        g.net.CreatePublicLobby(g.game.targetPlayers);
+                        g.net.CreatePublicLobby(g.game.targetPlayers,
+                                                g.game.testMode);
                         g.lastAdvertPlayers = g.lastAdvertPhase = -1;
                     }
                 }

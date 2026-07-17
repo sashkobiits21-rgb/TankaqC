@@ -59,7 +59,7 @@ constexpr struct { int w, h; } kResolutions[] = {
 };
 
 enum class Screen { MainMenu, JoinEntry, Connecting, InGame, Settings, Paused,
-                    MatchSize };
+                    MatchMode, MatchSize };
 
 // ---------------------------------------------------------------- click ids
 // Every clickable overlay registers its rect each frame (UiHotRect); ONE
@@ -192,7 +192,8 @@ struct App
     bool projMatchedProv[MaxProjectiles]{};    // skip double sound/record
     // quick match state
     bool searching = false;              // lobby search in flight
-    int searchNeed = 2;                  // chosen queue size (FIND MATCH)
+    int searchNeed = 2;
+    int searchTest = 0;           // FIND MATCH mode pick: 0 normal, 1 TEST                  // chosen queue size (FIND MATCH)
     int lastAdvertPlayers = -1;          // last values pushed to the Steam
     int lastAdvertPhase = -1;            //  lobby advert (push on change only)
     Screen screen = Screen::MainMenu;
@@ -340,6 +341,7 @@ void BuildShop(FrameData& frame);
 void BuildOwnedRow(FrameData& frame);
 void HandleShopClick(float mx, float my);
 void RotatedRect(float cx, float cy, float w, float h, float ang, UiColor c);
+void RequestTestGrant(uint8_t upgrade);   // TEST mode: 1 click = 1 copy
 void IconUv(int icon, float& u0, float& u1);
 void AddIconQuad(FrameData& frame, int icon, float cx, float cy, float half,
                  float alpha, float ang = 0.0f);

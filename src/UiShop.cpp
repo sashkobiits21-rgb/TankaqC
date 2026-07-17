@@ -136,8 +136,76 @@ static void BreakSlats()
     }
 }
 
+// TEST mode: the whole pool on one panel; hover for details, one click
+// grants one copy (host-validated, replicated like a purchase).
+static void BuildTestGrid(FrameData& frame)
+{
+    constexpr int kCols = 6;
+    constexpr float kCell = 54.0f, kPad = 10.0f;
+    int rows = (UpgradeCount + kCols - 1) / kCols;
+    float panelW = kPad * 2 + kCols * kCell;
+    float panelH = 46.0f + rows * kCell + kPad + 40.0f;
+    float px = 14;
+    float py = std::max(8.0f, (float(g.height) - panelH) * 0.5f);
+    g.shopPanel[0] = px; g.shopPanel[1] = py;
+    g.shopPanel[2] = panelW; g.shopPanel[3] = panelH;
+    UiHotRect(UiIdShopPanel, px, py, panelW, panelH);
+    g.ui.Rect(px, py, panelW, panelH, { 0.07f, 0.09f, 0.07f, 0.88f });
+    g.ui.Text(px + 10, py + 9, 2.2f, { 1, 0.95f, 0.6f, 1 },
+              "TEST ARSENAL - click = +1 copy");
+    int hover = -1;
+    for (int i = 0; i < UpgradeCount; ++i)
+    {
+        float cx = px + kPad + (i % kCols) * kCell;
+        float cy = py + 46.0f + (i / kCols) * kCell;
+        const UpgradeType& u = kUpgradePool[i];
+        UiColor bg = kRarityCol[std::clamp(u.rarity, 0, 6)];
+        bool hov = g.mouseX >= cx && g.mouseX < cx + kCell - 4
+                && g.mouseY >= cy && g.mouseY < cy + kCell - 4;
+        if (hov) hover = i;
+        bg.a = hov ? 1.0f : 0.85f;
+        g.ui.Rect(cx, cy, kCell - 4, kCell - 4, bg);
+        if (hov)
+            g.ui.RectOutline(cx, cy, kCell - 4, kCell - 4, 2,
+                             { 1, 1, 1, 0.9f });
+        AddIconQuad(frame, i, cx + (kCell - 4) * 0.5f,
+                    cy + (kCell - 4) * 0.5f, 18, 1.0f, 0.0f);
+    }
+    if (hover >= 0)
+    {
+        char buf[128];
+        sprintf_s(buf, "%s - %s", kUpgradePool[hover].name,
+                  kUpgradePool[hover].desc);
+        g.ui.Text(px + 10, py + panelH - 30.0f, 1.5f,
+                  { 1, 1, 1, 0.92f }, buf);
+        g.hoverKeyNow = 5000 + hover;
+    }
+}
+
+void HandleTestGridClick(float mx, float my)
+{
+    constexpr int kCols = 6;
+    constexpr float kCell = 54.0f, kPad = 10.0f;
+    float px = g.shopPanel[0], py = g.shopPanel[1];
+    int col = int((mx - px - kPad) / kCell);
+    int row = int((my - py - 46.0f) / kCell);
+    if (col < 0 || col >= kCols || row < 0)
+        return;
+    float cx = px + kPad + col * kCell, cy = py + 46.0f + row * kCell;
+    if (mx > cx + kCell - 4 || my > cy + kCell - 4)
+        return;   // the gap between cells
+    int idx = row * kCols + col;
+    if (idx >= 0 && idx < UpgradeCount)
+        RequestTestGrant(uint8_t(idx));
+}
+
 void BuildShop(FrameData& frame)
 {
+    if (g.game.testMode)
+    {
+        BuildTestGrid(frame);
+        return;
+    }
     const PlayerState& me = g.game.players[g.myId];
     float panelW = kCardGap * 3 + kCardW * 2;
     float panelH = kShopHeader + kCardGap + 3 * kCardH + 2 * kCardGap + kCardGap;
@@ -472,6 +540,11 @@ void BuildOwnedRow(FrameData& frame)
 
 void HandleShopClick(float mx, float my)
 {
+    if (g.game.testMode)
+    {
+        HandleTestGridClick(mx, my);
+        return;
+    }
     const PlayerState& me = g.game.players[g.myId];
     for (int i = 0; i < g.drawnCardCount; ++i)
     {
