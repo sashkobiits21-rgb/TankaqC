@@ -1852,6 +1852,7 @@ void GameState::AdvanceMovement(int id, const InputCmd& inRaw)
     if ((in.buttons & BtnAbility1) && p.shieldWait <= 0.0f
         && p.shieldTimer <= 0.0f && HasClass(p, ClassShield))
         p.shieldTimer = p.stats[int(Stat::ShieldDuration)];
+    p.shieldAimYaw = in.aimYawFresh;
 
     // The client resolves camera-relative WASD into a world-space vector, so
     // the host (and prediction replay) integrate the same numbers.
@@ -2222,30 +2223,46 @@ void GameState::Tick(const InputCmd* inputs)
         // them a bonus ricochet, flips their allegiance (they can never hurt
         // the shieldman again -- but hurt everyone else, shooter included)
         // and paints them orange. The owner's own rockets pass right through.
+        // Robustness: the face uses the FRESHEST aim (not the jitter-lagged
+        // turret), and the test is the tick's SEGMENT against the face
+        // plane -- fast shells cannot tunnel between two positions, and the
+        // shell's own radius counts at the edges.
         for (int id = 0; id < MaxPlayers; ++id)
         {
             PlayerState& sp = players[id];
             if (!sp.active || sp.health <= 0 || sp.shieldTimer <= 0.0f
                 || id == pr.owner)
                 continue;
-            float fx = sinf(sp.turretYaw), fz = cosf(sp.turretYaw);
-            float rx = pr.x - (sp.x + fx * ShieldDist);
-            float rz = pr.z - (sp.z + fz * ShieldDist);
-            float lon = rx * fx + rz * fz;    // along the barrier normal
-            float lat = rx * fz - rz * fx;    // across the face
-            if (fabsf(lat) > sp.stats[int(Stat::ShieldWidth)] * 0.5f
-                || fabsf(lon) > 0.45f)
-                continue;
-            float vx = sinf(pr.yaw), vz = cosf(pr.yaw);
+            float fx = sinf(sp.shieldAimYaw), fz = cosf(sp.shieldAimYaw);
+            float cxp = sp.x + fx * ShieldDist;
+            float czp = sp.z + fz * ShieldDist;
+            float step = pr.speed * TickDt;
+            float vx = sinf(pr.yaw) * step, vz = cosf(pr.yaw) * step;
             float vn = vx * fx + vz * fz;
-            if (vn >= 0.0f)                   // already outbound
+            if (vn >= 0.0f)                   // outbound or parallel
                 continue;
-            vx -= 2.0f * vn * fx;
-            vz -= 2.0f * vn * fz;
-            pr.yaw = atan2f(vx, vz);
-            float push = 0.5f - lon;          // pop out of the face plane
-            pr.x += fx * push;
-            pr.z += fz * push;
+            float lonNow = (pr.x - cxp) * fx + (pr.z - czp) * fz;
+            float lonPrev = lonNow - vn;      // where this tick started
+            if (lonNow > 0.30f || lonPrev < -0.30f)
+                continue;                     // never met the face this tick
+            float latNow = (pr.x - cxp) * fz - (pr.z - czp) * fx;
+            float latPrev = latNow - (vx * fz - vz * fx);
+            float t = (lonPrev - lonNow) > 1e-6f
+                ? std::clamp(lonPrev / (lonPrev - lonNow), 0.0f, 1.0f)
+                : 0.0f;
+            float lat = latPrev + (latNow - latPrev) * t;
+            float halfW = sp.stats[int(Stat::ShieldWidth)] * 0.5f
+                        + ProjectileRadius + 0.15f;
+            if (fabsf(lat) > halfW)
+                continue;
+            float rvx = sinf(pr.yaw), rvz = cosf(pr.yaw);
+            float rn = rvx * fx + rvz * fz;
+            rvx -= 2.0f * rn * fx;
+            rvz -= 2.0f * rn * fz;
+            pr.yaw = atan2f(rvx, rvz);
+            // re-emerge in front of the face at the crossing point
+            pr.x = cxp + fz * lat + fx * 0.4f;
+            pr.z = czp - fx * lat + fz * 0.4f;
             pr.bounces += 1;                  // one free ricochet, always
             pr.owner = uint8_t(id);           // now it fights for the shieldman
             pr.deflected = 1;                 // orange from here on

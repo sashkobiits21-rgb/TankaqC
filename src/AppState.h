@@ -113,7 +113,7 @@ struct App
     std::vector<bool> rigPartVisible;       // weapon toggling
     int texRig = -1;
     float rigScale = 1.0f;
-    DirectX::XMFLOAT3 rigPos{ 5.0f, 0.0f, -8.0f };
+    DirectX::XMFLOAT3 rigPos{ 1.2f, 0.0f, -13.5f };   // near the menu cam
 
     // soldier summons: clip handles resolved once at load (loud on miss),
     // one Animator per sim slot driven from the replicated state, and a
@@ -132,9 +132,11 @@ struct App
     int meshGrenade = -1;
     int meshShieldSlat = -1, meshShieldPost = -1;   // barrier lattice
     float grenadeScale = 1.0f;
-    int meshLauncher = -1;
-    int rigWristR = -1;                        // launcher attach joint
-    DirectX::XMFLOAT4X4 rigWristBind;          // inverse of its inverseBind
+    int meshLauncher = -1;                     // canonical: tube along +Z
+    float launcherScale = 1.0f;                // canonical -> model units
+    int rigChest = -1;                         // launcher shoulder anchor
+    DirectX::XMFLOAT4X4 rigChestBind;          // inverse of its inverseBind
+    int rigArmR[3]{ -1, -1, -1 };              // UpperArm/LowerArm/Wrist .R
     // rigged skull (assets/Skull/Skull.glb): 3-bone jaw, one looping
     // OpenAndClose clip; falls back to the procedural cranium+jaw if absent
     SkinnedModel skullModel;

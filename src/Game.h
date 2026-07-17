@@ -58,6 +58,10 @@ struct InputCmd
     float moveX = 0;          // desired world-space move direction (camera-
     float moveZ = 0;          //  relative WASD is resolved on the client)
     float turretYaw = 0.0f;   // desired absolute (world) turret yaw
+    // freshest aim the host knows for this player (jitter-buffered inputs
+    // lag turretYaw; the SHIELD deflects with this so a swinging client
+    // aim still blocks what it visibly faces)
+    float aimYawFresh = 0.0f;
 };
 
 // ------------------------------------------------------------------- stats
@@ -261,6 +265,7 @@ struct PlayerState
     float possessTimer = 0;
     float shieldTimer = 0;        // barrier remaining (input-driven, predicted)
     float shieldWait = 0;         // ability cooldown remaining
+    float shieldAimYaw = 0;       // host: freshest aim, drives the deflector
     float possessDps = 0;         // host-only, baked from the ghost's owner
     uint8_t possessedBy = 0xFF;   // host-only, damage attribution
 };

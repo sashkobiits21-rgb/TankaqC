@@ -598,6 +598,28 @@ int RunClassTest()
         cmds[0].buttons = BtnAbility1;
         gsh.Tick(cmds);
         check(sm.shieldTimer > 3.5f, "cooled down: the barrier rises again");
+        cmds[0].buttons = 0;
+
+        // a FAST shell (crosses the whole face band in one tick) must be
+        // caught by the segment test -- the old point check tunneled
+        gsh.players[1].health = 100;
+        Projectile fast{};
+        fast.active = true;
+        fast.owner = 1;
+        fast.x = 0; fast.z = -18.0f; fast.y = 0.17f;
+        fast.yaw = XM_PI;
+        fast.speed = 45.0f;           // 0.7 units per tick
+        fast.life = 6.0f;
+        fast.damage = 10;
+        gsh.projectiles[0] = fast;
+        bool caught = false;
+        for (int t = 0; t < TickRate && !caught; ++t)
+        {
+            gsh.Tick(cmds);
+            caught = gsh.projectiles[0].active
+                  && gsh.projectiles[0].deflected != 0;
+        }
+        check(caught, "segment test catches a one-tick face crossing");
     }
 
     // ---- match length: default 10:00, the host pick sets the horn ----

@@ -612,6 +612,7 @@ InputCmd BuildLocalInput()
         if (t % 220 < 50)              // periodic boost bursts (tests fuel)
             in.buttons |= BtnBoost;
         in.turretYaw = g.game.players[g.myId].hullYaw + 0.6f * sinf(float(g.time) * 0.7f);
+        in.aimYawFresh = in.turretYaw;
         return in;
     }
     // Screen-relative WASD resolved into a world-space vector (fixed camera
@@ -636,6 +637,7 @@ InputCmd BuildLocalInput()
     if (g.keys[VK_SHIFT]) in.buttons |= BtnBoost;   // boost: 2x speed on fuel
     if (g.keys['1']) in.buttons |= BtnAbility1;     // ability slot 1: SHIELD
     in.turretYaw = g.aimYaw;
+    in.aimYawFresh = g.aimYaw;
     return in;
 }
 
@@ -1431,8 +1433,60 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
 
             an.Update(g.frameDt);
             frame.palettes.emplace_back();
-            an.Pose(frame.palettes.back());
             int paletteIdx = int(frame.palettes.size()) - 1;
+
+            // PASS 1 (no IK): find where the chest ends up, so the launcher
+            // can sit on the right shoulder and the hand can reach for it
+            an.ik[0].active = false;
+            an.Pose(frame.palettes.back());
+            XMMATRIX launcherM{};
+            bool haveLauncher = g.meshLauncher >= 0 && g.rigChest >= 0;
+            if (haveLauncher)
+            {
+                XMMATRIX chestG = XMLoadFloat4x4(&g.rigChestBind)
+                    * XMLoadFloat4x4(&frame.palettes[paletteIdx]
+                                          .m[g.rigChest]);
+                XMVECTOR cpos = chestG.r[3];   // model space (real units)
+                // tube points where the torso aims (yaw only)
+                float fyaw = 0.0f;
+                if (an.aim.active)
+                    fyaw = atan2f(an.aim.target.x, an.aim.target.z);
+                float fx = sinf(fyaw), fz = cosf(fyaw);
+                float rgx = cosf(fyaw), rgz = -sinf(fyaw);   // right axis
+                // rear rides the shoulder: up + right of the chest, center
+                // pushed forward so the back end sits ON the shoulder pad
+                XMVECTOR pos = cpos
+                    + XMVectorSet(rgx * 0.18f, 0.28f, rgz * 0.18f, 0)
+                    + XMVectorSet(fx * 0.30f, 0, fz * 0.30f, 0);
+                launcherM = XMMatrixScaling(g.launcherScale,
+                                            g.launcherScale,
+                                            g.launcherScale)
+                          * XMMatrixRotationX(0.10f)   // nose dips a touch
+                          * XMMatrixRotationY(fyaw)
+                          * XMMatrixTranslationFromVector(pos);
+                // the grip: under the tube, forward of center -- the right
+                // hand IKs onto it, the left arm keeps its animation
+                if (g.rigArmR[0] >= 0 && g.rigArmR[1] >= 0
+                    && g.rigArmR[2] >= 0)
+                {
+                    XMVECTOR handle = XMVector3TransformCoord(
+                        XMVectorSet(0, -0.10f / g.launcherScale,
+                                    0.24f / g.launcherScale, 1),
+                        launcherM);
+                    an.ik[0].a = g.rigArmR[0];
+                    an.ik[0].b = g.rigArmR[1];
+                    an.ik[0].c = g.rigArmR[2];
+                    an.ik[0].active = true;
+                    an.ik[0].weight = 1.0f;
+                    XMStoreFloat3(&an.ik[0].target, handle);
+                    XMVECTOR pole = cpos
+                        + XMVectorSet(rgx * 0.7f, -0.25f, rgz * 0.7f, 0)
+                        + XMVectorSet(fx * 0.35f, 0, fz * 0.35f, 0);
+                    XMStoreFloat3(&an.ik[0].pole, pole);
+                    // PASS 2: same pose, right arm solved onto the grip
+                    an.Pose(frame.palettes[paletteIdx]);
+                }
+            }
 
             XMMATRIX world = XMMatrixScaling(g.rigScale, g.rigScale,
                                              g.rigScale)
@@ -1453,17 +1507,11 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
                 frame.objects.push_back(ro);
             }
 
-            // rocket launcher riding the wrist: recover the joint's global
-            // from the palette (palette = inverseBind * global)
-            if (g.meshLauncher >= 0 && g.rigWristR >= 0)
-            {
-                XMMATRIX pal = XMLoadFloat4x4(
-                    &frame.palettes[paletteIdx].m[g.rigWristR]);
-                XMMATRIX global = XMLoadFloat4x4(&g.rigWristBind) * pal;
+            // the launcher itself, on the shoulder (model space -> world)
+            if (haveLauncher)
                 frame.objects.push_back({ g.meshLauncher, g.texWhite,
-                    Store(global * world),
+                    Store(launcherM * world),
                     { 0.30f, 0.32f, 0.28f, 0.25f }, true });
-            }
 
             // launcher muzzle flash (the rocket itself is a real projectile
             // in the shared pool, drawn by the normal rocket path)
@@ -1491,31 +1539,59 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
             g.rigAnimator.aim.target = XMFLOAT3(
                 (rx - g.rigPos.x) / g.rigScale, 1.2f,
                 (rz - g.rigPos.z) / g.rigScale);
-            // orbiting marker for the hand IK; weight ramps 0..1 (the
-            // "reach a specific object" blend)
-            float a = float(g.time) * 1.1f;
-            g.rigAnimator.ik[0].target = XMFLOAT3(cosf(a) * 0.55f,
-                                                  1.05f + 0.25f * sinf(a * 0.7f),
-                                                  sinf(a) * 0.55f);
-            g.rigAnimator.ik[0].pole = XMFLOAT3(cosf(a) * 1.5f, 0.4f,
-                                                sinf(a) * 1.5f);
-            g.rigAnimator.ik[0].weight = 0.5f + 0.5f * sinf(float(g.time) * 0.8f);
         }
+        Animator& an = g.rigAnimator;
         frame.palettes.emplace_back();
-        g.rigAnimator.Pose(frame.palettes.back());
         int paletteIdx = int(frame.palettes.size()) - 1;
+        an.ik[0].active = false;
+        an.Pose(frame.palettes.back());
+        XMMATRIX rigLauncherM{};
+        bool rigHaveL = g.meshLauncher >= 0 && g.rigChest >= 0;
+        if (rigHaveL)
+        {
+            XMMATRIX chestG = XMLoadFloat4x4(&g.rigChestBind)
+                * XMLoadFloat4x4(&frame.palettes[paletteIdx].m[g.rigChest]);
+            XMVECTOR cpos = chestG.r[3];
+            if (g.frameCounter % 240 == 0)
+                Log("rigtest chest at (%.2f %.2f %.2f)",
+                    XMVectorGetX(cpos), XMVectorGetY(cpos),
+                    XMVectorGetZ(cpos));
+            float fyaw = an.aim.active
+                ? atan2f(an.aim.target.x, an.aim.target.z) : 0.0f;
+            float fx = sinf(fyaw), fz = cosf(fyaw);
+            float rgx = cosf(fyaw), rgz = -sinf(fyaw);
+            XMVECTOR pos = cpos
+                + XMVectorSet(rgx * 0.18f, 0.28f, rgz * 0.18f, 0)
+                + XMVectorSet(fx * 0.30f, 0, fz * 0.30f, 0);
+            rigLauncherM = XMMatrixScaling(g.launcherScale, g.launcherScale,
+                                           g.launcherScale)
+                         * XMMatrixRotationX(0.10f)
+                         * XMMatrixRotationY(fyaw)
+                         * XMMatrixTranslationFromVector(pos);
+            if (g.rigArmR[0] >= 0 && g.rigArmR[1] >= 0 && g.rigArmR[2] >= 0)
+            {
+                XMVECTOR handle = XMVector3TransformCoord(
+                    XMVectorSet(0, -0.10f / g.launcherScale,
+                                0.24f / g.launcherScale, 1), rigLauncherM);
+                an.ik[0].a = g.rigArmR[0];
+                an.ik[0].b = g.rigArmR[1];
+                an.ik[0].c = g.rigArmR[2];
+                an.ik[0].active = true;
+                an.ik[0].weight = 1.0f;
+                XMStoreFloat3(&an.ik[0].target, handle);
+                XMVECTOR pole = cpos
+                    + XMVectorSet(rgx * 0.7f, -0.25f, rgz * 0.7f, 0)
+                    + XMVectorSet(fx * 0.35f, 0, fz * 0.35f, 0);
+                XMStoreFloat3(&an.ik[0].pole, pole);
+                an.Pose(frame.palettes[paletteIdx]);
+            }
+        }
         XMMATRIX world = XMMatrixScaling(g.rigScale, g.rigScale, g.rigScale)
                        * XMMatrixTranslation(g.rigPos.x, g.rigPos.y, g.rigPos.z);
-        // render the IK marker so the hand visibly tracks it
-        {
-            const XMFLOAT3& m = g.rigAnimator.ik[0].target;
-            XMMATRIX mm = XMMatrixScaling(0.5f, 0.5f, 0.5f)
-                        * XMMatrixTranslation(m.x * g.rigScale + g.rigPos.x,
-                                              m.y * g.rigScale + g.rigPos.y,
-                                              m.z * g.rigScale + g.rigPos.z);
-            frame.objects.push_back({ g.meshFlash, g.texWhite, Store(mm),
-                                      { 1.0f, 0.35f, 0.2f, 0.6f }, true });
-        }
+        if (rigHaveL)
+            frame.objects.push_back({ g.meshLauncher, g.texWhite,
+                Store(rigLauncherM * world),
+                { 0.30f, 0.32f, 0.28f, 0.25f }, true });
         for (size_t p = 0; p < g.meshRigParts.size(); ++p)
         {
             if (!g.rigPartVisible[p])
@@ -2247,7 +2323,7 @@ bool CreateAssets()
                         XMVectorSet(v.px, v.py, v.pz, 1), rigRoot);
                     rigMaxY = std::max(rigMaxY, XMVectorGetY(p));
                 }
-            g.rigScale = 1.78f / rigMaxY;   // normalize to soldier height
+            g.rigScale = 2.15f / rigMaxY;   // beefy: reads next to a tank
             Log("Rig height (root-transformed): %.3f -> scale %.3f",
                 rigMaxY, g.rigScale);
 
@@ -2286,6 +2362,47 @@ bool CreateAssets()
                             v.u = sv.u; v.v = sv.v;
                             md.verts.push_back(v);
                         }
+                        // canonicalize: center at the origin, longest
+                        // axis rotated onto +Z -- placement becomes plain
+                        // yaw/pitch/offsets instead of per-export guesswork
+                        XMFLOAT3 mn{ 1e9f, 1e9f, 1e9f };
+                        XMFLOAT3 mx{ -1e9f, -1e9f, -1e9f };
+                        for (const Vertex& v : md.verts)
+                        {
+                            mn.x = std::min(mn.x, v.px);
+                            mn.y = std::min(mn.y, v.py);
+                            mn.z = std::min(mn.z, v.pz);
+                            mx.x = std::max(mx.x, v.px);
+                            mx.y = std::max(mx.y, v.py);
+                            mx.z = std::max(mx.z, v.pz);
+                        }
+                        XMFLOAT3 c{ (mn.x + mx.x) * 0.5f,
+                                    (mn.y + mx.y) * 0.5f,
+                                    (mn.z + mx.z) * 0.5f };
+                        float ex = mx.x - mn.x, ey = mx.y - mn.y,
+                              ez = mx.z - mn.z;
+                        for (Vertex& v : md.verts)
+                        {
+                            float px = v.px - c.x, py = v.py - c.y,
+                                  pz = v.pz - c.z;
+                            float nx = v.nx, ny = v.ny, nz = v.nz;
+                            if (ex >= ey && ex >= ez)
+                            {   // RotY(90): +X -> -Z (det +1, no mirror)
+                                v.px = pz;  v.py = py;  v.pz = -px;
+                                v.nx = nz;  v.ny = ny;  v.nz = -nx;
+                            }
+                            else if (ey >= ex && ey >= ez)
+                            {   // RotX(90): +Y -> -Z
+                                v.px = px;  v.py = pz;  v.pz = -py;
+                                v.nx = nx;  v.ny = nz;  v.nz = -ny;
+                            }
+                            else
+                            {
+                                v.px = px;  v.py = py;  v.pz = pz;
+                            }
+                        }
+                        float rawLen = std::max({ ex, ey, ez, 0.001f });
+                        g.launcherScale = 1.15f / rawLen;   // ~1.15 u tube
                         md.indices = part.indices;
                         ComputeTangents(md);
                         g.meshLauncher = r->CreateMesh(md.verts.data(),
@@ -2294,18 +2411,22 @@ bool CreateAssets()
                                                        md.indices.size());
                         break;
                     }
-                g.rigWristR = FindJoint(g.rigModel, "Wrist.R");
-                if (g.rigWristR < 0)
-                    g.rigWristR = FindJoint(g.rigModel, "LowerArm.R");
-                if (g.rigWristR >= 0)
+                g.rigChest = FindJoint(g.rigModel, "Chest");
+                if (g.rigChest < 0)
+                    g.rigChest = FindJoint(g.rigModel, "Torso");
+                if (g.rigChest >= 0)
                 {
                     XMMATRIX ib = XMLoadFloat4x4(
-                        &g.rigModel.joints[g.rigWristR].inverseBind);
-                    XMStoreFloat4x4(&g.rigWristBind,
+                        &g.rigModel.joints[g.rigChest].inverseBind);
+                    XMStoreFloat4x4(&g.rigChestBind,
                                     XMMatrixInverse(nullptr, ib));
                 }
-                Log("Launcher prop: mesh %d on wrist joint %d",
-                    g.meshLauncher, g.rigWristR);
+                g.rigArmR[0] = FindJoint(g.rigModel, "UpperArm.R");
+                g.rigArmR[1] = FindJoint(g.rigModel, "LowerArm.R");
+                g.rigArmR[2] = FindJoint(g.rigModel, "Wrist.R");
+                Log("Launcher prop: mesh %d, chest %d, arm %d/%d/%d",
+                    g.meshLauncher, g.rigChest, g.rigArmR[0], g.rigArmR[1],
+                    g.rigArmR[2]);
             }
             for (size_t j = 0; j < g.rigModel.jointNames.size(); ++j)
                 Log("Rig joint %zu: %s (parent %d)", j,
@@ -2852,6 +2973,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                     g.inputs[pid].turretYaw = m.turretYaw;
                     g.inputSeqs[pid] = m.seq;
                     q.pop_front();
+                    // the SHIELD face tracks the freshest aim in the queue,
+                    // not the jitter-delayed one being simulated
+                    g.inputs[pid].aimYawFresh =
+                        q.empty() ? m.turretYaw : q.back().turretYaw;
                 }
                 g.game.lagCompEnabled = g.lagComp;
                 for (int pid = 1; pid < MaxLobbyPlayers; ++pid)
@@ -3035,7 +3160,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             g.camPitchLean = (fabsf(dp) < 0.0004f) ? tPitch : g.camPitchLean + dp * kl;
         }
         XMMATRIX view;
-        if (lobbyCam)
+        if (g.opt.rigTest)
+        {
+            // rig inspection: low 3/4 orbit around the posed soldier
+            float oa = float(g.time) * 0.35f;
+            g.camPos = XMFLOAT3(g.rigPos.x + sinf(oa) * 4.6f, 2.4f,
+                                g.rigPos.z + cosf(oa) * 4.6f);
+            view = XMMatrixLookAtRH(
+                XMVectorSet(g.camPos.x, g.camPos.y, g.camPos.z, 1),
+                XMVectorSet(g.rigPos.x, 1.15f, g.rigPos.z, 1),
+                XMVectorSet(0, 1, 0, 0));
+        }
+        else if (lobbyCam)
         {
             g.camPos = XMFLOAT3(0, 8.5f, -21.0f);
             view = XMMatrixLookAtRH(
