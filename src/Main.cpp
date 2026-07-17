@@ -314,7 +314,10 @@ void ApplySnapshot(const net::MsgSnapshot& s)
         while (!g.pendingInputs.empty() && g.pendingInputs.front().seq <= own.ackSeq)
             g.pendingInputs.erase(g.pendingInputs.begin());
         for (const auto& pi : g.pendingInputs)
+        {
+            ++g.game.tick;   // DRUNKEN sway is tick-derived: replay in step
             g.game.AdvanceMovement(g.myId, pi.cmd);
+        }
 
         // Never snap the rendered tank: any difference between what we were
         // predicting and the reconciled result becomes a render-space error
@@ -770,6 +773,25 @@ void UpdateVfxFromSim()
         if (gr.active)
             g.prevGrenadePos[i] = XMFLOAT3(gr.x, gr.y, gr.z);
     }
+    // TERRORIST deaths detonate: expanding shockwave ring + full boom
+    for (int i = 0; i < MaxPlayers; ++i)
+    {
+        const PlayerState& p = g.game.players[i];
+        if (g.prevPlayerHealth[i] > 0 && p.health <= 0 && p.active
+            && HasUpgrade(p, UpgradeId::Terrorist) && InSession())
+        {
+            g.shockwaves.push_back({ XMFLOAT3(p.x, 0.1f, p.z), g.time });
+            if (g.bursts.size() >= 16)
+                g.bursts.erase(g.bursts.begin());
+            g.bursts.push_back({ XMFLOAT3(p.x, 0.6f, p.z), g.time });
+            snd::Play(snd::Sfx::Explosion,
+                      SndDistVol(p.x, p.z, 1.0f), 0.6f);
+        }
+        g.prevPlayerHealth[i] = p.active ? p.health : 0;
+    }
+    while (!g.shockwaves.empty()
+           && g.time - g.shockwaves.front().second > 0.8)
+        g.shockwaves.erase(g.shockwaves.begin());
 
     // prune dead effects
     while (!g.bursts.empty() && g.time - g.bursts.front().t0 > 3.0)
@@ -1020,13 +1042,27 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
     for (size_t i = 0; i < g.meshWalls.size(); ++i)
     {
         float h = ArenaHalf;
-        XMMATRIX m = (i == 0) ? XMMatrixTranslation(0, 0.6f, h)
-                   : (i == 1) ? XMMatrixTranslation(0, 0.6f, -h)
-                   : (i == 2) ? XMMatrixTranslation(h, 0.6f, 0)
-                              : XMMatrixTranslation(-h, 0.6f, 0);
+        XMMATRIX m = (i == 0) ? XMMatrixTranslation(0, 1.2f, h)
+                   : (i == 1) ? XMMatrixTranslation(0, 1.2f, -h)
+                   : (i == 2) ? XMMatrixTranslation(h, 1.2f, 0)
+                              : XMMatrixTranslation(-h, 1.2f, 0);
         RenderObject ro{ g.meshWalls[i], g.texWall, Store(m), { 1,1,1,0 } };
         ro.texNormal = g.texWallNRA;
         frame.objects.push_back(ro);
+    }
+
+    // STEALTH occlusion inputs: every static box + the LOCAL tank's eye
+    {
+        int n = 0;
+        for (const Obstacle& o : kObstacles)
+            frame.losBoxes[n++] = XMFLOAT4(o.cx, o.cz, o.hx, o.hz);
+        frame.losBoxCount = n;
+        if (InSession() && g.game.players[g.myId].active)
+        {
+            float vx, vz, vh, vt;
+            GetRenderPlayer(g.myId, vx, vz, vh, vt);
+            frame.losViewer = XMFLOAT2(vx, vz);
+        }
     }
 
     // tanks (positions/angles interpolated for render smoothness)
@@ -1047,9 +1083,18 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
         if (dead)
             tint = { 0.35f, 0.33f, 0.3f, 0 };
 
+        // STEALTH: enemies render this tank only where the local tank has
+        // a clear 2D line of sight (per-pixel clip in the mesh shader)
+        float clip = (InSession() && i != g.myId && !dead
+                      && HasUpgrade(p, UpgradeId::Stealth)) ? 1.0f : 0.0f;
         XMMATRIX hull = XMMatrixRotationY(rHull)
                       * XMMatrixTranslation(rx, sink, rz);
-        frame.objects.push_back({ g.meshHull, g.texPalette, Store(hull), tint, true });
+        {
+            RenderObject ro{ g.meshHull, g.texPalette, Store(hull), tint,
+                             true };
+            ro.losClip = clip;
+            frame.objects.push_back(ro);
+        }
 
         float sh = sinf(rHull), ch = cosf(rHull);
         XMFLOAT3 piv = g.game.turretPivot;
@@ -1058,7 +1103,12 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
                            rz + piv.z * ch - piv.x * sh };
         XMMATRIX turret = XMMatrixRotationY(rTurret)
                         * XMMatrixTranslation(pivWorld.x, pivWorld.y, pivWorld.z);
-        frame.objects.push_back({ g.meshTurret, g.texPalette, Store(turret), tint, true });
+        {
+            RenderObject ro{ g.meshTurret, g.texPalette, Store(turret), tint,
+                             true };
+            ro.losClip = clip;
+            frame.objects.push_back(ro);
+        }
 
         // SHIELD barrier: a pale energy lattice riding the turret facing.
         // See-through by construction (slats + posts), since the scene pass
@@ -1302,6 +1352,25 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
                   * XMMatrixRotationY(float(g.time) * 1.6f + float(i))
                   * XMMatrixTranslation(gx, 0.30f + bob, gz)),
             { 0.75f, 0.85f, 1.15f, 0.85f }, true });
+    }
+
+    // TERRORIST shockwaves: a ring races out to the blast radius and fades
+    for (const auto& sw : g.shockwaves)
+    {
+        float age = float(g.time - sw.second);
+        if (age < 0.0f || age > 0.8f)
+            continue;
+        float u = age / 0.8f;
+        float r = TerroristRadius * (1.0f - (1.0f - u) * (1.0f - u));
+        float fade = 1.0f - u;
+        frame.objects.push_back({ g.meshRing, g.texWhite,
+            Store(XMMatrixScaling(r, 1.0f, r)
+                  * XMMatrixTranslation(sw.first.x, 0.10f, sw.first.z)),
+            { 1.0f * fade, 0.5f * fade, 0.12f * fade, 1.0f }, true });
+        frame.objects.push_back({ g.meshRing, g.texWhite,
+            Store(XMMatrixScaling(r * 0.82f, 1.0f, r * 0.82f)
+                  * XMMatrixTranslation(sw.first.x, 0.16f, sw.first.z)),
+            { 0.9f * fade, 0.25f * fade, 0.08f * fade, 1.0f }, true });
     }
 
     // grenades: interpolated ballistic hops, red pulse once the fuse is lit
@@ -2098,8 +2167,8 @@ bool CreateAssets()
     // boundary walls: +Z, -Z (long in X), +X, -X (long in Z)
     for (int i = 0; i < 4; ++i)
     {
-        MeshData wall = (i < 2) ? MakeBox(ArenaHalf + 0.6f, 0.6f, 0.6f, 0.5f)
-                                : MakeBox(0.6f, 0.6f, ArenaHalf + 0.6f, 0.5f);
+        MeshData wall = (i < 2) ? MakeBox(ArenaHalf + 0.6f, 1.2f, 0.6f, 0.5f)
+                                : MakeBox(0.6f, 1.2f, ArenaHalf + 0.6f, 0.5f);
         g.meshWalls.push_back(r->CreateMesh(wall.verts.data(), wall.verts.size(),
                                             wall.indices.data(), wall.indices.size()));
     }
@@ -3005,6 +3074,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                     if (g.pendingInputs.size() > 256)   // ~4 s of unacked input
                         g.pendingInputs.erase(g.pendingInputs.begin());
                     g.predPrev = me;
+                    ++g.game.tick;   // keep the sway factor moving locally
                     g.game.AdvanceMovement(g.myId, local);
                     g.predCurr = me;
 
@@ -3022,6 +3092,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                             XMFLOAT3 mz = g.game.MuzzleWorld(me);
                             pv.sim = Projectile{};
                             pv.sim.active = true;
+                            pv.sim.owner = uint8_t(g.myId);   // provisional
+                            // deflection needs the true owner: a default 0
+                            // made client shots ignore the HOST's shield
                             pv.matchedSlot = -1;
                             pv.sim.x = mz.x; pv.sim.y = mz.y; pv.sim.z = mz.z;
                             pv.sim.yaw = local.turretYaw;
@@ -3170,7 +3243,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             // true top-down battle camera: directly above the tank, facing -Y.
             // Up = +Z keeps screen-up = world +Z and screen-right = world -X,
             // so the screen-relative WASD mapping is unchanged.
-            g.camPos = XMFLOAT3(g.camFocus.x, 27.0f, g.camFocus.z);
+            float drunkCam = 1.0f;
+            if (InSession() && g.game.players[g.myId].active
+                && HasUpgrade(g.game.players[g.myId], UpgradeId::Drunken)
+                && (g.game.phase == PhasePlaying
+                    || g.game.phase == PhaseOvertime))
+            {
+                float tt = float(g.time);
+                drunkCam = 1.0f + 0.15f * sinf(tt * 0.9f)
+                         + 0.07f * sinf(tt * 1.7f + 1.3f);
+            }
+            g.camPos = XMFLOAT3(g.camFocus.x, 27.0f * drunkCam,
+                                g.camFocus.z);
             view = XMMatrixLookAtRH(
                 XMVectorSet(g.camPos.x, g.camPos.y, g.camPos.z, 1),
                 XMVectorSet(g.camFocus.x, 0, g.camFocus.z, 1),
@@ -3179,9 +3263,20 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             view = view * XMMatrixRotationY(g.camYawLean)
                         * XMMatrixRotationX(g.camPitchLean);
         }
-        XMMATRIX proj = XMMatrixPerspectiveFovRH(XMConvertToRadians(46.0f),
-                                                 float(g.width) / float(g.height),
-                                                 0.1f, 300.0f);
+        float drunkFov = 1.0f;
+        if (InSession() && g.game.players[g.myId].active
+            && HasUpgrade(g.game.players[g.myId], UpgradeId::Drunken)
+            && (g.game.phase == PhasePlaying
+                || g.game.phase == PhaseOvertime))
+        {
+            float tt = float(g.time);
+            drunkFov = 1.0f + 0.11f * sinf(tt * 1.3f + 0.7f)
+                     + 0.05f * sinf(tt * 2.3f);
+        }
+        XMMATRIX proj = XMMatrixPerspectiveFovRH(
+            XMConvertToRadians(46.0f * drunkFov),
+            float(g.width) / float(g.height),
+            0.1f, 300.0f);
 
         if (g.screen == Screen::InGame)
             UpdateAim(view, proj);

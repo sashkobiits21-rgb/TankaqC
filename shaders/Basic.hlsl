@@ -7,6 +7,8 @@ cbuffer PerFrame : register(b0)
     float4   gSunDirAmbient;   // xyz = to-sun direction (normalized), w = ambient
     float4   gCamPosFog;       // xyz = camera position, w = fog density
     float4   gScreen;          // xy = viewport pixels, z = shadow texel, w = shadows on
+    float4   gViewer;          // xy = LOCAL tank xz, w = LOS box count
+    float4   gLosBoxes[24];    // STEALTH occluders: cx, cz, hx, hz
 };
 
 cbuffer PerObject : register(b1)
@@ -15,6 +17,7 @@ cbuffer PerObject : register(b1)
     float4   gTint;            // rgb multiplied over albedo, a = emissive amount
     float4   gMisc;            // x = dynamic flag, y = rocket distance from
                                // muzzle, z = rocket age (s), w = rocket flag
+    float4   gMisc2;           // x = STEALTH LOS-clip flag
 };
 
 cbuffer Bones : register(b2)
@@ -184,8 +187,51 @@ float SampleShadow(float3 wpos, float ndl)
     return sum / taps;
 }
 
+// STEALTH: a pixel of a cloaked tank only exists if the straight 2D line
+// from the LOCAL tank to that pixel's world position clears every occluder
+// box -- so exactly the sliver peeking past a corner is drawn, per pixel.
+bool LosBlocked(float2 a, float2 b)
+{
+    float2 d = b - a;
+    int n = int(gViewer.w);
+    for (int k = 0; k < n; ++k)
+    {
+        float4 box = gLosBoxes[k];
+        float tmin = 0.02, tmax = 0.98;      // exclude both endpoints
+        // slab X
+        if (abs(d.x) < 1e-5)
+        {
+            if (a.x < box.x - box.z || a.x > box.x + box.z) continue;
+        }
+        else
+        {
+            float t1 = (box.x - box.z - a.x) / d.x;
+            float t2 = (box.x + box.z - a.x) / d.x;
+            tmin = max(tmin, min(t1, t2));
+            tmax = min(tmax, max(t1, t2));
+        }
+        // slab Z (box.y = center z, box.w = half depth)
+        if (abs(d.y) < 1e-5)
+        {
+            if (a.y < box.y - box.w || a.y > box.y + box.w) continue;
+        }
+        else
+        {
+            float t1 = (box.y - box.w - a.y) / d.y;
+            float t2 = (box.y + box.w - a.y) / d.y;
+            tmin = max(tmin, min(t1, t2));
+            tmax = min(tmax, max(t1, t2));
+        }
+        if (tmin <= tmax)
+            return true;
+    }
+    return false;
+}
+
 PsOut PSMesh(VsOut i)
 {
+    if (gMisc2.x > 0.5 && LosBlocked(gViewer.xy, i.wpos.xz))
+        discard;
     float3 ng = normalize(i.wnrm);           // geometric normal
     float3 albedo = gAlbedo.Sample(gSampler, i.uv).rgb * gTint.rgb;
 

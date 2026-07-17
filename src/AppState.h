@@ -149,6 +149,8 @@ struct App
     DirectX::XMFLOAT3 prevSkullPos[MaxSkulls]{};
     bool prevGrenadeActive[MaxGrenades]{};     // boom on grenade fuse-out
     DirectX::XMFLOAT3 prevGrenadePos[MaxGrenades]{};
+    int prevPlayerHealth[MaxPlayers]{};        // TERRORIST death detection
+    std::vector<std::pair<DirectX::XMFLOAT3, double>> shockwaves;
     float prevProjRadar[MaxProjectiles]{};     // per-circle explosion VFX
     float prevProjYaw[MaxProjectiles]{};       // tree layout at death time
     uint8_t prevProjRings[MaxProjectiles]{};

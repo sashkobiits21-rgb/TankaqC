@@ -38,6 +38,8 @@ struct PerFrameCB
     XMFLOAT4 sunDirAmbient;
     XMFLOAT4 camPosFog;
     XMFLOAT4 screen;        // xy = viewport, z = shadow texel, w = shadows on
+    XMFLOAT4 viewer;        // xy = local tank xz, w = LOS box count
+    XMFLOAT4 losBoxes[24];  // STEALTH occluders
 };
 
 constexpr UINT ShadowSrvSlot = MaxTextures - 1;   // last material slot is reserved
@@ -72,6 +74,7 @@ struct PerObjectCB
     XMFLOAT4X4 world;
     XMFLOAT4 tint;
     XMFLOAT4 misc;   // x = dynamic-object flag
+    XMFLOAT4 misc2;  // x = STEALTH LOS-clip flag
 };
 
 struct PostCB
@@ -468,6 +471,9 @@ public:
         pf.lightViewProj = frame.lightViewProj;
         pf.sunDirAmbient = XMFLOAT4(frame.sunDir.x, frame.sunDir.y, frame.sunDir.z, frame.ambient);
         pf.camPosFog = XMFLOAT4(frame.camPos.x, frame.camPos.y, frame.camPos.z, frame.fogDensity);
+        pf.viewer = XMFLOAT4(frame.losViewer.x, frame.losViewer.y, 0.0f,
+                             float(frame.losBoxCount));
+        memcpy(pf.losBoxes, frame.losBoxes, sizeof(pf.losBoxes));
         pf.screen = XMFLOAT4(float(m_width), float(m_height), 1.0f / m_shadowSize,
                              frame.post.shadowsEnabled ? float(1 + frame.post.shadowFilter) : 0.0f);
         memcpy(m_cbMapped[fi], &pf, sizeof(pf));
@@ -528,6 +534,7 @@ public:
                 po.misc = XMFLOAT4(obj.isDynamic ? 1.0f : 0.0f,
                                    obj.deformDist, obj.deformAge,
                                    obj.deformDist >= 0.0f ? 1.0f : 0.0f);
+                po.misc2 = XMFLOAT4(obj.losClip, 0.0f, 0.0f, 0.0f);
                 memcpy(m_cbMapped[fi] + size_t(objIndex) * CbAlign, &po, sizeof(po));
                 drawables.push_back({ &obj, objIndex });
                 ++objIndex;

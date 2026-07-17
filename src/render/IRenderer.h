@@ -76,6 +76,8 @@ struct RenderObject
     int texNormal = -1;
     // skinned meshes: index into FrameData::palettes (-1 = static mesh)
     int paletteIndex = -1;
+    // STEALTH: clip pixels without 2D line-of-sight from the local tank
+    float losClip = 0.0f;
 };
 
 struct PostSettings
@@ -116,6 +118,10 @@ struct FrameData
     float time = 0;                         // seconds, drives VFX animation
     DirectX::XMFLOAT3 camRight{ 1, 0, 0 };  // billboard basis
     DirectX::XMFLOAT3 camUp{ 0, 1, 0 };
+    // STEALTH occlusion inputs: the local tank + the static occluder boxes
+    DirectX::XMFLOAT2 losViewer{};
+    int losBoxCount = 0;
+    DirectX::XMFLOAT4 losBoxes[24]{};
     PostSettings post;
     std::vector<RenderObject> objects;
     std::vector<VfxBurstData> bursts;       // explosion smoke/fire (max 16 used)

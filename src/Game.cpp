@@ -239,14 +239,17 @@ int CountClasses(const PlayerState& p)
     return n;
 }
 
+// Heights sized so shadows are USABLE COVER for vampires: a box must
+// throw a shade strip wider than a tank (shadow length ~= 1.2x height
+// along the fixed sun direction).
 const Obstacle kObstacles[NumObstacles] = {
-    {   0.0f,   0.0f, 3.0f, 3.0f, 2.6f },   // center block
-    {  14.0f,  10.0f, 4.5f, 1.2f, 2.0f },
-    { -14.0f, -10.0f, 4.5f, 1.2f, 2.0f },
-    { -14.0f,  12.0f, 1.2f, 4.5f, 2.2f },
-    {  14.0f, -12.0f, 1.2f, 4.5f, 2.2f },
-    {  -6.0f, -20.0f, 3.0f, 1.0f, 1.6f },
-    {   6.0f,  20.0f, 3.0f, 1.0f, 1.6f },
+    {   0.0f,   0.0f, 3.0f, 3.0f, 4.0f },   // center block
+    {  14.0f,  10.0f, 4.5f, 1.2f, 3.4f },
+    { -14.0f, -10.0f, 4.5f, 1.2f, 3.4f },
+    { -14.0f,  12.0f, 1.2f, 4.5f, 3.6f },
+    {  14.0f, -12.0f, 1.2f, 4.5f, 3.6f },
+    {  -6.0f, -20.0f, 3.0f, 1.0f, 3.0f },
+    {   6.0f,  20.0f, 3.0f, 1.0f, 3.0f },
 };
 
 float WrapAngle(float a)
@@ -846,12 +849,14 @@ void GameState::ApplyDamage(int shooterId, int victimId, int rawDamage,
                 float dist = sqrtf(dx * dx + dz * dz);
                 if (dist >= TerroristRadius)
                     continue;
-                // 100% of the victim's max HP point-blank; full strength
-                // holds for one tank length, then falls off linearly
+                // 100% of the victim's max HP point-blank; outside one
+                // tank length the wave is weaker (60%) and slides gently
+                // across a much larger radius
                 float frac = dist <= TerroristPlateau
                     ? 1.0f
-                    : 1.0f - (dist - TerroristPlateau)
-                             / (TerroristRadius - TerroristPlateau);
+                    : TerroristFalloffTop
+                      * (1.0f - (dist - TerroristPlateau)
+                                / (TerroristRadius - TerroristPlateau));
                 int blast = int(MaxHealthFor(e) * frac + 0.5f);
                 if (blast > 0)
                     ApplyDamage(victimId, id, blast, 2);
@@ -867,8 +872,9 @@ void GameState::ApplyDamage(int shooterId, int victimId, int rawDamage,
                     continue;
                 float frac = dist <= TerroristPlateau
                     ? 1.0f
-                    : 1.0f - (dist - TerroristPlateau)
-                             / (TerroristRadius - TerroristPlateau);
+                    : TerroristFalloffTop
+                      * (1.0f - (dist - TerroristPlateau)
+                                / (TerroristRadius - TerroristPlateau));
                 s.health -= 100.0f * frac;
                 s.lastHitBy = uint8_t(victimId);
             }
@@ -961,10 +967,10 @@ bool InSunlight(float x, float z)
         if (ShadowedByBox(x, z, o.cx, o.cz, o.hx, o.hz, o.height))
             return false;
     // the four arena walls (1.2 tall, thin bands on the boundary)
-    if (ShadowedByBox(x, z, 0, ArenaHalf, ArenaHalf, 0.5f, 1.2f)) return false;
-    if (ShadowedByBox(x, z, 0, -ArenaHalf, ArenaHalf, 0.5f, 1.2f)) return false;
-    if (ShadowedByBox(x, z, ArenaHalf, 0, 0.5f, ArenaHalf, 1.2f)) return false;
-    if (ShadowedByBox(x, z, -ArenaHalf, 0, 0.5f, ArenaHalf, 1.2f)) return false;
+    if (ShadowedByBox(x, z, 0, ArenaHalf, ArenaHalf, 0.6f, 2.4f)) return false;
+    if (ShadowedByBox(x, z, 0, -ArenaHalf, ArenaHalf, 0.6f, 2.4f)) return false;
+    if (ShadowedByBox(x, z, ArenaHalf, 0, 0.6f, ArenaHalf, 2.4f)) return false;
+    if (ShadowedByBox(x, z, -ArenaHalf, 0, 0.6f, ArenaHalf, 2.4f)) return false;
     return true;
 }
 
@@ -1651,7 +1657,8 @@ static void SoldierTryGrenade(GameState& gs, SoldierState& s)
     h ^= h >> 16; h *= 2246822519u; h ^= h >> 13;
     float offset = (float(h & 0xFFFF) / 65535.0f - 0.5f) * 0.5f;
     float yaw = atan2f(dx, dz) + offset;
-    float T = 0.9f + 0.25f * (dist / GrenadeThrowRange);   // flight time
+    // extra loft so the arc clears even the tallest (4 u) walls
+    float T = 1.15f + 0.3f * (dist / GrenadeThrowRange);   // flight time
     GrenadeState gr{};
     gr.active = true;
     gr.owner = s.owner;
@@ -1726,9 +1733,9 @@ static void TickGrenade(GameState& gs, GrenadeState& gr)
     if (gr.x >  lim) { gr.x =  lim; gr.vx = -gr.vx * GrenadeRestitution; bounced = true; }
     if (gr.z < -lim) { gr.z = -lim; gr.vz = -gr.vz * GrenadeRestitution; bounced = true; }
     if (gr.z >  lim) { gr.z =  lim; gr.vz = -gr.vz * GrenadeRestitution; bounced = true; }
-    // obstacle boxes (only while below their top face)
-    if (gr.y < GrenadeObstacleTop)
-        for (const Obstacle& o : kObstacles)
+    // obstacle boxes (only while below each box's own top face)
+    for (const Obstacle& o : kObstacles)
+        if (gr.y < o.height)
         {
             float px = gr.x - o.cx, pz = gr.z - o.cz;
             float ox = o.hx + GrenadeRadius - fabsf(px);

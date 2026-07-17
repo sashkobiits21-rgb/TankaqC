@@ -284,6 +284,22 @@ void BuildHud(FrameData& frame)
                           : UiColor{ 1.0f, 0.55f, 0.15f, 0.95f });
     }
 
+    // VAMPIRE in daylight: a red burn vignette so the pain has a face
+    if ((g.game.phase == PhasePlaying || g.game.phase == PhaseOvertime)
+        && me.health > 0 && HasUpgrade(me, UpgradeId::Vampire)
+        && InSunlight(me.x, me.z))
+    {
+        float pulse = 0.5f + 0.5f * sinf(float(g.time) * 7.0f);
+        UiColor burn{ 0.9f, 0.15f, 0.05f, 0.25f + 0.20f * pulse };
+        g.ui.Rect(0, 0, w, 6, burn);
+        g.ui.Rect(0, float(g.height) - 6, w, 6, burn);
+        g.ui.Rect(0, 0, 6, float(g.height), burn);
+        g.ui.Rect(w - 6, 0, 6, float(g.height), burn);
+        g.ui.TextCentered(w * 0.5f, 150, 1.8f,
+                          { 1.0f, 0.4f, 0.25f, 0.5f + 0.4f * pulse },
+                          "BURNING - FIND SHADE");
+    }
+
     // ability toolbar: one slot per ability the player owns, key-labelled,
     // with the cooldown veil + seconds. Predicted timers = instant feedback.
     if ((g.game.phase == PhasePlaying || g.game.phase == PhaseOvertime)

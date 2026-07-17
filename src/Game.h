@@ -142,9 +142,12 @@ enum : uint8_t { ClassSoldier = 0, ClassBouncy, ClassNecro, ClassRadar,
 constexpr int kMaxClasses = 2;
 
 // UNIQUE rule-benders ------------------------------------------------------
-constexpr float TerroristRadius = 8.0f;   // death blast reach
-constexpr float TerroristPlateau = 3.0f;  // full damage inside one tank
-                                          // length; linear falloff beyond
+constexpr float TerroristRadius = 14.0f;  // death blast reach (huge)
+constexpr float TerroristPlateau = 3.0f;  // 100% max HP inside one tank
+                                          // length; beyond it the wave is
+                                          // weaker: 60% at the edge of the
+                                          // plateau, sliding gently to zero
+constexpr float TerroristFalloffTop = 0.6f;
 constexpr float VampireLifesteal = 0.10f; // fraction of damage dealt
 constexpr float VampireBurnFrac = 0.10f;  // of max HP, per second in the sun
 constexpr float StealthSlow = 0.65f;      // -35% speed, fixed
@@ -442,7 +445,7 @@ constexpr float GrenadeFriction = 0.72f;  // ground-contact horizontal damping
 constexpr float GrenadeFuse = 2.0f;       // armed at the FIRST bounce
 constexpr float GrenadeBlastRadius = 2.6f;
 constexpr float GrenadeThrowRange = 15.0f;
-constexpr float GrenadeObstacleTop = 1.5f;   // boxes block below this height
+// grenades duck under nothing: each box blocks up to ITS OWN height
 
 struct SkullState
 {
