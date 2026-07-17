@@ -1841,15 +1841,17 @@ void GameState::AdvanceMovement(int id, const InputCmd& inRaw)
     // identically after rebasing from the snapshot -- the same contract as
     // boost fuel and possession. Activation is input-driven and free of any
     // host-only randomness, so pressing 1 feels instant on clients too.
-    p.shieldWait = std::max(0.0f, p.shieldWait - TickDt);
     if (p.shieldTimer > 0.0f)
+    {
         p.shieldTimer = std::max(0.0f, p.shieldTimer - TickDt);
+        if (p.shieldTimer <= 0.0f)   // the use is over: NOW the meter runs
+            p.shieldWait = p.stats[int(Stat::ShieldCooldown)];
+    }
+    else
+        p.shieldWait = std::max(0.0f, p.shieldWait - TickDt);
     if ((in.buttons & BtnAbility1) && p.shieldWait <= 0.0f
         && p.shieldTimer <= 0.0f && HasClass(p, ClassShield))
-    {
         p.shieldTimer = p.stats[int(Stat::ShieldDuration)];
-        p.shieldWait = p.stats[int(Stat::ShieldCooldown)];
-    }
 
     // The client resolves camera-relative WASD into a world-space vector, so
     // the host (and prediction replay) integrate the same numbers.

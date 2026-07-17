@@ -1981,6 +1981,10 @@ bool CreateAssets()
 {
     g.meshObstacles.clear();   // re-entrant: renderer switches recreate assets
     g.meshWalls.clear();
+    g.meshRigParts.clear();    // these grew forever on every settings-menu
+    g.rigPartColors.clear();   // renderer switch: the first batch turned into
+    g.rigPartVisible.clear();  // stale handles = white garbage soldiers
+    g.meshSkullParts.clear();
     g.tank = LoadTankModel("assets/tank/tank_baked.glb", "assets/tank/tank_meta.txt");
     if (!g.tank.valid)
         return false;

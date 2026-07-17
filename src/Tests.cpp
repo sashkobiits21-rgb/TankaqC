@@ -540,7 +540,8 @@ int RunClassTest()
         cmds[0].turretYaw = 0;
         gsh.Tick(cmds);
         check(sm.shieldTimer > 3.5f, "pressing 1 raises the 4 s barrier");
-        check(sm.shieldWait > 10.0f, "the cooldown starts on activation");
+        check(sm.shieldWait <= 0.0f,
+              "the cooldown holds off while the barrier is up");
         cmds[0].buttons = 0;
 
         // 35% slow while raised: half a second of reverse along the lane
@@ -584,14 +585,16 @@ int RunClassTest()
         check(gsh.players[1].health < hpShooter,
               "the returned rocket hits its original shooter");
 
-        // let the barrier lapse, then: a press mid-cooldown is refused
+        // let the barrier lapse: the cooldown starts at THAT moment
         for (int t = 0; t < TickRate * 2; ++t) gsh.Tick(cmds);
+        check(sm.shieldTimer <= 0.0f && sm.shieldWait > 11.0f,
+              "the cooldown starts counting when the use finishes");
         cmds[0].buttons = BtnAbility1;
         gsh.Tick(cmds);
         check(sm.shieldTimer <= 0.0f && sm.shieldWait > 0.0f,
               "the ability refuses to fire mid-cooldown");
         cmds[0].buttons = 0;
-        for (int t = 0; t < TickRate * 10; ++t) gsh.Tick(cmds);
+        for (int t = 0; t < TickRate * 13; ++t) gsh.Tick(cmds);
         cmds[0].buttons = BtnAbility1;
         gsh.Tick(cmds);
         check(sm.shieldTimer > 3.5f, "cooled down: the barrier rises again");
