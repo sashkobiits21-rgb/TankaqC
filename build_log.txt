@@ -3,19 +3,6 @@
 C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Microsoft\VC\v180\Microsoft.CppBuild.targets(561,5): warning MSB8029: The Intermediate directory or Output directory cannot reside under the Temporary directory as it could lead to issues with incremental build. [C:\Tankaq\build\ZERO_CHECK.vcxproj]
 C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Microsoft\VC\v180\Microsoft.CppBuild.targets(561,5): warning MSB8029: The Intermediate directory or Output directory cannot reside under the Temporary directory as it could lead to issues with incremental build. [C:\Tankaq\build\TankaqClient.vcxproj]
   Main.cpp
-  Tests.cpp
-  UiHud.cpp
-  UiShop.cpp
-  Net.cpp
-C:\Tankaq\third_party\steamworks\sdk\public\steam\steamhttpenums.h(1,1): warning C4828: The file contains a character starting at offset 0x13 that is not valid in the current source character set (codepage 65001). [C:\Tankaq\build\TankaqClient.vcxproj]
-  (compiling source file '../src/net/Net.cpp')
-  
-C:\Tankaq\third_party\steamworks\sdk\public\steam\isteaminventory.h(1,1): warning C4828: The file contains a character starting at offset 0x13 that is not valid in the current source character set (codepage 65001). [C:\Tankaq\build\TankaqClient.vcxproj]
-  (compiling source file '../src/net/Net.cpp')
-  
-C:\Tankaq\third_party\steamworks\sdk\public\steam\isteamvideo.h(1,1): warning C4828: The file contains a character starting at offset 0x13 that is not valid in the current source character set (codepage 65001). [C:\Tankaq\build\TankaqClient.vcxproj]
-  (compiling source file '../src/net/Net.cpp')
-  
   TankaqClient.vcxproj -> C:\Tankaq\bin\Release\TankaqClient.exe
 C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Microsoft\VC\v180\Microsoft.CppBuild.targets(561,5): warning MSB8029: The Intermediate directory or Output directory cannot reside under the Temporary directory as it could lead to issues with incremental build. [C:\Tankaq\build\ALL_BUILD.vcxproj]
 BUILDDONE

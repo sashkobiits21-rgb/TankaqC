@@ -2868,6 +2868,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         StartHost();
         if (g.screen == Screen::InGame)
         {
+            // StartHost rebuilt GameState from scratch -- the mode picked
+            // on the FIND MATCH screen must survive into the new session
+            g.game.testMode = uint8_t(g.searchTest);
             g.net.SetJoinCap(g.searchNeed);
             g.game.StartGathering(g.searchNeed);
             g.net.CreatePublicLobby(g.searchNeed, g.searchTest);
