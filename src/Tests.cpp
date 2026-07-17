@@ -1,6 +1,7 @@
 // Headless self-tests (--classtest). Pure sim exercises against GameState --
 // no window, no renderer, no RNG luck. Exit code = failure count.
 #include "AppState.h"
+#include "net/Protocol.h"
 #include "Log.h"
 #include <cmath>
 
@@ -633,6 +634,52 @@ int RunClassTest()
         g7.StartMatch();
         check(g7.matchEndTick - g7.tick == 20u * 60u * TickRate,
               "the host 20-minute pick sets the horn");
+    }
+
+    // ---- packed snapshot wire: round-trip fidelity ----
+    {
+        net::MsgSnapshot a{};
+        a.tick = 123456u;
+        a.phase = PhasePlaying;
+        a.matchMinutes = 15;
+        a.projectiles[0].active = 1;
+        a.projectiles[0].x = 13.37f;
+        a.projectiles[0].z = -21.5f;
+        a.projectiles[0].y = 0.17f;
+        a.projectiles[0].yaw = 2.5f;
+        a.projectiles[0].radar16 = 56;
+        a.projectiles[0].lock255 = 200;
+        a.projectiles[0].deflected = 1;
+        a.projectiles[MaxProjectiles - 1].active = 1;
+        a.projectiles[MaxProjectiles - 1].x = -29.9f;
+        a.grenades[3].active = 1;
+        a.grenades[3].owner = 2;
+        a.grenades[3].x = 5.5f;
+        a.grenades[3].y = 2.25f;
+        a.grenades[3].fuse255 = 120;
+        a.soldiers[7].active = 1;
+        a.soldiers[7].health = 30;
+        a.soldiers[7].yaw = -1.2f;
+        static uint8_t buf[sizeof(net::MsgSnapshot) + 64];
+        int n = net::PackSnapshot(a, buf);
+        check(n > 0 && n < int(sizeof(net::MsgSnapshot)),
+              "packed snapshot is smaller than the raw struct");
+        net::MsgSnapshot b{};
+        b.projectiles[5].active = 1;   // must be CLEARED by unpack
+        check(net::UnpackSnapshot(buf, n, b),
+              "unpack accepts its own packer's output");
+        check(b.tick == 123456u && b.matchMinutes == 15
+                  && !b.projectiles[5].active
+                  && b.projectiles[MaxProjectiles - 1].active
+                  && b.grenades[3].active && b.grenades[3].fuse255 == 120
+                  && b.soldiers[7].health == 30,
+              "round-trip preserves live slots and clears dead ones");
+        check(fabsf(b.projectiles[0].x - 13.37f) < 0.02f
+                  && fabsf(b.projectiles[0].yaw - 2.5f) < 0.001f
+                  && b.projectiles[0].deflected == 1
+                  && fabsf(b.soldiers[7].yaw + 1.2f) < 0.001f
+                  && fabsf(b.grenades[3].y - 2.25f) < 0.04f,
+              "quantized fields survive within tolerance");
     }
 
     Log("classtest done: %d failure(s)", fails);

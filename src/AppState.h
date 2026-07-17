@@ -132,7 +132,7 @@ struct App
     int meshGrenade = -1;
     int meshShieldSlat = -1, meshShieldPost = -1;   // barrier lattice
     float grenadeScale = 1.0f;
-    int meshLauncher = -1;                     // canonical: tube along +Z
+    std::vector<std::pair<int, int>> launcherParts;   // mesh, texture
     float launcherScale = 1.0f;                // canonical -> model units
     int rigChest = -1;                         // launcher shoulder anchor
     DirectX::XMFLOAT4X4 rigChestBind;          // inverse of its inverseBind

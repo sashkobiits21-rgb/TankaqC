@@ -115,6 +115,131 @@ MeshData LoadStaticGLB(const std::string& path)
     return out;
 }
 
+std::vector<StaticPart> LoadStaticGLBParts(const std::string& path)
+{
+    std::vector<StaticPart> out;
+    cgltf_options opt{};
+    cgltf_data* data = nullptr;
+    if (cgltf_parse_file(&opt, path.c_str(), &data) != cgltf_result_success)
+        return out;
+    if (cgltf_load_buffers(&opt, data, path.c_str()) != cgltf_result_success)
+    {
+        cgltf_free(data);
+        return out;
+    }
+    // one part per material index (plus one for material-less prims)
+    std::vector<int> matToPart(data->materials_count + 1, -1);
+    auto partFor = [&](const cgltf_primitive& prim) -> StaticPart&
+    {
+        size_t mi = prim.material
+            ? size_t(prim.material - data->materials) : data->materials_count;
+        if (matToPart[mi] < 0)
+        {
+            matToPart[mi] = int(out.size());
+            out.emplace_back();
+            StaticPart& sp = out.back();
+            if (prim.material)
+            {
+                const cgltf_pbr_metallic_roughness& pbr =
+                    prim.material->pbr_metallic_roughness;
+                sp.color = XMFLOAT4(pbr.base_color_factor[0],
+                                    pbr.base_color_factor[1],
+                                    pbr.base_color_factor[2],
+                                    pbr.base_color_factor[3]);
+                if (pbr.base_color_texture.texture
+                    && pbr.base_color_texture.texture->image
+                    && pbr.base_color_texture.texture->image->buffer_view)
+                {
+                    const cgltf_buffer_view* bv =
+                        pbr.base_color_texture.texture->image->buffer_view;
+                    const uint8_t* bytes =
+                        static_cast<const uint8_t*>(bv->buffer->data)
+                        + bv->offset;
+                    int w = 0, h = 0, comp = 0;
+                    stbi_uc* px = stbi_load_from_memory(
+                        bytes, int(bv->size), &w, &h, &comp, 4);
+                    if (px)
+                    {
+                        sp.texture.width = w;
+                        sp.texture.height = h;
+                        sp.texture.rgba.assign(px, px + size_t(w) * h * 4);
+                        stbi_image_free(px);
+                    }
+                }
+            }
+        }
+        return out[matToPart[mi]];
+    };
+    for (size_t n = 0; n < data->nodes_count; ++n)
+    {
+        const cgltf_node& node = data->nodes[n];
+        if (!node.mesh)
+            continue;
+        float m16[16];
+        cgltf_node_transform_world(&node, m16);
+        XMMATRIX w = XMMATRIX(m16);
+        for (size_t pi = 0; pi < node.mesh->primitives_count; ++pi)
+        {
+            const cgltf_primitive& prim = node.mesh->primitives[pi];
+            StaticPart& sp = partFor(prim);
+            const cgltf_accessor* pos = nullptr;
+            const cgltf_accessor* nrm = nullptr;
+            const cgltf_accessor* uv = nullptr;
+            for (size_t a = 0; a < prim.attributes_count; ++a)
+            {
+                const cgltf_attribute& at = prim.attributes[a];
+                if (at.type == cgltf_attribute_type_position) pos = at.data;
+                else if (at.type == cgltf_attribute_type_normal) nrm = at.data;
+                else if (at.type == cgltf_attribute_type_texcoord
+                         && at.index == 0) uv = at.data;
+            }
+            if (!pos)
+                continue;
+            uint32_t base = uint32_t(sp.mesh.verts.size());
+            for (size_t v = 0; v < pos->count; ++v)
+            {
+                Vertex vert{};
+                float tmp[3]{};
+                cgltf_accessor_read_float(pos, v, tmp, 3);
+                XMVECTOR p = XMVector3TransformCoord(
+                    XMVectorSet(tmp[0], tmp[1], tmp[2], 1), w);
+                vert.px = XMVectorGetX(p);
+                vert.py = XMVectorGetY(p);
+                vert.pz = XMVectorGetZ(p);
+                if (nrm)
+                {
+                    cgltf_accessor_read_float(nrm, v, tmp, 3);
+                    XMVECTOR nn = XMVector3Normalize(
+                        XMVector3TransformNormal(
+                            XMVectorSet(tmp[0], tmp[1], tmp[2], 0), w));
+                    vert.nx = XMVectorGetX(nn);
+                    vert.ny = XMVectorGetY(nn);
+                    vert.nz = XMVectorGetZ(nn);
+                }
+                if (uv)
+                {
+                    float t2[2]{};
+                    cgltf_accessor_read_float(uv, v, t2, 2);
+                    vert.u = t2[0]; vert.v = t2[1];
+                }
+                sp.mesh.verts.push_back(vert);
+            }
+            if (prim.indices)
+                for (size_t i = 0; i < prim.indices->count; ++i)
+                    sp.mesh.indices.push_back(
+                        base + uint32_t(cgltf_accessor_read_index(
+                                   prim.indices, i)));
+            else
+                for (size_t i = 0; i < pos->count; ++i)
+                    sp.mesh.indices.push_back(base + uint32_t(i));
+        }
+    }
+    cgltf_free(data);
+    for (StaticPart& sp : out)
+        ComputeTangents(sp.mesh);
+    return out;
+}
+
 TankModel LoadTankModel(const std::string& glbPath, const std::string& metaPath)
 {
     TankModel model;

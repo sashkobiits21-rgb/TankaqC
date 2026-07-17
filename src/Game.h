@@ -8,7 +8,7 @@ namespace tankaq
 
 constexpr int   MaxPlayers = 8;
 constexpr int   MaxLobbyPlayers = 4;         // join cap
-constexpr int   MaxProjectiles = 24;
+constexpr int   MaxProjectiles = 96;   // shots must never fail to spawn
 constexpr int   TickRate = 64;               // 64-tick server
 constexpr float TickDt = 1.0f / TickRate;
 constexpr int   StatRecalcTicks = 8;         // host recalcs stats every 8 ticks

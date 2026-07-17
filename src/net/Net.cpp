@@ -653,10 +653,11 @@ void Net::Poll(const Events& ev)
                         ? "version mismatch" : "server full";
                     m_clientState = ClientState::Failed;
                 }
-                else if (t == MsgType::Snapshot && m->m_cbSize >= int(sizeof(MsgSnapshot)))
+                else if (t == MsgType::Snapshot)
                 {
-                    if (ev.onSnapshot)
-                        ev.onSnapshot(*reinterpret_cast<const MsgSnapshot*>(d));
+                    static MsgSnapshot snap;   // 6 KB: keep off the stack
+                    if (UnpackSnapshot(d, m->m_cbSize, snap) && ev.onSnapshot)
+                        ev.onSnapshot(snap);
                 }
                 else if (t == MsgType::Upgrade && m->m_cbSize >= int(sizeof(MsgUpgrade)))
                 {
@@ -763,14 +764,188 @@ void Net::SendReadyToHost(bool ready)
         m_hostConn, &msg, sizeof(msg), k_nSteamNetworkingSend_Reliable, nullptr);
 }
 
+// ------------------------------------------------- packed snapshot wire
+// Only LIVE entities travel; positions quantize to 1/128 units (arena is
+// +-30), yaw to 1/10430 rad. Little-endian throughout (x64 only anyway).
+namespace
+{
+    inline void W8(uint8_t*& p, uint8_t v)   { *p++ = v; }
+    inline void W16(uint8_t*& p, uint16_t v) { memcpy(p, &v, 2); p += 2; }
+    inline void W16s(uint8_t*& p, int16_t v) { memcpy(p, &v, 2); p += 2; }
+    inline void W32(uint8_t*& p, uint32_t v) { memcpy(p, &v, 4); p += 4; }
+    inline uint8_t R8(const uint8_t*& p)     { return *p++; }
+    inline uint16_t R16(const uint8_t*& p)   { uint16_t v; memcpy(&v, p, 2); p += 2; return v; }
+    inline int16_t R16s(const uint8_t*& p)   { int16_t v; memcpy(&v, p, 2); p += 2; return v; }
+    inline uint32_t R32(const uint8_t*& p)   { uint32_t v; memcpy(&v, p, 4); p += 4; return v; }
+    inline int16_t QPos(float v)   { return int16_t(std::clamp(v, -250.0f, 250.0f) * 128.0f); }
+    inline float UQPos(int16_t v)  { return float(v) / 128.0f; }
+    inline uint16_t QYaw(float v)  { return uint16_t(int(WrapAngle(v) * 10430.0f + 32768.5f)); }
+    inline float UQYaw(uint16_t v) { return (float(v) - 32768.0f) / 10430.0f; }
+}
+
+int PackSnapshot(const MsgSnapshot& s, uint8_t* out)
+{
+    uint8_t* p = out;
+    W8(p, s.type); W8(p, s.phase); W8(p, s.winner);
+    W8(p, s.targetPlayers); W8(p, s.matchMinutes);
+    W32(p, s.tick); W32(p, s.matchEndTick);
+    memcpy(p, s.players, sizeof(s.players)); p += sizeof(s.players);
+
+    uint8_t* cnt = p; W8(p, 0);
+    for (int i = 0; i < MaxProjectiles; ++i)
+    {
+        const ProjectileNet& q = s.projectiles[i];
+        if (!q.active) continue;
+        ++*cnt;
+        W8(p, uint8_t(i));
+        W16s(p, QPos(q.x)); W16s(p, QPos(q.z));
+        W8(p, uint8_t(std::clamp(q.y, 0.0f, 3.9f) * 64.0f));
+        W16(p, QYaw(q.yaw));
+        W8(p, q.radar16); W8(p, q.radarRings);
+        W8(p, q.lock255); W8(p, q.deflected);
+    }
+    cnt = p; W8(p, 0);
+    for (int i = 0; i < MaxSoldiers; ++i)
+    {
+        const SoldierNet& q = s.soldiers[i];
+        if (!q.active) continue;
+        ++*cnt;
+        W8(p, uint8_t(i)); W8(p, q.owner); W8(p, q.state);
+        W8(p, q.targetId); W8(p, q.health); W8(p, q.flags);
+        W16s(p, QPos(q.x)); W16s(p, QPos(q.z)); W16(p, QYaw(q.yaw));
+    }
+    cnt = p; W8(p, 0);
+    for (int i = 0; i < MaxSkulls; ++i)
+    {
+        const SkullNet& q = s.skulls[i];
+        if (!q.active) continue;
+        ++*cnt;
+        W8(p, uint8_t(i)); W8(p, q.owner);
+        W16s(p, QPos(q.x)); W16s(p, QPos(q.z)); W16(p, QYaw(q.yaw));
+    }
+    cnt = p; W8(p, 0);
+    for (int i = 0; i < MaxPuddles; ++i)
+    {
+        const PuddleNet& q = s.puddles[i];
+        if (!q.active) continue;
+        ++*cnt;
+        W8(p, uint8_t(i)); W8(p, q.owner); W8(p, q.life16);
+        W16s(p, QPos(q.x)); W16s(p, QPos(q.z));
+    }
+    cnt = p; W8(p, 0);
+    for (int i = 0; i < MaxGhosts; ++i)
+    {
+        const GhostNet& q = s.ghosts[i];
+        if (!q.active) continue;
+        ++*cnt;
+        W8(p, uint8_t(i)); W8(p, q.owner);
+        W16s(p, QPos(q.x)); W16s(p, QPos(q.z));
+    }
+    cnt = p; W8(p, 0);
+    for (int i = 0; i < MaxGrenades; ++i)
+    {
+        const GrenadeNet& q = s.grenades[i];
+        if (!q.active) continue;
+        ++*cnt;
+        W8(p, uint8_t(i)); W8(p, q.owner); W8(p, q.fuse255);
+        W16s(p, QPos(q.x)); W16s(p, QPos(q.z));
+        W8(p, uint8_t(std::clamp(q.y, 0.0f, 7.9f) * 32.0f));
+    }
+    return int(p - out);
+}
+
+bool UnpackSnapshot(const uint8_t* data, int size, MsgSnapshot& out)
+{
+    constexpr int kHead = 5 + 8 + int(sizeof(out.players));
+    if (size < kHead + 6)
+        return false;
+    const uint8_t* p = data;
+    const uint8_t* end = data + size;
+    out = MsgSnapshot{};
+    out.type = R8(p); out.phase = R8(p); out.winner = R8(p);
+    out.targetPlayers = R8(p); out.matchMinutes = R8(p);
+    out.tick = R32(p); out.matchEndTick = R32(p);
+    memcpy(out.players, p, sizeof(out.players)); p += sizeof(out.players);
+
+    auto need = [&](int n) { return end - p >= n; };
+    if (!need(1)) return false;
+    for (int n = R8(p); n-- > 0; )
+    {
+        if (!need(12)) return false;
+        int slot = R8(p);
+        ProjectileNet& q = out.projectiles[slot % MaxProjectiles];
+        q.active = 1;
+        q.x = UQPos(R16s(p)); q.z = UQPos(R16s(p));
+        q.y = float(R8(p)) / 64.0f;
+        q.yaw = UQYaw(R16(p));
+        q.radar16 = R8(p); q.radarRings = R8(p);
+        q.lock255 = R8(p); q.deflected = R8(p);
+    }
+    if (!need(1)) return false;
+    for (int n = R8(p); n-- > 0; )
+    {
+        if (!need(12)) return false;
+        int slot = R8(p);
+        SoldierNet& q = out.soldiers[slot % MaxSoldiers];
+        q.active = 1;
+        q.owner = R8(p); q.state = R8(p); q.targetId = R8(p);
+        q.health = R8(p); q.flags = R8(p);
+        q.x = UQPos(R16s(p)); q.z = UQPos(R16s(p)); q.yaw = UQYaw(R16(p));
+    }
+    if (!need(1)) return false;
+    for (int n = R8(p); n-- > 0; )
+    {
+        if (!need(8)) return false;
+        int slot = R8(p);
+        SkullNet& q = out.skulls[slot % MaxSkulls];
+        q.active = 1;
+        q.owner = R8(p);
+        q.x = UQPos(R16s(p)); q.z = UQPos(R16s(p)); q.yaw = UQYaw(R16(p));
+    }
+    if (!need(1)) return false;
+    for (int n = R8(p); n-- > 0; )
+    {
+        if (!need(7)) return false;
+        int slot = R8(p);
+        PuddleNet& q = out.puddles[slot % MaxPuddles];
+        q.active = 1;
+        q.owner = R8(p); q.life16 = R8(p);
+        q.x = UQPos(R16s(p)); q.z = UQPos(R16s(p));
+    }
+    if (!need(1)) return false;
+    for (int n = R8(p); n-- > 0; )
+    {
+        if (!need(6)) return false;
+        int slot = R8(p);
+        GhostNet& q = out.ghosts[slot % MaxGhosts];
+        q.active = 1;
+        q.owner = R8(p);
+        q.x = UQPos(R16s(p)); q.z = UQPos(R16s(p));
+    }
+    if (!need(1)) return false;
+    for (int n = R8(p); n-- > 0; )
+    {
+        if (!need(8)) return false;
+        int slot = R8(p);
+        GrenadeNet& q = out.grenades[slot % MaxGrenades];
+        q.active = 1;
+        q.owner = R8(p); q.fuse255 = R8(p);
+        q.x = UQPos(R16s(p)); q.z = UQPos(R16s(p));
+        q.y = float(R8(p)) / 32.0f;
+    }
+    return true;
+}
+
 void Net::BroadcastSnapshot(const MsgSnapshot& snap)
 {
     if (m_mode != Mode::Host)
         return;
+    uint8_t buf[sizeof(MsgSnapshot) + 64];
+    int n = PackSnapshot(snap, buf);
     ISteamNetworkingSockets* s = SteamNetworkingSockets();
     for (const Client& c : m_clients)
         if (c.playerId >= 0)
-            s->SendMessageToConnection(c.conn, &snap, sizeof(snap),
+            s->SendMessageToConnection(c.conn, buf, uint32_t(n),
                                        k_nSteamNetworkingSend_Unreliable, nullptr);
 }
 

@@ -1440,7 +1440,7 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
             an.ik[0].active = false;
             an.Pose(frame.palettes.back());
             XMMATRIX launcherM{};
-            bool haveLauncher = g.meshLauncher >= 0 && g.rigChest >= 0;
+            bool haveLauncher = !g.launcherParts.empty() && g.rigChest >= 0;
             if (haveLauncher)
             {
                 XMMATRIX chestG = XMLoadFloat4x4(&g.rigChestBind)
@@ -1509,9 +1509,11 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
 
             // the launcher itself, on the shoulder (model space -> world)
             if (haveLauncher)
-                frame.objects.push_back({ g.meshLauncher, g.texWhite,
-                    Store(launcherM * world),
-                    { 0.30f, 0.32f, 0.28f, 0.25f }, true });
+                for (const auto& lp : g.launcherParts)
+                    frame.objects.push_back({ lp.first,
+                        lp.second >= 0 ? lp.second : g.texWhite,
+                        Store(launcherM * world),
+                        { 1, 1, 1, 0.3f }, true });
 
             // launcher muzzle flash (the rocket itself is a real projectile
             // in the shared pool, drawn by the normal rocket path)
@@ -1546,7 +1548,7 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
         an.ik[0].active = false;
         an.Pose(frame.palettes.back());
         XMMATRIX rigLauncherM{};
-        bool rigHaveL = g.meshLauncher >= 0 && g.rigChest >= 0;
+        bool rigHaveL = !g.launcherParts.empty() && g.rigChest >= 0;
         if (rigHaveL)
         {
             XMMATRIX chestG = XMLoadFloat4x4(&g.rigChestBind)
@@ -1589,9 +1591,11 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
         XMMATRIX world = XMMatrixScaling(g.rigScale, g.rigScale, g.rigScale)
                        * XMMatrixTranslation(g.rigPos.x, g.rigPos.y, g.rigPos.z);
         if (rigHaveL)
-            frame.objects.push_back({ g.meshLauncher, g.texWhite,
-                Store(rigLauncherM * world),
-                { 0.30f, 0.32f, 0.28f, 0.25f }, true });
+            for (const auto& lp : g.launcherParts)
+                frame.objects.push_back({ lp.first,
+                    lp.second >= 0 ? lp.second : g.texWhite,
+                    Store(rigLauncherM * world),
+                    { 1, 1, 1, 0.3f }, true });
         for (size_t p = 0; p < g.meshRigParts.size(); ++p)
         {
             if (!g.rigPartVisible[p])
@@ -2327,90 +2331,68 @@ bool CreateAssets()
             Log("Rig height (root-transformed): %.3f -> scale %.3f",
                 rigMaxY, g.rigScale);
 
-            // the launcher prop: geometry lifted from the old toon soldier
-            // (also CC0), rebased into hand-local space via the inverse bind
-            // of the joint it was skinned to -- so it can ride ANY rig
+            // the launcher prop: "RPG Launcher" by austincford (CC BY 3.0,
+            // via Poly Pizza) -- textured parts, canonicalized so the tube
+            // runs along +Z and placement is plain yaw/pitch/offsets
             {
-                SkinnedModel toon = LoadSkinnedGLB("assets/soldier_toon.glb");
-                if (toon.valid)
-                    for (const SkinnedPart& part : toon.parts)
+                g.launcherParts.clear();
+                std::vector<StaticPart> parts =
+                    LoadStaticGLBParts("assets/Launcher.glb");
+                XMFLOAT3 mn{ 1e9f, 1e9f, 1e9f };
+                XMFLOAT3 mx{ -1e9f, -1e9f, -1e9f };
+                for (const StaticPart& sp : parts)
+                    for (const Vertex& v : sp.mesh.verts)
                     {
-                        if (part.name.find("RocketLauncher")
-                                == std::string::npos
-                            || part.verts.empty())
-                            continue;
-                        int hand = part.verts[0].joints[0];
-                        XMMATRIX inv = XMLoadFloat4x4(
-                            &toon.joints[hand].inverseBind);
-                        MeshData md;
-                        md.verts.reserve(part.verts.size());
-                        for (const SkinnedVertex& sv : part.verts)
-                        {
-                            Vertex v{};
-                            XMVECTOR p = XMVector3TransformCoord(
-                                XMVectorSet(sv.px, sv.py, sv.pz, 1), inv);
-                            XMVECTOR nr = XMVector3Normalize(
-                                XMVector3TransformNormal(
-                                    XMVectorSet(sv.nx, sv.ny, sv.nz, 0),
-                                    inv));
-                            v.px = XMVectorGetX(p);
-                            v.py = XMVectorGetY(p);
-                            v.pz = XMVectorGetZ(p);
-                            v.nx = XMVectorGetX(nr);
-                            v.ny = XMVectorGetY(nr);
-                            v.nz = XMVectorGetZ(nr);
-                            v.u = sv.u; v.v = sv.v;
-                            md.verts.push_back(v);
-                        }
-                        // canonicalize: center at the origin, longest
-                        // axis rotated onto +Z -- placement becomes plain
-                        // yaw/pitch/offsets instead of per-export guesswork
-                        XMFLOAT3 mn{ 1e9f, 1e9f, 1e9f };
-                        XMFLOAT3 mx{ -1e9f, -1e9f, -1e9f };
-                        for (const Vertex& v : md.verts)
-                        {
-                            mn.x = std::min(mn.x, v.px);
-                            mn.y = std::min(mn.y, v.py);
-                            mn.z = std::min(mn.z, v.pz);
-                            mx.x = std::max(mx.x, v.px);
-                            mx.y = std::max(mx.y, v.py);
-                            mx.z = std::max(mx.z, v.pz);
-                        }
-                        XMFLOAT3 c{ (mn.x + mx.x) * 0.5f,
-                                    (mn.y + mx.y) * 0.5f,
-                                    (mn.z + mx.z) * 0.5f };
-                        float ex = mx.x - mn.x, ey = mx.y - mn.y,
-                              ez = mx.z - mn.z;
-                        for (Vertex& v : md.verts)
-                        {
-                            float px = v.px - c.x, py = v.py - c.y,
-                                  pz = v.pz - c.z;
-                            float nx = v.nx, ny = v.ny, nz = v.nz;
-                            if (ex >= ey && ex >= ez)
-                            {   // RotY(90): +X -> -Z (det +1, no mirror)
-                                v.px = pz;  v.py = py;  v.pz = -px;
-                                v.nx = nz;  v.ny = ny;  v.nz = -nx;
-                            }
-                            else if (ey >= ex && ey >= ez)
-                            {   // RotX(90): +Y -> -Z
-                                v.px = px;  v.py = pz;  v.pz = -py;
-                                v.nx = nx;  v.ny = nz;  v.nz = -ny;
-                            }
-                            else
-                            {
-                                v.px = px;  v.py = py;  v.pz = pz;
-                            }
-                        }
-                        float rawLen = std::max({ ex, ey, ez, 0.001f });
-                        g.launcherScale = 1.15f / rawLen;   // ~1.15 u tube
-                        md.indices = part.indices;
-                        ComputeTangents(md);
-                        g.meshLauncher = r->CreateMesh(md.verts.data(),
-                                                       md.verts.size(),
-                                                       md.indices.data(),
-                                                       md.indices.size());
-                        break;
+                        mn.x = std::min(mn.x, v.px);
+                        mn.y = std::min(mn.y, v.py);
+                        mn.z = std::min(mn.z, v.pz);
+                        mx.x = std::max(mx.x, v.px);
+                        mx.y = std::max(mx.y, v.py);
+                        mx.z = std::max(mx.z, v.pz);
                     }
+                XMFLOAT3 c{ (mn.x + mx.x) * 0.5f, (mn.y + mx.y) * 0.5f,
+                            (mn.z + mx.z) * 0.5f };
+                float ex = mx.x - mn.x, ey = mx.y - mn.y, ez = mx.z - mn.z;
+                for (StaticPart& sp : parts)
+                {
+                    for (Vertex& v : sp.mesh.verts)
+                    {
+                        float px = v.px - c.x, py = v.py - c.y,
+                              pz = v.pz - c.z;
+                        float nx = v.nx, ny = v.ny, nz = v.nz;
+                        if (ex >= ey && ex >= ez)
+                        {   // RotY(90): +X -> -Z (det +1, no mirror)
+                            v.px = pz;  v.py = py;  v.pz = -px;
+                            v.nx = nz;  v.ny = ny;  v.nz = -nx;
+                        }
+                        else if (ey >= ex && ey >= ez)
+                        {   // RotX(90): +Y -> -Z
+                            v.px = px;  v.py = pz;  v.pz = -py;
+                            v.nx = nx;  v.ny = nz;  v.nz = -ny;
+                        }
+                        else
+                        {
+                            v.px = px;  v.py = py;  v.pz = pz;
+                        }
+                    }
+                    if (sp.mesh.verts.empty())
+                        continue;
+                    int mesh = r->CreateMesh(sp.mesh.verts.data(),
+                                             sp.mesh.verts.size(),
+                                             sp.mesh.indices.data(),
+                                             sp.mesh.indices.size());
+                    int tex = -1;
+                    if (sp.texture.width > 0)
+                        tex = r->CreateTexture(sp.texture.rgba.data(),
+                                               sp.texture.width,
+                                               sp.texture.height);
+                    g.launcherParts.push_back({ mesh, tex });
+                }
+                float rawLen = std::max({ ex, ey, ez, 0.001f });
+                g.launcherScale = 1.15f / rawLen;
+                Log("Launcher: %zu textured parts, raw len %.3f",
+                    g.launcherParts.size(), rawLen);
+
                 g.rigChest = FindJoint(g.rigModel, "Chest");
                 if (g.rigChest < 0)
                     g.rigChest = FindJoint(g.rigModel, "Torso");
@@ -2424,9 +2406,8 @@ bool CreateAssets()
                 g.rigArmR[0] = FindJoint(g.rigModel, "UpperArm.R");
                 g.rigArmR[1] = FindJoint(g.rigModel, "LowerArm.R");
                 g.rigArmR[2] = FindJoint(g.rigModel, "Wrist.R");
-                Log("Launcher prop: mesh %d, chest %d, arm %d/%d/%d",
-                    g.meshLauncher, g.rigChest, g.rigArmR[0], g.rigArmR[1],
-                    g.rigArmR[2]);
+                Log("Launcher rig: chest %d, arm %d/%d/%d",
+                    g.rigChest, g.rigArmR[0], g.rigArmR[1], g.rigArmR[2]);
             }
             for (size_t j = 0; j < g.rigModel.jointNames.size(); ++j)
                 Log("Rig joint %zu: %s (parent %d)", j,

@@ -28,7 +28,12 @@ namespace tankaq::net
 // base 0) -- derived-stat contract change.
 // v18: FISSION SHELLS (SplitChance stat), ghost 2 s fuse + faster spiral,
 // necro-killed soldiers rise as ghosts -- derived-stat contract change.
-constexpr uint8_t ProtocolVersion = 21;
+// v22: snapshots go VARIABLE-LENGTH on the wire: fixed header + players,
+// then only LIVE projectiles/soldiers/skulls/puddles/ghosts/grenades as
+// slot-tagged quantized records (x/z 1/128 fixed point, yaw uint16). The
+// in-memory MsgSnapshot struct is unchanged -- Pack/Unpack translate at the
+// socket. Rocket pool grows 24 -> 96 with FLAT bandwidth.
+constexpr uint8_t ProtocolVersion = 22;
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t
@@ -232,5 +237,13 @@ struct MsgSnapshot
 };
 
 #pragma pack(pop)
+
+// Wire form of MsgSnapshot (variable length). Returns the packed size.
+// `out` must hold at least sizeof(MsgSnapshot) + 64 bytes (worst case is
+// smaller than the raw struct; live-entity packing only shrinks it).
+int PackSnapshot(const MsgSnapshot& s, uint8_t* out);
+// Parses a packed snapshot; false on malformed input. Inactive slots in
+// `out` are cleared.
+bool UnpackSnapshot(const uint8_t* data, int size, MsgSnapshot& out);
 
 } // namespace tankaq::net

@@ -95,6 +95,16 @@ SkinnedModel LoadSkinnedGLB(const std::string& path);
 // transform into one MeshData. Empty result on failure.
 MeshData LoadStaticGLB(const std::string& path);
 
+// Same, but split by MATERIAL, with the embedded base-color texture decoded
+// per part (launcher etc. -- props whose look needs their authored paint).
+struct StaticPart
+{
+    MeshData mesh;
+    ImageData texture;                      // 0x0 when the material has none
+    DirectX::XMFLOAT4 color{ 1, 1, 1, 1 };  // baseColorFactor fallback
+};
+std::vector<StaticPart> LoadStaticGLBParts(const std::string& path);
+
 // Procedural meshes (unit-ish sizes, uv-mapped).
 MeshData MakeBox(float halfX, float halfY, float halfZ, float uvScale);
 MeshData MakeGroundPlane(float halfSize, float uvTiles);
