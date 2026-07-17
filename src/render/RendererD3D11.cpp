@@ -362,6 +362,8 @@ public:
             {
                 if (obj.mesh < 0 || obj.mesh >= int(m_meshes.size()))
                     continue;
+                if (obj.losClip > 0.0f)
+                    continue;   // STEALTH: cloaked tanks cast no shadow
                 PerObjectCB po{};
                 po.world = obj.world;
                 po.tint = obj.tint;

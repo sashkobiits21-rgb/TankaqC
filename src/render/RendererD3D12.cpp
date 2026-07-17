@@ -590,6 +590,8 @@ public:
             bool shSkinned = false;
             for (const auto& d : drawables)
             {
+                if (d.obj->losClip > 0.0f)
+                    continue;   // STEALTH: cloaked tanks cast no shadow
                 const GpuMesh& mesh = m_meshes[d.obj->mesh];
                 if (mesh.skinned != shSkinned)
                 {
