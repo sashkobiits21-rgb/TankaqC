@@ -2,8 +2,8 @@
 
 C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Microsoft\VC\v180\Microsoft.CppBuild.targets(561,5): warning MSB8029: The Intermediate directory or Output directory cannot reside under the Temporary directory as it could lead to issues with incremental build. [C:\Tankaq\build\ZERO_CHECK.vcxproj]
 C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Microsoft\VC\v180\Microsoft.CppBuild.targets(561,5): warning MSB8029: The Intermediate directory or Output directory cannot reside under the Temporary directory as it could lead to issues with incremental build. [C:\Tankaq\build\TankaqClient.vcxproj]
-  RendererD3D11.cpp
-  RendererD3D12.cpp
-LINK : fatal error LNK1104: cannot open file 'C:\Tankaq\bin\Release\TankaqClient.exe' [C:\Tankaq\build\TankaqClient.vcxproj]
+  UiShop.cpp
+  TankaqClient.vcxproj -> C:\Tankaq\bin\Release\TankaqClient.exe
+C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Microsoft\VC\v180\Microsoft.CppBuild.targets(561,5): warning MSB8029: The Intermediate directory or Output directory cannot reside under the Temporary directory as it could lead to issues with incremental build. [C:\Tankaq\build\ALL_BUILD.vcxproj]
 BUILDDONE
 CLASSTEST_EXIT=0

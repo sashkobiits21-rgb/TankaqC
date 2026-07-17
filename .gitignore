@@ -5,3 +5,4 @@ bin/
 # Valve's Steamworks SDK is not redistributable
 third_party/steamworks/
 tankaq_log*.txt
+backup/
