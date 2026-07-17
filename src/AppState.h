@@ -30,6 +30,7 @@ struct Options
     int screenshotAfterFrames = 0;
     std::string screenshotPath;
     bool autoDrive = false;
+    bool autoReady = false;      // lobby: ready up automatically (loopback QA)
     bool vsync = true;
     int winX = CW_USEDEFAULT, winY = CW_USEDEFAULT;
     int winW = 0, winH = 0;

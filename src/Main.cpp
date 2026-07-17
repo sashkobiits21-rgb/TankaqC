@@ -127,6 +127,7 @@ Options ParseOptions(const std::string& cmd)
     if (!frames.empty()) o.screenshotAfterFrames = atoi(frames.c_str());
     o.screenshotPath = GetArg(cmd, "--screenshot=");
     o.autoDrive = cmd.find("--drive") != std::string::npos;
+    o.autoReady = cmd.find("--autoready") != std::string::npos;
     o.vsync = cmd.find("--novsync") == std::string::npos;
     std::string pos = GetArg(cmd, "--winpos=");
     if (!pos.empty())
@@ -3433,12 +3434,20 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                 else if (g.opt.demoClass == "stealth"
                          && g.game.players[1].active)
                 {
-                    // the DUMMY cloaks; it parks so the center block sits
-                    // between it and the player -- it must vanish on screen
+                    // BOTH tanks cloak: each side must hide the other one
+                    // behind the wall (covers host AND client viewpoints)
+                    g.game.players[0].owned.push_back(
+                        uint8_t(UpgradeId::Stealth));
                     g.game.players[1].owned.push_back(
                         uint8_t(UpgradeId::Stealth));
+                    g.game.RecalcStats(0);
                     g.game.RecalcStats(1);
-                    Log("demo: granted STEALTH to the dummy");
+                    if (g.online)   // clients must hear about it too
+                    {
+                        g.net.BroadcastUpgrade(0, uint8_t(UpgradeId::Stealth));
+                        g.net.BroadcastUpgrade(1, uint8_t(UpgradeId::Stealth));
+                    }
+                    Log("demo: granted STEALTH to players 0 and 1");
                 }
                 if (!g.opt.demoClass.empty() && g.game.players[1].active)
                 {
@@ -3554,6 +3563,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         // class demos: periodically pull the local trigger so the radar
         // rings ride a rocket across the frame (space = the real fire path),
         // aimed at the dummy so locks (and the countdown fill) happen
+        if (g.opt.autoReady && g.screen == Screen::InGame
+            && g.game.phase == PhaseLobby
+            && g.game.players[g.myId].active
+            && !g.game.players[g.myId].ready
+            && g.frameCounter % 90 == 30)
+            ToggleReady();
         if (!g.opt.demoClass.empty() && g.screen == Screen::InGame)
         {
             g.keys[VK_SPACE] = (g.frameCounter % 200) < 10;
