@@ -31,6 +31,7 @@ struct Options
     std::string screenshotPath;
     bool autoDrive = false;
     bool autoReady = false;      // lobby: ready up automatically (loopback QA)
+    bool testMode = false;       // host: force a TEST match (loopback QA)
     bool vsync = true;
     int winX = CW_USEDEFAULT, winY = CW_USEDEFAULT;
     int winW = 0, winH = 0;

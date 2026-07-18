@@ -128,6 +128,7 @@ Options ParseOptions(const std::string& cmd)
     o.screenshotPath = GetArg(cmd, "--screenshot=");
     o.autoDrive = cmd.find("--drive") != std::string::npos;
     o.autoReady = cmd.find("--autoready") != std::string::npos;
+    o.testMode = cmd.find("--testmode") != std::string::npos;
     o.vsync = cmd.find("--novsync") == std::string::npos;
     std::string pos = GetArg(cmd, "--winpos=");
     if (!pos.empty())
@@ -2885,8 +2886,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     else if (g.opt.host)
     {
         (steamOk ? StartHost() : StartSolo());
+        if (g.opt.testMode)
+            g.game.testMode = 1;             // loopback QA: sandbox match
         if (g.online)
-            g.net.CreatePublicLobby(0, 0);   // hosting counts as matchmaking
+            g.net.CreatePublicLobby(0, g.game.testMode);
     }
     else if (!g.opt.join.empty() && steamOk)
         StartJoin(g.opt.join);
