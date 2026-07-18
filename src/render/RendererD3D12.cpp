@@ -1159,6 +1159,7 @@ private:
         ID3D12Resource* albedo = m_sceneAlbedo.res.Get();
         ID3D12Resource* depth = m_depth.Get();
         DXGI_FORMAT c8 = DXGI_FORMAT_R8G8B8A8_UNORM;
+        DXGI_FORMAT hdr = DXGI_FORMAT_R11G11B10_FLOAT;   // scene color SRVs
         DXGI_FORMAT f16 = DXGI_FORMAT_R16G16B16A16_FLOAT;
         DXGI_FORMAT r32 = DXGI_FORMAT_R32_FLOAT;
         DXGI_FORMAT r8 = DXGI_FORMAT_R8_UNORM;
@@ -1171,7 +1172,7 @@ private:
         WriteSrv(PostSrvBase + 0, normal, c8);
         WriteSrv(PostSrvBase + 1, depth, r32);
         // g1 SSGI: color, normal, depth
-        WriteSrv(PostSrvBase + 8, color, c8);
+        WriteSrv(PostSrvBase + 8, color, hdr);
         WriteSrv(PostSrvBase + 9, normal, c8);
         WriteSrv(PostSrvBase + 10, depth, r32);
         // g2 temporal writing accum0 (history = accum1)
@@ -1183,13 +1184,13 @@ private:
         WriteSrv(PostSrvBase + 25, depth, r32);
         WriteSrv(PostSrvBase + 26, m_accum[0].res.Get(), f16);
         // g4 composite after accum0: color, accum0, ao, albedo, depth
-        WriteSrv(PostSrvBase + 32, color, c8);
+        WriteSrv(PostSrvBase + 32, color, hdr);
         WriteSrv(PostSrvBase + 33, m_accum[0].res.Get(), f16);
         WriteSrv(PostSrvBase + 34, m_ao.res.Get(), r8);
         WriteSrv(PostSrvBase + 35, albedo, c8);
         WriteSrv(PostSrvBase + 36, depth, r32);
         // g5 composite after accum1
-        WriteSrv(PostSrvBase + 40, color, c8);
+        WriteSrv(PostSrvBase + 40, color, hdr);
         WriteSrv(PostSrvBase + 41, m_accum[1].res.Get(), f16);
         WriteSrv(PostSrvBase + 42, m_ao.res.Get(), r8);
         WriteSrv(PostSrvBase + 43, albedo, c8);
@@ -1567,9 +1568,16 @@ private:
                          : "root signature serialize failed";
             return false;
         }
-        if (FAILED(m_device->CreateRootSignature(0, sig->GetBufferPointer(),
-                sig->GetBufferSize(), IID_PPV_ARGS(&out))))
-        { error = "CreateRootSignature failed"; return false; }
+        HRESULT hr = m_device->CreateRootSignature(0, sig->GetBufferPointer(),
+                sig->GetBufferSize(), IID_PPV_ARGS(&out));
+        if (FAILED(hr))
+        {
+            char b[96];
+            sprintf_s(b, "CreateRootSignature failed hr=0x%08X removed=0x%08X",
+                      unsigned(hr), unsigned(m_device->GetDeviceRemovedReason()));
+            error = b;
+            return false;
+        }
         return true;
     }
 
