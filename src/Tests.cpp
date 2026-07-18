@@ -774,6 +774,16 @@ int RunClassTest()
         float sz = ob.cz - 0.538f / 0.460f * ob.height * 0.5f;
         check(!InSunlight(sx, sz), "a box shades its shadow volume");
         check(InSunlight(0.0f, -20.0f), "mid-lane ground is sunlit");
+        // TREES: the east-ring canopy at (33.8, 0) throws its long shadow
+        // INTO the arena -- honest vampire cover with no collision
+        {
+            const TreeSpot& tt = kTrees[4];
+            float th = TreeShadeHeight * tt.s;
+            float tsx = tt.x - 0.707f / 0.460f * th * 0.6f;
+            float tsz = tt.z - 0.538f / 0.460f * th * 0.6f;
+            check(!InSunlight(tsx, tsz),
+                  "a tree canopy shades its long shadow strip");
+        }
         vamp.x = 0; vamp.z = -20; vamp.health = 100;
         InputCmd idle[MaxPlayers]{};
         for (int t = 0; t < TickRate * 2; ++t) gv.Tick(idle);

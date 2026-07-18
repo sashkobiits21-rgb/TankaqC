@@ -603,6 +603,50 @@ struct RadarMineState
     float lock = 0;        // host-authoritative; clients estimate visuals
 };
 
+// ------------------------------------------------------------------- trees
+// Decorative canopies that exist for ONE mechanical reason: vampire shade.
+// No collision, no cover, no stealth occlusion, no soldier AI -- but every
+// canopy casts a real analytic shadow volume in InSunlight, so the table
+// below is part of the SIM CONTRACT (fixed across peers; the renderer just
+// dresses these spots with the tree model at matching scale). Ring outside
+// the arena walls (east/north ones throw shade INWARD under the low sun) +
+// a scatter of shade islands inside.
+struct TreeSpot { float x, z, s; };   // s scales height AND canopy radius
+constexpr float TreeShadeHeight = 7.5f;   // world height at s = 1
+constexpr float TreeShadeRadius = 3.2f;   // canopy half-extent at s = 1
+inline constexpr TreeSpot kTrees[] = {
+    // east ring (shade reaches into the arena)
+    { 33.5f, -28.0f, 1.10f }, { 34.8f, -21.0f, 0.95f },
+    { 33.2f, -14.0f, 1.20f }, { 35.1f,  -7.0f, 1.00f },
+    { 33.8f,   0.0f, 1.15f }, { 34.4f,   7.0f, 0.90f },
+    { 33.1f,  14.0f, 1.05f }, { 35.0f,  21.0f, 1.20f },
+    { 33.6f,  28.0f, 1.00f },
+    // north ring (shade reaches into the arena)
+    { -28.0f, 34.2f, 1.05f }, { -21.0f, 33.4f, 1.20f },
+    { -14.0f, 35.0f, 0.95f }, {  -7.0f, 33.6f, 1.10f },
+    {   0.0f, 34.6f, 1.00f }, {   7.0f, 33.2f, 1.20f },
+    {  14.0f, 34.9f, 0.90f }, {  21.0f, 33.3f, 1.10f },
+    {  28.0f, 34.5f, 1.00f },
+    // west + south rings (pure decor: their shade points away)
+    { -33.9f, -25.0f, 1.10f }, { -34.6f, -15.0f, 0.95f },
+    { -33.2f,  -5.0f, 1.20f }, { -34.9f,   5.0f, 1.00f },
+    { -33.4f,  15.0f, 1.10f }, { -34.2f,  25.0f, 0.90f },
+    { -25.0f, -34.4f, 1.05f }, { -15.0f, -33.5f, 1.20f },
+    {  -5.0f, -34.8f, 0.95f }, {   5.0f, -33.3f, 1.10f },
+    {  15.0f, -34.7f, 1.00f }, {  25.0f, -33.8f, 1.15f },
+    // corners
+    {  33.8f,  33.5f, 1.20f }, { -33.5f,  33.9f, 1.00f },
+    { -34.0f, -33.6f, 1.15f }, {  33.4f, -34.2f, 1.05f },
+    // shade islands inside the arena (clear of every obstacle footprint)
+    { -24.0f,   6.0f, 1.00f }, {  24.0f,  -4.0f, 1.10f },
+    {  -8.0f,  16.0f, 0.95f }, {  16.0f,  -6.0f, 1.10f },
+    {  22.0f,  15.0f, 1.00f }, { -22.0f, -15.0f, 1.15f },
+    {  -4.0f,  25.0f, 1.05f }, {   5.0f, -26.0f, 0.95f },
+    {  25.0f,  25.0f, 1.10f }, { -25.0f, -25.0f, 1.00f },
+    { -26.0f,  18.0f, 0.90f }, {  26.0f, -18.0f, 1.10f },
+};
+constexpr int NumTrees = int(sizeof(kTrees) / sizeof(kTrees[0]));
+
 struct PuddleState
 {
     bool active = false;

@@ -1248,6 +1248,13 @@ bool InSunlight(float x, float z)
     for (const Obstacle& o : kObstacles)
         if (ShadowedByBox(x, z, o.cx, o.cz, o.hx, o.hz, o.height))
             return false;
+    // TREES: no collision, no cover -- but every canopy is honest shade.
+    // The canopy is approximated as a ground-up box (the bushy base reads
+    // as shady anyway), scaled per tree.
+    for (const TreeSpot& t : kTrees)
+        if (ShadowedByBox(x, z, t.x, t.z, TreeShadeRadius * t.s,
+                          TreeShadeRadius * t.s, TreeShadeHeight * t.s))
+            return false;
     // the four arena walls (1.2 tall, thin bands on the boundary)
     if (ShadowedByBox(x, z, 0, ArenaHalf, ArenaHalf, 0.6f, 2.4f)) return false;
     if (ShadowedByBox(x, z, 0, -ArenaHalf, ArenaHalf, 0.6f, 2.4f)) return false;

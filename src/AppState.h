@@ -136,6 +136,19 @@ struct App
     int texTemple[3]{ -1, -1, -1 };            // base color per part
     int texTempleNRA[3]{ -1, -1, -1 };         // normal+roughness per part
 
+    // GRAY WALL model dressing the six obstacle boxes (collision unchanged)
+    int meshGrayWall = -1;
+    int texGrayWall = -1, texGrayWallNRA = -1;
+    DirectX::XMFLOAT3 wallExt{ 1, 1, 1 };      // native extents (x=thick,
+    float wallMinY = 0.0f;                     //  y=height, z=length)
+
+    // TREES (kTrees): trunk + leaves share one bottom-origin transform
+    int meshTree = -1, meshLeaves = -1;
+    int texTree = -1, texTreeNRA = -1;
+    int texLeaves = -1, texLeavesNRA = -1;
+    float treeBaseScale = 1.0f;                // native -> TreeShadeHeight
+    float treeMinY = 0.0f;
+
     // necromancer + radar visuals
     int meshSkull = -1, meshJaw = -1, meshPuddle = -1, meshRing = -1;
     int meshGhost = -1, meshWedge = -1;

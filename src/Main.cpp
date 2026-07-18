@@ -1081,11 +1081,63 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
         if (i < 3 && g.meshTemple[0] >= 0)
             continue;
         const Obstacle& o = kObstacles[i];
+        // GRAY WALL model over the box: model axes are x = thickness,
+        // y = height, z = length; long-in-X obstacles rotate 90 degrees.
+        // Collision stays the box -- this is a reskin.
+        if (i >= 3 && g.meshGrayWall >= 0)
+        {
+            bool longX = o.hx >= o.hz;
+            float len = 2.0f * std::max(o.hx, o.hz);
+            float thick = 2.0f * std::min(o.hx, o.hz);
+            XMMATRIX w = XMMatrixTranslation(0.0f, -g.wallMinY, 0.0f)
+                       * XMMatrixScaling(thick / g.wallExt.x,
+                                         o.height / g.wallExt.y,
+                                         len / g.wallExt.z)
+                       * (longX ? XMMatrixRotationY(XM_PI * 0.5f)
+                                : XMMatrixIdentity())
+                       * XMMatrixTranslation(o.cx, 0.0f, o.cz);
+            RenderObject ro{ g.meshGrayWall, g.texGrayWall >= 0
+                                 ? g.texGrayWall : g.texWall,
+                             Store(w), { 1,1,1,0 } };
+            if (g.texGrayWallNRA >= 0)
+                ro.texNormal = g.texGrayWallNRA;
+            frame.objects.push_back(ro);
+            continue;
+        }
         RenderObject ro{ g.meshObstacles[i], g.texWall,
             Store(XMMatrixTranslation(o.cx, o.height * 0.5f, o.cz)), { 1,1,1,0 } };
         ro.texNormal = g.texWallNRA;
         frame.objects.push_back(ro);
     }
+    // TREES: trunk + leaves at every kTrees spot, one shared bottom-origin
+    // transform, deterministic yaw for variety. Culling trims the ring to
+    // whatever the camera (or the sun) actually sees.
+    if (g.meshTree >= 0)
+        for (int i = 0; i < NumTrees; ++i)
+        {
+            const TreeSpot& t = kTrees[i];
+            float sc = g.treeBaseScale * t.s;
+            float yaw = float(i) * 2.399f;   // golden-angle spin
+            XMMATRIX w = XMMatrixTranslation(0.0f, -g.treeMinY, 0.0f)
+                       * XMMatrixScaling(sc, sc, sc)
+                       * XMMatrixRotationY(yaw)
+                       * XMMatrixTranslation(t.x, 0.0f, t.z);
+            RenderObject trunk{ g.meshTree,
+                                g.texTree >= 0 ? g.texTree : g.texWhite,
+                                Store(w), { 1,1,1,0 } };
+            if (g.texTreeNRA >= 0)
+                trunk.texNormal = g.texTreeNRA;
+            frame.objects.push_back(trunk);
+            if (g.meshLeaves >= 0)
+            {
+                RenderObject lv{ g.meshLeaves,
+                                 g.texLeaves >= 0 ? g.texLeaves : g.texWhite,
+                                 Store(w), { 1,1,1,0 } };
+                if (g.texLeavesNRA >= 0)
+                    lv.texNormal = g.texLeavesNRA;
+                frame.objects.push_back(lv);
+            }
+        }
     // TEMPLE centerpiece: recenter the authored origin onto (0,0), drop the
     // base onto the ground, scale x5 (body footprint then matches its 4.0
     // half-extent collision box)
@@ -2506,6 +2558,80 @@ bool CreateAssets()
                                                      nra.width, nra.height);
             Log("Temple part %d: %zu verts, tex %dx%d", i, md.verts.size(),
                 col.width, col.height);
+        }
+    }
+
+    // GRAY WALL + TREES (assets/Deco, user-authored). The wall model
+    // dresses the six obstacle boxes (collision untouched); trees dress the
+    // kTrees shade table -- trunk and leaves share one bottom-origin
+    // transform, scaled so the visual height equals the sim shade height.
+    {
+        auto bindSet = [&](const char* dir, int& tex, int& nra)
+        {
+            ImageData col = LoadImageFile(std::string(dir)
+                                          + "DefaultMaterial_Base_color.png");
+            if (col.width > 0)
+                tex = r->CreateTexture(col.rgba.data(), col.width, col.height);
+            ImageData nrm = LoadImageFile(std::string(dir)
+                                          + "DefaultMaterial_Normal_OpenGL.png");
+            ImageData rgh = LoadImageFile(std::string(dir)
+                                          + "DefaultMaterial_Specular_roughness.png");
+            ImageData na = MakeNraFromMaps(nrm, rgh);
+            if (na.width > 0)
+                nra = r->CreateTexture(na.rgba.data(), na.width, na.height);
+        };
+        auto bounds = [](const MeshData& m, XMFLOAT3& mn, XMFLOAT3& mx)
+        {
+            mn = { 1e9f, 1e9f, 1e9f };
+            mx = { -1e9f, -1e9f, -1e9f };
+            for (const Vertex& v : m.verts)
+            {
+                mn.x = std::min(mn.x, v.px); mx.x = std::max(mx.x, v.px);
+                mn.y = std::min(mn.y, v.py); mx.y = std::max(mx.y, v.py);
+                mn.z = std::min(mn.z, v.pz); mx.z = std::max(mx.z, v.pz);
+            }
+        };
+        MeshData wall = LoadStaticGLB("assets/Deco/GrayWall.glb");
+        if (!wall.verts.empty())
+        {
+            XMFLOAT3 mn, mx;
+            bounds(wall, mn, mx);
+            g.wallExt = { std::max(0.01f, mx.x - mn.x),
+                          std::max(0.01f, mx.y - mn.y),
+                          std::max(0.01f, mx.z - mn.z) };
+            g.wallMinY = mn.y;
+            g.meshGrayWall = r->CreateMesh(wall.verts.data(), wall.verts.size(),
+                                           wall.indices.data(),
+                                           wall.indices.size());
+            bindSet("assets/Deco/GrayWallTextures/", g.texGrayWall,
+                    g.texGrayWallNRA);
+            Log("Deco: gray wall %zu verts, ext %.2f %.2f %.2f",
+                wall.verts.size(), g.wallExt.x, g.wallExt.y, g.wallExt.z);
+        }
+        MeshData trunk = LoadStaticGLB("assets/Deco/Tree.glb");
+        MeshData leaves = LoadStaticGLB("assets/Deco/Leaves.glb");
+        if (!trunk.verts.empty())
+        {
+            XMFLOAT3 mn, mx;
+            bounds(trunk, mn, mx);
+            g.treeMinY = mn.y;
+            g.treeBaseScale = TreeShadeHeight
+                            / std::max(0.01f, mx.y - mn.y);
+            g.meshTree = r->CreateMesh(trunk.verts.data(), trunk.verts.size(),
+                                       trunk.indices.data(),
+                                       trunk.indices.size());
+            bindSet("assets/Deco/TreeTextures/", g.texTree, g.texTreeNRA);
+            if (!leaves.verts.empty())
+            {
+                g.meshLeaves = r->CreateMesh(leaves.verts.data(),
+                                             leaves.verts.size(),
+                                             leaves.indices.data(),
+                                             leaves.indices.size());
+                bindSet("assets/Deco/LeavesTextures/", g.texLeaves,
+                        g.texLeavesNRA);
+            }
+            Log("Deco: tree %zu + leaves %zu verts, scale %.3f",
+                trunk.verts.size(), leaves.verts.size(), g.treeBaseScale);
         }
     }
 

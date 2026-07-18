@@ -60,7 +60,9 @@ namespace tankaq::net
 // v33: RADAR MINES (bounces + radar): tiny RingSpawn/RingPop events are
 // the ONLY wire data -- radius/damage/lock/fade derive from replicated
 // upgrades on each machine. Mines never ride snapshots.
-constexpr uint8_t ProtocolVersion = 33;
+// v34: TREES (kTrees) -- canopy shade volumes joined InSunlight, which is
+// sim contract (vampire burn). No collision, no wire data.
+constexpr uint8_t ProtocolVersion = 34;
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t
