@@ -900,7 +900,7 @@ void GameState::ApplyDamage(int shooterId, int victimId, int rawDamage,
             shooter.health = std::min(
                 MaxHealthFor(shooter),
                 shooter.health
-                    + std::max(1, int(dmg * VampireLifesteal + 0.5f)));
+                    + std::max(1, int(dmg * VampireSteal(shooter) + 0.5f)));
         if (t.health <= 0)
         {
             ++shooter.score;
@@ -2335,7 +2335,7 @@ void GameState::Tick(const InputCmd* inputs)
         {
             if (InSunlight(p.x, p.z))
             {
-                p.sunAccum += VampireBurnPerSec * TickDt;
+                p.sunAccum += VampireBurn(p) * TickDt;
                 while (p.sunAccum >= 1.0f && p.health > 0)
                 {
                     p.sunAccum -= 1.0f;

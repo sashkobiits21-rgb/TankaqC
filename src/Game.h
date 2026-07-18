@@ -150,8 +150,14 @@ constexpr float TerroristPlateau = 3.0f;  // 100% max HP inside one tank
                                           // weaker: 60% at the edge of the
                                           // plateau, sliding gently to zero
 constexpr float TerroristFalloffTop = 0.6f;
-constexpr float VampireLifesteal = 0.20f; // fraction of damage dealt
-constexpr float VampireBurnPerSec = 5.0f; // flat HP per second in the sun
+// VAMPIRE scales with power: every owned upgrade beyond the card itself
+// deepens both the drink and the curse.
+constexpr float VampireLifesteal = 0.20f;    // base fraction of damage dealt
+constexpr float VampireStealPerUpg = 0.02f;  // +2% per extra upgrade
+constexpr float VampireStealCap = 0.50f;
+constexpr float VampireBurnPerSec = 5.0f;    // base HP/s in the sun
+constexpr float VampireBurnPerUpg = 0.5f;    // +0.5 HP/s per extra upgrade
+
 constexpr float StealthSlow = 0.65f;      // -35% speed, fixed
 constexpr float StealthDamageMul = 0.85f; // -15% rocket damage, fixed
 constexpr float DrunkenMin = 0.80f;       // speed wander band
@@ -508,6 +514,19 @@ inline bool HasUpgrade(const PlayerState& p, UpgradeId u)
 inline int MaxClassesFor(const PlayerState& p)
 {
     return HasUpgrade(p, UpgradeId::TripleDoctrine) ? 3 : kMaxClasses;
+}
+inline float VampireSteal(const PlayerState& p)
+{
+    int extra = int(p.owned.size()) - 1;
+    return std::min(VampireStealCap,
+                    VampireLifesteal + VampireStealPerUpg
+                        * float(extra < 0 ? 0 : extra));
+}
+inline float VampireBurn(const PlayerState& p)
+{
+    int extra = int(p.owned.size()) - 1;
+    return VampireBurnPerSec + VampireBurnPerUpg
+         * float(extra < 0 ? 0 : extra);
 }
 // Sim-side sunlight test against the STATIC geometry (obstacles + walls),
 // exact interval math along the fixed sun direction. Deterministic: the

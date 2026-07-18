@@ -733,7 +733,17 @@ int RunClassTest()
         gv.RecalcStats(0);
         vamp.health = 50;
         gv.ApplyDamage(0, 1, 40, 0);
-        check(vamp.health == 58, "VAMPIRE drinks 20% of the wound");
+        check(vamp.health == 58, "a fresh VAMPIRE drinks 20% of the wound");
+        // power feeds the curse: 5 extra upgrades = 30% steal, 7.5 HP/s burn
+        for (int k = 0; k < 5; ++k)
+            vamp.owned.push_back(uint8_t(UpgradeId::FuelInjection));
+        vamp.health = 50;
+        gv.ApplyDamage(0, 1, 40, 0);
+        check(vamp.health == 62, "a stacked VAMPIRE drinks 30%");
+        check(fabsf(VampireBurn(vamp) - 7.5f) < 0.01f,
+              "the sunburn grows half a point per upgrade");
+        for (int k = 0; k < 5; ++k)
+            vamp.owned.pop_back();
         const Obstacle& ob = kObstacles[0];
         float sx = ob.cx - 0.489f / 0.636f * ob.height * 0.5f;
         float sz = ob.cz - 0.372f / 0.636f * ob.height * 0.5f;
