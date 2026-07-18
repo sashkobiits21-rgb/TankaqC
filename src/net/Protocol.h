@@ -62,7 +62,9 @@ namespace tankaq::net
 // upgrades on each machine. Mines never ride snapshots.
 // v34: TREES (kTrees) -- canopy shade volumes joined InSunlight, which is
 // sim contract (vampire burn). No collision, no wire data.
-constexpr uint8_t ProtocolVersion = 34;
+// v35: GATEWAYS -- the two z-long side walls became pillar pairs with a
+// drivable arch gap (NumObstacles 11); obstacle geometry is sim contract.
+constexpr uint8_t ProtocolVersion = 35;
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t

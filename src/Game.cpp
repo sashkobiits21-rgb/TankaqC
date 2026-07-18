@@ -302,14 +302,22 @@ int CountClasses(const PlayerState& p)
 // low staircase strips running N-S and E-W. Low boxes (< 2.0 tall) still
 // block driving and rockets but are SKIPPED for sight lines / stealth LOS
 // (you can see over a staircase).
+// The two z-long side walls are GATEWAYS now (the user's arched entrance
+// model): each is a pair of pillar boxes with a drivable 4.6-unit gap under
+// a decorative arch (indices 5..8 -- the renderer draws one entrance model
+// per pair and skips the boxes). Pillar numbers derive from the authored
+// mesh at a 14-unit span: gap half 2.31, pillar center +-4.655, half 2.345,
+// solid up to the arch spring line at 5.4.
 const Obstacle kObstacles[NumObstacles] = {
     {   0.0f,   0.0f, 4.0f,  4.0f,  4.7f }, // temple body (tiered pyramid)
     {   0.0f,   0.0f, 1.95f, 5.95f, 1.6f }, // temple stairs, N-S strip
     {   0.0f,   0.0f, 5.95f, 1.95f, 1.6f }, // temple stairs, E-W strip
     {  14.0f,  10.0f, 4.5f, 1.2f, 3.4f },
     { -14.0f, -10.0f, 4.5f, 1.2f, 3.4f },
-    { -14.0f,  12.0f, 1.2f, 4.5f, 3.6f },
-    {  14.0f, -12.0f, 1.2f, 4.5f, 3.6f },
+    { -14.0f,  7.345f, 1.2f, 2.345f, 5.4f },   // gate A, south pillar
+    { -14.0f, 16.655f, 1.2f, 2.345f, 5.4f },   // gate A, north pillar
+    {  14.0f, -16.655f, 1.2f, 2.345f, 5.4f },  // gate B, south pillar
+    {  14.0f,  -7.345f, 1.2f, 2.345f, 5.4f },  // gate B, north pillar
     {  -6.0f, -20.0f, 3.0f, 1.0f, 3.0f },
     {   6.0f,  20.0f, 3.0f, 1.0f, 3.0f },
 };

@@ -136,11 +136,17 @@ struct App
     int texTemple[3]{ -1, -1, -1 };            // base color per part
     int texTempleNRA[3]{ -1, -1, -1 };         // normal+roughness per part
 
-    // GRAY WALL model dressing the six obstacle boxes (collision unchanged)
+    // GRAY WALL model dressing the plain obstacle boxes (collision
+    // unchanged) + the arched ENTRANCE dressing the gateway pillar pairs
     int meshGrayWall = -1;
     int texGrayWall = -1, texGrayWallNRA = -1;
     DirectX::XMFLOAT3 wallExt{ 1, 1, 1 };      // native extents (x=thick,
-    float wallMinY = 0.0f;                     //  y=height, z=length)
+    DirectX::XMFLOAT3 wallCtr{ 0, 0, 0 };      //  y=height, z=length) and
+                                               //  center (y = min, not mid)
+    int meshGate = -1;
+    int texGate = -1, texGateNRA = -1;
+    DirectX::XMFLOAT3 gateExt{ 1, 1, 1 };
+    DirectX::XMFLOAT3 gateCtr{ 0, 0, 0 };
 
     // TREES (kTrees): trunk + leaves share one bottom-origin transform
     int meshTree = -1, meshLeaves = -1;

@@ -420,7 +420,7 @@ struct Obstacle
     float height;
 };
 
-constexpr int NumObstacles = 9;
+constexpr int NumObstacles = 11;
 extern const Obstacle kObstacles[NumObstacles];
 
 // --------------------------------------------------------------- soldiers

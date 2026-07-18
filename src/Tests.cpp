@@ -875,6 +875,11 @@ int RunClassTest()
         }
         check(clear, "every spawn point is clear of obstacles");
         check(spaced, "spawn points keep their distance from each other");
+        // GATEWAYS: the arch gap is drivable, the pillars are not
+        check(!PointHitsObstacle(-14.0f, 0.1f, 12.0f, TankRadius),
+              "the gateway arch gap fits a tank");
+        check(PointHitsObstacle(-14.0f, 0.1f, 16.655f, TankRadius),
+              "the gateway pillars still block");
         float sx, sz, syaw;
         gsp.SpawnPoint(0, sx, sz, syaw);
         float bestD = -1;

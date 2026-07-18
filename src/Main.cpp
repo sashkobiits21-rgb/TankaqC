@@ -1081,6 +1081,10 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
         if (i < 3 && g.meshTemple[0] >= 0)
             continue;
         const Obstacle& o = kObstacles[i];
+        // gateway pillar boxes (5..8): the ENTRANCE model is the visual --
+        // drawn once per pair below -- so the boxes only show as fallback
+        if (i >= 5 && i <= 8 && g.meshGate >= 0)
+            continue;
         // GRAY WALL model over the box: model axes are x = thickness,
         // y = height, z = length; long-in-X obstacles rotate 90 degrees.
         // Collision stays the box -- this is a reskin.
@@ -1089,7 +1093,8 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
             bool longX = o.hx >= o.hz;
             float len = 2.0f * std::max(o.hx, o.hz);
             float thick = 2.0f * std::min(o.hx, o.hz);
-            XMMATRIX w = XMMatrixTranslation(0.0f, -g.wallMinY, 0.0f)
+            XMMATRIX w = XMMatrixTranslation(-g.wallCtr.x, -g.wallCtr.y,
+                                             -g.wallCtr.z)
                        * XMMatrixScaling(thick / g.wallExt.x,
                                          o.height / g.wallExt.y,
                                          len / g.wallExt.z)
@@ -1109,6 +1114,26 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
         ro.texNormal = g.texWallNRA;
         frame.objects.push_back(ro);
     }
+    // the two GATEWAYS: one arched entrance model spans each pillar pair
+    // (14-unit span matching the kObstacles pillar math; thickness fattened
+    // to the 2.4-unit wall standard; the arch overhead is pure decoration)
+    if (g.meshGate >= 0)
+        for (int gi = 0; gi < 2; ++gi)
+        {
+            float gx = gi == 0 ? -14.0f : 14.0f;
+            float gz = gi == 0 ? 12.0f : -12.0f;
+            float s = 14.0f / g.gateExt.z;
+            XMMATRIX w = XMMatrixTranslation(-g.gateCtr.x, -g.gateCtr.y,
+                                             -g.gateCtr.z)
+                       * XMMatrixScaling(2.4f / g.gateExt.x, s, s)
+                       * XMMatrixTranslation(gx, 0.0f, gz);
+            RenderObject ro{ g.meshGate,
+                             g.texGate >= 0 ? g.texGate : g.texWall,
+                             Store(w), { 1,1,1,0 } };
+            if (g.texGateNRA >= 0)
+                ro.texNormal = g.texGateNRA;
+            frame.objects.push_back(ro);
+        }
     // TREES: trunk + leaves at every kTrees spot, one shared bottom-origin
     // transform, deterministic yaw for variety. Culling trims the ring to
     // whatever the camera (or the sun) actually sees.
@@ -2591,15 +2616,21 @@ bool CreateAssets()
                 mn.z = std::min(mn.z, v.pz); mx.z = std::max(mx.z, v.pz);
             }
         };
+        // exports drift off-origin between saves: measure and recenter
+        // (x/z to the middle, y to the base) instead of trusting the file
+        auto measure = [&](const MeshData& m, XMFLOAT3& ext, XMFLOAT3& ctr)
+        {
+            XMFLOAT3 mn, mx;
+            bounds(m, mn, mx);
+            ext = { std::max(0.01f, mx.x - mn.x),
+                    std::max(0.01f, mx.y - mn.y),
+                    std::max(0.01f, mx.z - mn.z) };
+            ctr = { (mn.x + mx.x) * 0.5f, mn.y, (mn.z + mx.z) * 0.5f };
+        };
         MeshData wall = LoadStaticGLB("assets/Deco/GrayWall.glb");
         if (!wall.verts.empty())
         {
-            XMFLOAT3 mn, mx;
-            bounds(wall, mn, mx);
-            g.wallExt = { std::max(0.01f, mx.x - mn.x),
-                          std::max(0.01f, mx.y - mn.y),
-                          std::max(0.01f, mx.z - mn.z) };
-            g.wallMinY = mn.y;
+            measure(wall, g.wallExt, g.wallCtr);
             g.meshGrayWall = r->CreateMesh(wall.verts.data(), wall.verts.size(),
                                            wall.indices.data(),
                                            wall.indices.size());
@@ -2607,6 +2638,18 @@ bool CreateAssets()
                     g.texGrayWallNRA);
             Log("Deco: gray wall %zu verts, ext %.2f %.2f %.2f",
                 wall.verts.size(), g.wallExt.x, g.wallExt.y, g.wallExt.z);
+        }
+        MeshData gate = LoadStaticGLB("assets/Deco/GrayWallEntrance.glb");
+        if (!gate.verts.empty())
+        {
+            measure(gate, g.gateExt, g.gateCtr);
+            g.meshGate = r->CreateMesh(gate.verts.data(), gate.verts.size(),
+                                       gate.indices.data(),
+                                       gate.indices.size());
+            bindSet("assets/Deco/GrayWallEntranceTextures/", g.texGate,
+                    g.texGateNRA);
+            Log("Deco: gateway %zu verts, ext %.2f %.2f %.2f",
+                gate.verts.size(), g.gateExt.x, g.gateExt.y, g.gateExt.z);
         }
         MeshData trunk = LoadStaticGLB("assets/Deco/Tree.glb");
         MeshData leaves = LoadStaticGLB("assets/Deco/Leaves.glb");
