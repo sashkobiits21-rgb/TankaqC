@@ -3913,11 +3913,31 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                 drunkCam = 1.0f + 0.15f * sinf(tt * 0.9f)
                          + 0.07f * sinf(tt * 1.7f + 1.3f);
             }
-            g.camPos = XMFLOAT3(g.camFocus.x, 27.0f * drunkCam,
-                                g.camFocus.z);
+            // AIM LEAD: the camera rides a small circle around the tank,
+            // parked at the aim angle -- as the mouse orbits, the view
+            // leans a touch toward where the muzzle points (smoothed so
+            // fast flicks glide instead of snapping)
+            {
+                float tx = 0.0f, tz = 0.0f;
+                if (InSession() && g.game.players[g.myId].active
+                    && g.game.players[g.myId].health > 0)
+                {
+                    float a = g.game.players[g.myId].turretYaw;
+                    const float LeadR = 1.2f;
+                    tx = sinf(a) * LeadR;
+                    tz = cosf(a) * LeadR;
+                }
+                float k = std::min(1.0f, float(g.frameDt) * 6.0f);
+                g.camLeadX += (tx - g.camLeadX) * k;
+                g.camLeadZ += (tz - g.camLeadZ) * k;
+            }
+            g.camPos = XMFLOAT3(g.camFocus.x + g.camLeadX,
+                                27.0f * drunkCam,
+                                g.camFocus.z + g.camLeadZ);
             view = XMMatrixLookAtRH(
                 XMVectorSet(g.camPos.x, g.camPos.y, g.camPos.z, 1),
-                XMVectorSet(g.camFocus.x, 0, g.camFocus.z, 1),
+                XMVectorSet(g.camFocus.x + g.camLeadX, 0,
+                            g.camFocus.z + g.camLeadZ, 1),
                 XMVectorSet(0, 0, 1, 0));
             // apply the movement lean in view space (local axes)
             view = view * XMMatrixRotationY(g.camYawLean)
