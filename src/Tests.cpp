@@ -807,6 +807,43 @@ int RunClassTest()
               "STEALTH drives at exactly 65%%");
     }
 
+    // ---- spawn system: pre-generated, clear, spaced, farthest-picked ----
+    {
+        GameState gsp{};
+        gsp.SpawnPlayer(0);
+        gsp.SpawnPlayer(1);
+        gsp.StartMatch();
+        check(gsp.spawnCount >= 4, "a match generates a full spawn set");
+        bool clear = true, spaced = true;
+        for (int s = 0; s < gsp.spawnCount; ++s)
+        {
+            if (PointHitsObstacle(gsp.spawnPX[s], 0.1f, gsp.spawnPZ[s],
+                                  TankRadius))
+                clear = false;
+            for (int t = s + 1; t < gsp.spawnCount; ++t)
+            {
+                float dx = gsp.spawnPX[s] - gsp.spawnPX[t];
+                float dz = gsp.spawnPZ[s] - gsp.spawnPZ[t];
+                if (dx * dx + dz * dz < 6.0f * 6.0f)
+                    spaced = false;
+            }
+        }
+        check(clear, "every spawn point is clear of obstacles");
+        check(spaced, "spawn points keep their distance from each other");
+        float sx, sz, syaw;
+        gsp.SpawnPoint(0, sx, sz, syaw);
+        float bestD = -1;
+        for (int s = 0; s < gsp.spawnCount; ++s)
+        {
+            float dx = gsp.spawnPX[s] - gsp.players[1].x;
+            float dz = gsp.spawnPZ[s] - gsp.players[1].z;
+            bestD = std::max(bestD, dx * dx + dz * dz);
+        }
+        float dx = sx - gsp.players[1].x, dz = sz - gsp.players[1].z;
+        check(fabsf((dx * dx + dz * dz) - bestD) < 0.01f,
+              "respawn picks the point farthest from the enemy");
+    }
+
     // ---- packed snapshot wire: round-trip fidelity ----
     {
         net::MsgSnapshot a{};

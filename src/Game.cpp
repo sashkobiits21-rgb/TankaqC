@@ -48,6 +48,7 @@ const float kBaseStats[StatCount] = {
 };
 
 int gDebugBounces = 0;   // --bounces=N dev knob (added on top of the stat)
+int gWallSpawns = 0;     // --spawns=wall QA knob
 
 // The pool: mods may mix additive and multiplicative parts, and one upgrade
 // can touch several stats (including tradeoffs).
@@ -267,12 +268,78 @@ float MoveTowardsAngle(float current, float target, float maxDelta)
     return WrapAngle(current + diff);
 }
 
-static void SpawnPoint(int id, float& x, float& z, float& yaw)
+bool PointHitsObstacle(float x, float y, float z, float radius);
+
+void GameState::GenerateSpawns()
 {
-    float ang = XM_2PI * float(id) / MaxPlayers + XM_PI / MaxPlayers;
-    x = sinf(ang) * (ArenaHalf - 6.0f);
-    z = cosf(ang) * (ArenaHalf - 6.0f);
-    yaw = WrapAngle(ang + XM_PI);   // face arena center
+    spawnCount = 0;
+    if (gWallSpawns)
+    {
+        // QA: exactly two points flanking the long wall at (14, 10) --
+        // guaranteed mutual occlusion for stealth testing
+        spawnPX[0] = 14.0f; spawnPZ[0] = 13.6f;
+        spawnPX[1] = 14.0f; spawnPZ[1] = 6.4f;
+        spawnCount = 2;
+        return;
+    }
+    for (int tries = 0; tries < 400 && spawnCount < MaxSpawns; ++tries)
+    {
+        float x = (float(NextRand() % 2000) / 1000.0f - 1.0f)
+                * (ArenaHalf - 5.0f);
+        float z = (float(NextRand() % 2000) / 1000.0f - 1.0f)
+                * (ArenaHalf - 5.0f);
+        if (PointHitsObstacle(x, 0.1f, z, TankRadius + 1.0f))
+            continue;
+        bool crowded = false;
+        for (int s = 0; s < spawnCount && !crowded; ++s)
+        {
+            float dx = x - spawnPX[s], dz = z - spawnPZ[s];
+            crowded = dx * dx + dz * dz < 8.0f * 8.0f;
+        }
+        if (crowded)
+            continue;
+        spawnPX[spawnCount] = x;
+        spawnPZ[spawnCount] = z;
+        ++spawnCount;
+    }
+    // pathological rolls: pad with the old ring so spawning never fails
+    for (int id = 0; spawnCount < 4; ++id, ++spawnCount)
+    {
+        float ang = XM_2PI * float(id) / MaxPlayers + XM_PI / MaxPlayers;
+        spawnPX[spawnCount] = sinf(ang) * (ArenaHalf - 6.0f);
+        spawnPZ[spawnCount] = cosf(ang) * (ArenaHalf - 6.0f);
+    }
+}
+
+void GameState::SpawnPoint(int id, float& x, float& z, float& yaw)
+{
+    if (spawnCount == 0)
+        GenerateSpawns();
+    int best = 0;
+    float bestScore = -1.0f;
+    for (int s = 0; s < spawnCount; ++s)
+    {
+        float nearest = 1e9f;
+        for (int e = 0; e < MaxPlayers; ++e)
+        {
+            const PlayerState& o = players[e];
+            if (e == id || !o.active || o.health <= 0)
+                continue;
+            float dx = spawnPX[s] - o.x, dz = spawnPZ[s] - o.z;
+            nearest = std::min(nearest, dx * dx + dz * dz);
+        }
+        // no enemies alive: shuffle by rng so starts stay varied
+        float score = nearest < 1e8f ? nearest
+                                     : float(NextRand() % 1000);
+        if (score > bestScore)
+        {
+            bestScore = score;
+            best = s;
+        }
+    }
+    x = spawnPX[best];
+    z = spawnPZ[best];
+    yaw = WrapAngle(atan2f(-x, -z));   // face the arena center
 }
 
 void LobbySpot(int id, float& x, float& z, float& yaw)
@@ -385,6 +452,7 @@ void GameState::SpawnPlayer(int id)
 
 void GameState::StartMatch()
 {
+    GenerateSpawns();          // a fresh scattered set every match
     for (int id = 0; id < MaxPlayers; ++id)
         if (players[id].active)
             SpawnPlayer(id);   // full reset: money, upgrades, score, offers
@@ -683,7 +751,7 @@ static void CollideCircleObstacles(float& x, float& z, float radius)
     }
 }
 
-static bool PointHitsObstacle(float x, float y, float z, float radius)
+bool PointHitsObstacle(float x, float y, float z, float radius)
 {
     for (const Obstacle& o : kObstacles)
     {

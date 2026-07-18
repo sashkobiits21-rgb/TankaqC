@@ -187,21 +187,22 @@ float SampleShadow(float3 wpos, float ndl)
     return sum / taps;
 }
 
-// STEALTH: a pixel of a cloaked tank only exists if the straight 2D line
-// from the LOCAL tank to that pixel's world position clears every occluder
-// box -- so exactly the sliver peeking past a corner is drawn, per pixel.
-bool LosBlocked(float2 a, float2 b)
+// STEALTH: how deeply (world units) the 2D sight line from the LOCAL tank
+// to this pixel's world position runs INSIDE occluder boxes. 0 = clear
+// sight; the deeper the line is buried, the more hidden the pixel.
+float LosPenetration(float2 a, float2 b)
 {
     float2 d = b - a;
+    float pen = 0.0;
     int n = int(gViewer.w);
     for (int k = 0; k < n; ++k)
     {
         float4 box = gLosBoxes[k];
         float tmin = 0.004, tmax = 0.996;    // exclude only the endpoints
-        // slab X
+        bool skip = false;
         if (abs(d.x) < 1e-5)
         {
-            if (a.x < box.x - box.z || a.x > box.x + box.z) continue;
+            if (a.x < box.x - box.z || a.x > box.x + box.z) skip = true;
         }
         else
         {
@@ -210,28 +211,46 @@ bool LosBlocked(float2 a, float2 b)
             tmin = max(tmin, min(t1, t2));
             tmax = min(tmax, max(t1, t2));
         }
-        // slab Z (box.y = center z, box.w = half depth)
-        if (abs(d.y) < 1e-5)
+        if (!skip)
         {
-            if (a.y < box.y - box.w || a.y > box.y + box.w) continue;
+            if (abs(d.y) < 1e-5)
+            {
+                if (a.y < box.y - box.w || a.y > box.y + box.w) skip = true;
+            }
+            else
+            {
+                float t1 = (box.y - box.w - a.y) / d.y;
+                float t2 = (box.y + box.w - a.y) / d.y;
+                tmin = max(tmin, min(t1, t2));
+                tmax = min(tmax, max(t1, t2));
+            }
         }
-        else
-        {
-            float t1 = (box.y - box.w - a.y) / d.y;
-            float t2 = (box.y + box.w - a.y) / d.y;
-            tmin = max(tmin, min(t1, t2));
-            tmax = min(tmax, max(t1, t2));
-        }
-        if (tmin <= tmax)
-            return true;
+        if (!skip && tmin < tmax)
+            pen = max(pen, (tmax - tmin) * length(d));
     }
-    return false;
+    return pen;
 }
 
 PsOut PSMesh(VsOut i)
 {
-    if (gMisc2.x > 0.5 && LosBlocked(gViewer.xy, i.wpos.xz))
-        discard;
+    if (gMisc2.x > 0.5)
+    {
+        // faces with a clear sight line draw fully; buried faces vanish;
+        // the boundary gets a screen-door Bayer dither (CS2-style fade)
+        float fade = saturate(LosPenetration(gViewer.xy, i.wpos.xz) / 0.9);
+        if (fade >= 1.0)
+            discard;
+        if (fade > 0.0)
+        {
+            uint2 px = uint2(i.sv.xy) & 3;
+            const float bayer[16] = { 0.0625, 0.5625, 0.1875, 0.6875,
+                                      0.8125, 0.3125, 0.9375, 0.4375,
+                                      0.25,   0.75,   0.125,  0.625,
+                                      1.0,    0.5,    0.875,  0.375 };
+            if (fade > bayer[px.y * 4 + px.x] - 0.03)
+                discard;
+        }
+    }
     float3 ng = normalize(i.wnrm);           // geometric normal
     float3 albedo = gAlbedo.Sample(gSampler, i.uv).rgb * gTint.rgb;
 

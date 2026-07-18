@@ -129,6 +129,8 @@ Options ParseOptions(const std::string& cmd)
     o.autoDrive = cmd.find("--drive") != std::string::npos;
     o.autoReady = cmd.find("--autoready") != std::string::npos;
     o.testMode = cmd.find("--testmode") != std::string::npos;
+    if (cmd.find("--spawns=wall") != std::string::npos)
+        gWallSpawns = 1;
     o.vsync = cmd.find("--novsync") == std::string::npos;
     std::string pos = GetArg(cmd, "--winpos=");
     if (!pos.empty())
@@ -1089,15 +1091,37 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
             tint = { 0.35f, 0.33f, 0.3f, 0 };
 
         // STEALTH: enemies render this tank only where the local tank has
-        // a clear 2D line of sight (per-pixel clip in the mesh shader)
+        // a clear 2D line of sight (per-pixel clip in the mesh shader).
+        // The SHADOW follows the same rule at hull granularity: any visible
+        // hull sample keeps the shadow; fully buried casts nothing.
         float clip = (InSession() && i != g.myId && !dead
                       && HasUpgrade(p, UpgradeId::Stealth)) ? 1.0f : 0.0f;
+        bool hidden = false;
+        if (clip > 0.0f)
+        {
+            hidden = true;
+            for (int s = 0; s < 9 && hidden; ++s)
+            {
+                float ang = XM_2PI * float(s) / 8.0f;
+                float sxp = rx + (s == 8 ? 0.0f : sinf(ang) * 1.3f);
+                float szp = rz + (s == 8 ? 0.0f : cosf(ang) * 1.3f);
+                if (!SegmentBlockedByObstacles(frame.losViewer.x,
+                                               frame.losViewer.y,
+                                               sxp, szp, 0.0f))
+                    hidden = false;
+            }
+            if (g.frameCounter % 300 == 0)
+                Log("stealth: clip on player %d, viewer(%.1f %.1f) tank(%.1f %.1f) hidden=%d",
+                    i, frame.losViewer.x, frame.losViewer.y, rx, rz,
+                    hidden ? 1 : 0);
+        }
         XMMATRIX hull = XMMatrixRotationY(rHull)
                       * XMMatrixTranslation(rx, sink, rz);
         {
             RenderObject ro{ g.meshHull, g.texPalette, Store(hull), tint,
                              true };
             ro.losClip = clip;
+            ro.noShadow = hidden;
             frame.objects.push_back(ro);
         }
 
@@ -1112,6 +1136,7 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
             RenderObject ro{ g.meshTurret, g.texPalette, Store(turret), tint,
                              true };
             ro.losClip = clip;
+            ro.noShadow = hidden;
             frame.objects.push_back(ro);
         }
 
@@ -3386,6 +3411,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                 // so ordering is guaranteed)
                 if (g.online)
                     g.net.BroadcastOwnedReset();
+                Log("host: match started (demo='%s', p1.active=%d, spawns=%d)",
+                    g.opt.demoClass.c_str(),
+                    g.game.players[1].active ? 1 : 0, g.game.spawnCount);
                 if (g.opt.rich || g.opt.shopTest)
                     g.game.players[g.myId].money = 500;
                 if (g.opt.soldierTest)
@@ -3434,38 +3462,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                     g.game.RecalcStats(g.myId);
                     Log("demo: granted SHIELD class");
                 }
-                else if (g.opt.demoClass == "stealth"
-                         && g.game.players[1].active)
-                {
-                    // BOTH tanks cloak: each side must hide the other one
-                    // behind the wall (covers host AND client viewpoints)
-                    g.game.players[0].owned.push_back(
-                        uint8_t(UpgradeId::Stealth));
-                    g.game.players[1].owned.push_back(
-                        uint8_t(UpgradeId::Stealth));
-                    g.game.RecalcStats(0);
-                    g.game.RecalcStats(1);
-                    if (g.online)   // clients must hear about it too
-                    {
-                        g.net.BroadcastUpgrade(0, uint8_t(UpgradeId::Stealth));
-                        g.net.BroadcastUpgrade(1, uint8_t(UpgradeId::Stealth));
-                    }
-                    Log("demo: granted STEALTH to players 0 and 1");
-                }
+                // (demo=stealth grants continuously below -- join-order
+                // and match-start races cannot starve it)
                 if (!g.opt.demoClass.empty() && g.game.players[1].active)
                 {
                     // park the dummy on-camera so the whole exchange films
-                    g.game.players[1].x = 15.0f;
-                    g.game.players[1].z = 14.0f;
-                    if (g.opt.demoClass == "stealth")
+                    // (stealth relies on --spawns=wall placement instead)
+                    if (g.opt.demoClass != "stealth")
                     {
-                        // straight across the center block from the player
-                        // hug the LONG wall: the dummy sits right behind
-                        // it (the sliver case from the field report)
-                        PlayerState& me2 = g.game.players[g.myId];
-                        me2.x = 14.0f; me2.z = 16.0f;
-                        g.game.players[1].x = 14.0f;
-                        g.game.players[1].z = 6.2f;
+                        g.game.players[1].x = 15.0f;
+                        g.game.players[1].z = 14.0f;
                     }
                 }
             }
@@ -3566,12 +3572,39 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         // class demos: periodically pull the local trigger so the radar
         // rings ride a rocket across the frame (space = the real fire path),
         // aimed at the dummy so locks (and the countdown fill) happen
+        // demo=stealth: EVERY connected tank stays cloaked -- granted the
+        // moment a player exists without it, replicated like any purchase
+        if (g.opt.demoClass == "stealth" && g.isHost
+            && g.screen == Screen::InGame
+            && (g.game.phase == PhasePlaying
+                || g.game.phase == PhaseOvertime)
+            && g.frameCounter % 30 == 0)
+            for (int i = 0; i < MaxPlayers; ++i)
+            {
+                PlayerState& p = g.game.players[i];
+                if (!p.active || HasUpgrade(p, UpgradeId::Stealth))
+                    continue;
+                p.owned.push_back(uint8_t(UpgradeId::Stealth));
+                g.game.RecalcStats(i);
+                if (g.online)
+                    g.net.BroadcastUpgrade(i, uint8_t(UpgradeId::Stealth));
+                Log("demo: granted STEALTH to player %d", i);
+            }
         if (g.opt.autoReady && g.screen == Screen::InGame
             && g.game.phase == PhaseLobby
             && g.game.players[g.myId].active
             && !g.game.players[g.myId].ready
             && g.frameCounter % 90 == 30)
-            ToggleReady();
+        {
+            int activeN = 0;
+            for (int i = 0; i < MaxPlayers; ++i)
+                if (g.game.players[i].active)
+                    ++activeN;
+            // a QA host holds the door until an opponent arrives; solo
+            // ready-up would start the match before the client joins
+            if (!g.isHost || activeN >= 2)
+                ToggleReady();
+        }
         if (!g.opt.demoClass.empty() && g.screen == Screen::InGame)
         {
             g.keys[VK_SPACE] = (g.frameCounter % 200) < 10;

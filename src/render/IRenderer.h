@@ -78,6 +78,8 @@ struct RenderObject
     int paletteIndex = -1;
     // STEALTH: clip pixels without 2D line-of-sight from the local tank
     float losClip = 0.0f;
+    // STEALTH: fully hidden right now -> also cast no shadow this frame
+    bool noShadow = false;
 };
 
 struct PostSettings

@@ -121,6 +121,8 @@ enum class Stat : uint8_t
 constexpr int StatCount = int(Stat::Count);
 extern const float kBaseStats[StatCount];
 extern int gDebugBounces;   // --bounces=N dev knob, added onto the stat
+extern int gWallSpawns;     // --spawns=wall QA knob: 2 points flanking the
+                            // long wall (stealth line-of-sight testing)
 
 // One stat change: `amount` is added in the first pass, `factor` multiplied
 // in the second. An upgrade holds several of these and may mix both kinds.
@@ -413,6 +415,7 @@ struct GrenadeState
 // 2D line-of-sight: does the segment cross any obstacle box (expanded by
 // `inflate` -- pass a body radius to test WALKABILITY instead of sight)?
 // Everything relevant flies below the shortest obstacle; height is ignored.
+bool PointHitsObstacle(float x, float y, float z, float radius);
 bool SegmentBlockedByObstacles(float x0, float z0, float x1, float z1,
                                float inflate = 0.0f);
 
@@ -529,6 +532,12 @@ struct GameState
     uint8_t targetPlayers = 0;    // quick-match queue size (0 = no queue)
     uint8_t matchMinutes = DefaultMatchMinutes;   // host lobby choice
     uint8_t testMode = 0;         // TEST match: sandbox, free upgrade picks
+    // spawn points: random but PRE-GENERATED once per match; picks favor
+    // the point farthest from living enemy tanks
+    static constexpr int MaxSpawns = 10;
+    float spawnPX[MaxSpawns]{};
+    float spawnPZ[MaxSpawns]{};
+    int spawnCount = 0;
     uint32_t matchEndTick = 0;
     uint32_t endedTick = 0;
     bool lagCompEnabled = true;   // host: input catch-up on direction changes
@@ -538,6 +547,11 @@ struct GameState
     DirectX::XMFLOAT3 muzzleOffset{};
 
     void SpawnPlayer(int id);
+    // Roll a fresh scattered spawn set (obstacle-clear, well spaced).
+    void GenerateSpawns();
+    // Place a (re)spawning tank: the pre-generated point with the LARGEST
+    // minimum distance to living enemies; yaw faces the arena center.
+    void SpawnPoint(int id, float& x, float& z, float& yaw);
     void RemovePlayer(int id);
     // Host: fresh match, matchMinutes long (full per-player reset, ring spawns).
     void StartMatch();
