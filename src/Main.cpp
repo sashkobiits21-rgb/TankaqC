@@ -1125,7 +1125,7 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
             float s = 14.0f / g.gateExt.z;
             XMMATRIX w = XMMatrixTranslation(-g.gateCtr.x, -g.gateCtr.y,
                                              -g.gateCtr.z)
-                       * XMMatrixScaling(2.4f / g.gateExt.x, s, s)
+                       * XMMatrixScaling(1.6f / g.gateExt.x, s, s)
                        * XMMatrixTranslation(gx, 0.0f, gz);
             RenderObject ro{ g.meshGate,
                              g.texGate >= 0 ? g.texGate : g.texWall,

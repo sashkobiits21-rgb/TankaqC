@@ -534,6 +534,8 @@ int RunClassTest()
         // (2x the soldier rocket damage), no rockets muddying the water
         for (SoldierState& s : g9.soldiers) s.active = false;
         for (GrenadeState& gr : g9.grenades) gr.active = false;
+        for (Projectile& lp : g9.projectiles) lp.active = false;
+        // (rockets still in flight from the roam phase would muddy the math)
         g9.players[0].soldierSpawnWait = 9999.0f;   // no fresh auto-summons
         g9.players[1].health = 100;   // phase-1 kills reset via respawn
         int hp1 = g9.players[1].health;

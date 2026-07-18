@@ -308,18 +308,31 @@ int CountClasses(const PlayerState& p)
 // per pair and skips the boxes). Pillar numbers derive from the authored
 // mesh at a 14-unit span: gap half 2.31, pillar center +-4.655, half 2.345,
 // solid up to the arch spring line at 5.4.
+// Hand-authored layout (nothing random): slim standard walls (7 long, 1.0
+// thick, 3.0 tall) COMPOSED into groups -- an L of two perpendicular walls
+// in the NE and SW corners, and a parallel pair forming a drivable alley
+// (4-unit lane) on the west and east flanks. Gateways keep their pillar
+// math, slimmed to the new 1.6 thickness.
 const Obstacle kObstacles[NumObstacles] = {
     {   0.0f,   0.0f, 4.0f,  4.0f,  4.7f }, // temple body (tiered pyramid)
     {   0.0f,   0.0f, 1.95f, 5.95f, 1.6f }, // temple stairs, N-S strip
     {   0.0f,   0.0f, 5.95f, 1.95f, 1.6f }, // temple stairs, E-W strip
-    {  14.0f,  10.0f, 4.5f, 1.2f, 3.4f },
-    { -14.0f, -10.0f, 4.5f, 1.2f, 3.4f },
-    { -14.0f,  7.345f, 1.2f, 2.345f, 5.4f },   // gate A, south pillar
-    { -14.0f, 16.655f, 1.2f, 2.345f, 5.4f },   // gate A, north pillar
-    {  14.0f, -16.655f, 1.2f, 2.345f, 5.4f },  // gate B, south pillar
-    {  14.0f,  -7.345f, 1.2f, 2.345f, 5.4f },  // gate B, north pillar
-    {  -6.0f, -20.0f, 3.0f, 1.0f, 3.0f },
-    {   6.0f,  20.0f, 3.0f, 1.0f, 3.0f },
+    {  14.0f,  10.0f, 3.5f, 0.5f, 3.0f },   // standard walls
+    { -14.0f, -10.0f, 3.5f, 0.5f, 3.0f },
+    { -14.0f,  7.345f, 0.8f, 2.345f, 5.4f },   // gate A, south pillar
+    { -14.0f, 16.655f, 0.8f, 2.345f, 5.4f },   // gate A, north pillar
+    {  14.0f, -16.655f, 0.8f, 2.345f, 5.4f },  // gate B, south pillar
+    {  14.0f,  -7.345f, 0.8f, 2.345f, 5.4f },  // gate B, north pillar
+    {  -6.0f, -20.0f, 3.5f, 0.5f, 3.0f },
+    {   6.0f,  20.0f, 3.5f, 0.5f, 3.0f },
+    {  20.0f,  18.0f, 3.5f, 0.5f, 3.0f },   // NE corner: L, long-X leg
+    {  23.5f,  13.5f, 0.5f, 3.5f, 3.0f },   // NE corner: L, long-Z leg
+    { -20.0f, -18.0f, 3.5f, 0.5f, 3.0f },   // SW corner: L, long-X leg
+    { -23.5f, -13.5f, 0.5f, 3.5f, 3.0f },   // SW corner: L, long-Z leg
+    { -22.5f,   6.0f, 0.5f, 3.5f, 3.0f },   // west alley, outer wall
+    { -17.5f,   6.0f, 0.5f, 3.5f, 3.0f },   // west alley, inner wall
+    {  22.5f,  -6.0f, 0.5f, 3.5f, 3.0f },   // east alley, outer wall
+    {  17.5f,  -6.0f, 0.5f, 3.5f, 3.0f },   // east alley, inner wall
 };
 
 float WrapAngle(float a)
@@ -1746,7 +1759,7 @@ void TickRadar(GameState& gs, Projectile& pr)
 // face). A spot is COVER from an enemy when the spot->enemy segment crosses
 // an obstacle -- i.e. the wall eats the line of sight.
 struct CoverSpot { float x, z; bool wide; };
-constexpr int MaxCoverSpots = 160;
+constexpr int MaxCoverSpots = 240;   // 19 obstacles x 12 spots fits
 static int GatherCoverSpots(CoverSpot* out, int cap)
 {
     int n = 0;
