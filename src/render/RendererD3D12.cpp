@@ -1167,6 +1167,7 @@ private:
         ComPtr<ID3DBlob> vsMeshSkin = Compile(src, "Basic.hlsl", "VSMeshSkinned", "vs_5_0", error);
         if (!vsMeshSkin) return false;
         ComPtr<ID3DBlob> psMesh = Compile(src, "Basic.hlsl", "PSMesh", "ps_5_0", error);
+        ComPtr<ID3DBlob> psShadowClip = Compile(src, "Basic.hlsl", "PSShadowClip", "ps_5_0", error);
         ComPtr<ID3DBlob> vsUi = Compile(src, "Basic.hlsl", "VSUi", "vs_5_0", error);
         ComPtr<ID3DBlob> psUi = Compile(src, "Basic.hlsl", "PSUi", "ps_5_0", error);
         ComPtr<ID3DBlob> vsFull = Compile(postSrc, "Post.hlsl", "VSFullscreen", "vs_5_0", error);
@@ -1330,7 +1331,9 @@ private:
         // instead of detaching the shadow. The up-facing ground quad drops
         // out of the shadow map automatically (it only receives).
         D3D12_GRAPHICS_PIPELINE_STATE_DESC sh = pso;
-        sh.PS = {};
+        // depth + the STEALTH shadow clip (normal objects exit instantly)
+        sh.PS = { psShadowClip->GetBufferPointer(),
+                  psShadowClip->GetBufferSize() };
         sh.NumRenderTargets = 0;
         sh.RTVFormats[0] = sh.RTVFormats[1] = sh.RTVFormats[2] = DXGI_FORMAT_UNKNOWN;
         // no hardware bias: the receiver-side +z bias in the shader handles

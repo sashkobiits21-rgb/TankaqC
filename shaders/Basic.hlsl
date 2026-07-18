@@ -231,6 +231,29 @@ float LosPenetration(float2 a, float2 b)
     return pen;
 }
 
+// Shadow-map rasterization with the same STEALTH clip: texels whose caster
+// point has no line of sight from the local tank never enter the shadow map
+// -- so the shadow follows the visible faces exactly, dithered edges and
+// all. Normal objects (gMisc2.x = 0) exit immediately: depth-only cost.
+void PSShadowClip(VsOut i)
+{
+    if (gMisc2.x < 0.5)
+        return;
+    float fade = saturate(LosPenetration(gViewer.xy, i.wpos.xz) / 0.9);
+    if (fade >= 1.0)
+        discard;
+    if (fade > 0.0)
+    {
+        uint2 px = uint2(i.sv.xy) & 3;
+        const float bayer[16] = { 0.0625, 0.5625, 0.1875, 0.6875,
+                                  0.8125, 0.3125, 0.9375, 0.4375,
+                                  0.25,   0.75,   0.125,  0.625,
+                                  1.0,    0.5,    0.875,  0.375 };
+        if (fade > bayer[px.y * 4 + px.x] - 0.03)
+            discard;
+    }
+}
+
 PsOut PSMesh(VsOut i)
 {
     if (gMisc2.x > 0.5)

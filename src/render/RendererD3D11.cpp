@@ -356,7 +356,10 @@ public:
             m_ctx->IASetInputLayout(m_meshLayout.Get());
             m_ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             m_ctx->VSSetShader(m_vsMesh.Get(), nullptr, 0);
-            m_ctx->PSSetShader(nullptr, nullptr, 0);       // depth only
+            // depth + the STEALTH clip (instant exit for normal objects)
+            m_ctx->PSSetShader(m_psShadowClip.Get(), nullptr, 0);
+            m_ctx->PSSetConstantBuffers(0, 1, m_cbShadowFrame.GetAddressOf());
+            m_ctx->PSSetConstantBuffers(1, 1, m_cbObject.GetAddressOf());
 
             for (const RenderObject& obj : frame.objects)
             {
@@ -367,6 +370,7 @@ public:
                 PerObjectCB po{};
                 po.world = obj.world;
                 po.tint = obj.tint;
+                po.misc2 = XMFLOAT4(obj.losClip, 0.0f, 0.0f, 0.0f);
                 UpdateCB(m_cbObject.Get(), &po, sizeof(po));
                 const GpuMesh& mesh = m_meshes[obj.mesh];
                 BindMeshVs(mesh, obj, frame);   // static or skinned VS/layout
@@ -844,6 +848,7 @@ private:
         ComPtr<ID3DBlob> vsMesh = Compile(src, "Basic.hlsl", "VSMesh", "vs_5_0", error);
         ComPtr<ID3DBlob> vsMeshSkin = Compile(src, "Basic.hlsl", "VSMeshSkinned", "vs_5_0", error);
         ComPtr<ID3DBlob> psMesh = Compile(src, "Basic.hlsl", "PSMesh", "ps_5_0", error);
+        ComPtr<ID3DBlob> psShadowClip = Compile(src, "Basic.hlsl", "PSShadowClip", "ps_5_0", error);
         ComPtr<ID3DBlob> vsUi = Compile(src, "Basic.hlsl", "VSUi", "vs_5_0", error);
         ComPtr<ID3DBlob> psUi = Compile(src, "Basic.hlsl", "PSUi", "ps_5_0", error);
         ComPtr<ID3DBlob> vsFull = Compile(postSrc, "Post.hlsl", "VSFullscreen", "vs_5_0", error);
@@ -862,6 +867,8 @@ private:
         ComPtr<ID3DBlob> psVfx = Compile(vfxSrc, "Vfx.hlsl", "PSVfx", "ps_5_0", error);
         ComPtr<ID3DBlob> vsVfxFull = Compile(vfxSrc, "Vfx.hlsl", "VSVfxFull", "vs_5_0", error);
         ComPtr<ID3DBlob> psScorch = Compile(vfxSrc, "Vfx.hlsl", "PSScorch", "ps_5_0", error);
+        if (!psShadowClip)
+            return false;
         if (!vsMesh || !vsMeshSkin || !psMesh || !vsUi || !psUi || !vsFull || !psSsao || !psBlurH
             || !psBlurV || !psSsgi || !psTemporal || !psComposite
             || !psAA || !vsUiBurn || !psUiBurn || !vsUiTex || !psUiTex
@@ -871,6 +878,7 @@ private:
         m_device->CreateVertexShader(vsMesh->GetBufferPointer(), vsMesh->GetBufferSize(), nullptr, &m_vsMesh);
         m_device->CreateVertexShader(vsMeshSkin->GetBufferPointer(), vsMeshSkin->GetBufferSize(), nullptr, &m_vsMeshSkinned);
         m_device->CreatePixelShader(psMesh->GetBufferPointer(), psMesh->GetBufferSize(), nullptr, &m_psMesh);
+        m_device->CreatePixelShader(psShadowClip->GetBufferPointer(), psShadowClip->GetBufferSize(), nullptr, &m_psShadowClip);
         m_device->CreateVertexShader(vsUi->GetBufferPointer(), vsUi->GetBufferSize(), nullptr, &m_vsUi);
         m_device->CreatePixelShader(psUi->GetBufferPointer(), psUi->GetBufferSize(), nullptr, &m_psUi);
         m_device->CreateVertexShader(vsFull->GetBufferPointer(), vsFull->GetBufferSize(), nullptr, &m_vsFull);
@@ -1055,6 +1063,7 @@ private:
     uint64_t m_frameIndex = 0;
     ComPtr<ID3D11VertexShader> m_vsMesh, m_vsMeshSkinned, m_vsUi, m_vsFull,
                                m_vsVfx, m_vsVfxFull, m_vsUiBurn, m_vsUiTex;
+    ComPtr<ID3D11PixelShader> m_psShadowClip;
     ComPtr<ID3D11PixelShader> m_psMesh, m_psUi, m_psSsao, m_psAoBlurH, m_psAoBlurV,
                               m_psSsgi, m_psTemporal, m_psComposite, m_psAA, m_psVfx,
                               m_psScorch, m_psUiBurn, m_psUiTex;
