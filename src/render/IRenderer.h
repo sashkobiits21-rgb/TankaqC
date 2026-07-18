@@ -199,7 +199,8 @@ struct FrameData
     DirectX::XMFLOAT3 camPos{};
     DirectX::XMFLOAT3 sunDir{ 0.45f, 0.8f, 0.35f };
     float ambient = 0.34f;
-    float fogDensity = 0.008f;
+    float fogDensity = 0.0035f;   // subtle depth haze (bright HDR fog color
+                                  // at the old density read as gray milk)
     float time = 0;                         // seconds, drives VFX animation
     DirectX::XMFLOAT3 camRight{ 1, 0, 0 };  // billboard basis
     DirectX::XMFLOAT3 camUp{ 0, 1, 0 };

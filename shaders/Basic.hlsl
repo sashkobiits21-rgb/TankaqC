@@ -31,7 +31,7 @@ Texture2D    gNra     : register(t2);   // normal rgb (tangent space) + roughnes
 SamplerState gSampler : register(s0);
 SamplerComparisonState gShadowSampler : register(s1);
 
-static const float3 FogColor = float3(0.85, 0.95, 1.10);   // pre-tonemap sky
+static const float3 FogColor = float3(0.72, 0.82, 1.00);   // pre-tonemap sky
 
 // ---------------- mesh ----------------
 struct VsIn
