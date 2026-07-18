@@ -69,7 +69,10 @@ namespace tankaq::net
 // and tree geometry are sim contract.
 // v37: gateways shrunk (12.5u span, 1.0 thick, 4.1u gap, pillar boxes
 // moved); edge trees removed (16 inner shade islands remain).
-constexpr uint8_t ProtocolVersion = 37;
+// v38: the 120x120 map -- ArenaHalf 60, 55 obstacles in 20 composed wall
+// groups (20/40/20/20 singles/doubles/triples/quads), midline gateways,
+// 24 respread trees. All sim contract.
+constexpr uint8_t ProtocolVersion = 38;
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t

@@ -27,7 +27,7 @@ constexpr uint8_t kMatchMinutes[] = { 5, 10, 15, 20 };
 constexpr uint8_t DefaultMatchMinutes = 10;
 constexpr uint32_t EndedReturnTicks = 6 * TickRate;
 constexpr int   SnapshotEveryTicks = 3;      // 20 Hz
-constexpr float ArenaHalf = 30.0f;
+constexpr float ArenaHalf = 60.0f;   // 120x120: twice the old field
 constexpr float TankSpeed = 7.0f;            // units/s
 constexpr float HullFaceSpeed = 7.5f;        // rad/s, visual hull turn toward travel dir
 constexpr float TurretTurnSpeed = 5.0f;      // rad/s
@@ -420,7 +420,7 @@ struct Obstacle
     float height;
 };
 
-constexpr int NumObstacles = 19;
+constexpr int NumObstacles = 55;
 extern const Obstacle kObstacles[NumObstacles];
 
 // --------------------------------------------------------------- soldiers
@@ -615,16 +615,20 @@ struct TreeSpot { float x, z, s; };   // s scales height AND canopy radius
 constexpr float TreeShadeHeight = 9.4f;   // world height at s = 1 (1.25x)
 constexpr float TreeShadeRadius = 4.0f;   // canopy half-extent at s = 1
 inline constexpr TreeSpot kTrees[] = {
-    // shade islands inside the arena (clear of every obstacle footprint;
-    // the map edge belongs to the gray perimeter walls now)
-    { -24.0f,   6.0f, 1.00f }, {  24.0f,  -4.0f, 1.10f },
-    {  -8.0f,  16.0f, 0.95f }, {  20.0f,   2.0f, 1.10f },
-    {  22.0f,  15.0f, 1.00f }, { -22.0f, -15.0f, 1.15f },
-    {  -4.0f,  25.0f, 1.05f }, {   5.0f, -26.0f, 0.95f },
-    {  25.0f,  25.0f, 1.10f }, { -25.0f, -25.0f, 1.00f },
-    { -26.0f,  18.0f, 0.90f }, {  26.0f, -18.0f, 1.10f },
-    { -16.0f,  -2.0f, 1.00f }, {  12.0f,  22.0f, 1.10f },
-    { -12.0f,  24.0f, 0.95f }, {  18.0f,   8.0f, 1.05f },
+    // shade islands across the 120x120 field (clear of wall footprints and
+    // of the tested mid-lane shadow corridor)
+    { -48.0f,  12.0f, 1.00f }, {  48.0f,  -8.0f, 1.10f },
+    { -16.0f,  32.0f, 0.95f }, {  40.0f,   4.0f, 1.10f },
+    {  44.0f,  30.0f, 1.00f }, { -44.0f, -30.0f, 1.15f },
+    {  -8.0f,  50.0f, 1.05f }, {  10.0f, -52.0f, 0.95f },
+    {  50.0f,  50.0f, 1.10f }, { -50.0f, -50.0f, 1.00f },
+    { -52.0f,  36.0f, 0.90f }, {  52.0f, -36.0f, 1.10f },
+    { -32.0f,  -4.0f, 1.00f }, {  24.0f,  44.0f, 1.10f },
+    { -24.0f, -48.0f, 0.95f }, {  32.0f, -22.0f, 1.05f },
+    { -36.0f,  22.0f, 1.00f }, {  36.0f, -44.0f, 0.90f },
+    { -28.0f,  44.0f, 1.10f }, {  12.0f,  20.0f, 1.00f },
+    { -12.0f, -24.0f, 1.00f }, {  20.0f,  52.0f, 0.95f },
+    { -56.0f, -16.0f, 1.00f }, {  56.0f,  16.0f, 1.00f },
 };
 constexpr int NumTrees = int(sizeof(kTrees) / sizeof(kTrees[0]));
 

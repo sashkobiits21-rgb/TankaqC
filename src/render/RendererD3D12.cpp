@@ -32,18 +32,18 @@ constexpr UINT PaletteBytes = 64 * 64;   // MaxBones float4x4, 256-aligned
 // shadow-pass copy bleed into the VfxCB slot right after it -- killing every
 // VFX draw on this backend. Every tenant now has an explicit, size-asserted
 // home (asserts follow the struct definitions below):
-//   [0..2]              main-pass PerFrameCB
-//   [3..255]            per-object CBs
-//   [256..257]          PostCB
-//   [258..260]          shadow-pass PerFrameCB
-//   [261..263]          VfxCB
-//   [264..272]          UiBurnCB
-//   [273..]             bone palettes
-constexpr UINT FrameCbSlots = 3;
+//   [0..4]              main-pass PerFrameCB (56 LOS boxes = 5 slots)
+//   [5..511]            per-object CBs
+//   [512..513]          PostCB
+//   [514..518]          shadow-pass PerFrameCB
+//   [519..521]          VfxCB
+//   [522..530]          UiBurnCB
+//   [531..]             bone palettes
+constexpr UINT FrameCbSlots = 5;
 constexpr UINT ShadowCbSlot = MaxObjectsPerFrame + 2;
-constexpr UINT VfxCbSlot    = MaxObjectsPerFrame + 5;
-constexpr UINT BurnCbSlot   = MaxObjectsPerFrame + 8;
-constexpr UINT PaletteBase  = (MaxObjectsPerFrame + 17) * CbAlign;
+constexpr UINT VfxCbSlot    = MaxObjectsPerFrame + 7;
+constexpr UINT BurnCbSlot   = MaxObjectsPerFrame + 10;
+constexpr UINT PaletteBase  = (MaxObjectsPerFrame + 19) * CbAlign;
 constexpr UINT UiVbBytes = 4 * 1024 * 1024;
 constexpr UINT MaxTextures = 64;
 constexpr UINT PostSrvBase = MaxTextures;      // 9 groups spaced 8 descriptors apart
@@ -57,7 +57,7 @@ struct PerFrameCB
     XMFLOAT4 camPosFog;
     XMFLOAT4 screen;        // xy = viewport, z = shadow texel, w = shadows on
     XMFLOAT4 viewer;        // xy = local tank xz, w = LOS box count
-    XMFLOAT4 losBoxes[24];  // STEALTH occluders
+    XMFLOAT4 losBoxes[56];  // STEALTH occluders
 };
 
 constexpr UINT ShadowSrvSlot = MaxTextures - 1;   // last material slot is reserved

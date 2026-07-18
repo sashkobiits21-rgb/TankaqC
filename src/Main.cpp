@@ -1081,14 +1081,14 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
         if (i < 3 && g.meshTemple[0] >= 0)
             continue;
         const Obstacle& o = kObstacles[i];
-        // gateway pillar boxes (5..8): the ENTRANCE model is the visual --
+        // gateway pillar boxes (3..6): the ENTRANCE model is the visual --
         // drawn once per pair below -- so the boxes only show as fallback
-        if (i >= 5 && i <= 8 && g.meshGate >= 0)
+        if (i >= 3 && i <= 6 && g.meshGate >= 0)
             continue;
         // GRAY WALL model over the box: model axes are x = thickness,
         // y = height, z = length; long-in-X obstacles rotate 90 degrees.
         // Collision stays the box -- this is a reskin.
-        if (i >= 3 && g.meshGrayWall >= 0)
+        if (i >= 7 && g.meshGrayWall >= 0)
         {
             bool longX = o.hx >= o.hz;
             float len = 2.0f * std::max(o.hx, o.hz);
@@ -1120,8 +1120,8 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
     if (g.meshGate >= 0)
         for (int gi = 0; gi < 2; ++gi)
         {
-            float gx = gi == 0 ? -14.0f : 14.0f;
-            float gz = gi == 0 ? 12.0f : -12.0f;
+            float gx = gi == 0 ? -30.0f : 30.0f;
+            float gz = 0.0f;
             XMMATRIX w = XMMatrixTranslation(-g.gateCtr.x, -g.gateCtr.y,
                                              -g.gateCtr.z)
                        * XMMatrixScaling(1.0f / g.gateExt.x,
@@ -1184,7 +1184,7 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
     {
         // the map edge wears the gray wall too: nine tiled segments per
         // side (visual only -- the boundary stays the same sim wall)
-        constexpr int kSegs = 9;
+        constexpr int kSegs = 18;   // 120u sides: same segment proportions
         const float segLen = (ArenaHalf * 2.0f + 1.2f) / kSegs;
         for (int side = 0; side < 4; ++side)
             for (int k = 0; k < kSegs; ++k)
@@ -1229,6 +1229,8 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
         {
             if (o.height < 2.0f)
                 continue;   // stairs are see-over: not stealth occluders
+            if (n >= 56)
+                break;      // shader array capacity
             frame.losBoxes[n++] = XMFLOAT4(o.cx, o.cz, o.hx, o.hz);
         }
         frame.losBoxCount = n;

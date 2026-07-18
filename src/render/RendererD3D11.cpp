@@ -27,7 +27,7 @@ struct PerFrameCB
     XMFLOAT4 camPosFog;
     XMFLOAT4 screen;        // xy = viewport, z = shadow texel, w = shadows on
     XMFLOAT4 viewer;        // xy = local tank xz, w = LOS box count
-    XMFLOAT4 losBoxes[24];  // STEALTH occluders
+    XMFLOAT4 losBoxes[56];  // STEALTH occluders
 };
 
 struct VfxCB

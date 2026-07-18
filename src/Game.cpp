@@ -308,34 +308,75 @@ int CountClasses(const PlayerState& p)
 // per pair and skips the boxes). Pillar numbers derive from the authored
 // mesh at a 14-unit span: gap half 2.31, pillar center +-4.655, half 2.345,
 // solid up to the arch spring line at 5.4.
-// Hand-authored layout (nothing random): slim standard walls (7 long, 1.0
-// thick, 3.0 tall) COMPOSED into groups -- an L of two perpendicular walls
-// in the NE and SW corners, and a parallel pair forming a drivable alley
-// (4-unit lane) on the west and east flanks. Gateways keep their pillar
-// math, slimmed to the new 1.6 thickness.
+// Hand-authored layout on the 120x120 field, 180-degree symmetric for
+// fairness. Walls (7 x 1.0 x 3.0) come in DELIBERATE groups at the asked
+// mix -- of 20 groups: 4 singles (20%), 8 doubles (40%), 4 triples (20%),
+// 4 quads (20%). Doubles are Ls, straight runs and tight alleys; triples
+// are U-bunkers and zigzags; quads are pinwheel courtyards and ramparts.
+// Gateways sit on the east-west midline. QA contracts preserved: the
+// z = -28 corridor stays clear across x in [-25, 5] (stealth speed lane)
+// and the single at (14, 10) hosts the --spawns=wall stealth demo.
 const Obstacle kObstacles[NumObstacles] = {
     {   0.0f,   0.0f, 4.0f,  4.0f,  4.7f }, // temple body (tiered pyramid)
     {   0.0f,   0.0f, 1.95f, 5.95f, 1.6f }, // temple stairs, N-S strip
     {   0.0f,   0.0f, 5.95f, 1.95f, 1.6f }, // temple stairs, E-W strip
-    {  14.0f,  10.0f, 3.5f, 0.5f, 3.0f },   // standard walls
+    // gateways (indices 3..6): midline arches, 12.5u span, 4.1u gap
+    { -30.0f,  4.155f, 0.5f, 2.095f, 4.2f },   // gate A, north pillar
+    { -30.0f, -4.155f, 0.5f, 2.095f, 4.2f },   // gate A, south pillar
+    {  30.0f, -4.155f, 0.5f, 2.095f, 4.2f },   // gate B, south pillar
+    {  30.0f,  4.155f, 0.5f, 2.095f, 4.2f },   // gate B, north pillar
+    // ---- singles (4 groups) ----
+    {  14.0f,  10.0f, 3.5f, 0.5f, 3.0f },   // QA stealth-demo wall
     { -14.0f, -10.0f, 3.5f, 0.5f, 3.0f },
-    // gateways at a 12.5u span, 1.0 thick, height squashed to 5.5: gap
-    // half 1.816 -> too tight, so the pillar math uses the 4.1u gap from
-    // inner edge 2.06 (still the authored mesh ratio at the shorter span)
-    { -14.0f,  7.845f, 0.5f, 2.095f, 4.2f },   // gate A, south pillar
-    { -14.0f, 16.155f, 0.5f, 2.095f, 4.2f },   // gate A, north pillar
-    {  14.0f, -16.155f, 0.5f, 2.095f, 4.2f },  // gate B, south pillar
-    {  14.0f,  -7.845f, 0.5f, 2.095f, 4.2f },  // gate B, north pillar
-    {  -6.0f, -20.0f, 3.5f, 0.5f, 3.0f },
-    {   6.0f,  20.0f, 3.5f, 0.5f, 3.0f },
-    {  20.0f,  18.0f, 3.5f, 0.5f, 3.0f },   // NE corner: L, long-X leg
-    {  23.5f,  13.5f, 0.5f, 3.5f, 3.0f },   // NE corner: L, long-Z leg
-    { -20.0f, -18.0f, 3.5f, 0.5f, 3.0f },   // SW corner: L, long-X leg
-    { -23.5f, -13.5f, 0.5f, 3.5f, 3.0f },   // SW corner: L, long-Z leg
-    { -22.5f,   6.0f, 0.5f, 3.5f, 3.0f },   // west alley, outer wall
-    { -17.5f,   6.0f, 0.5f, 3.5f, 3.0f },   // west alley, inner wall
-    {  22.5f,  -6.0f, 0.5f, 3.5f, 3.0f },   // east alley, outer wall
-    {  17.5f,  -6.0f, 0.5f, 3.5f, 3.0f },   // east alley, inner wall
+    {  44.0f,  22.0f, 0.5f, 3.5f, 3.0f },
+    { -44.0f, -22.0f, 0.5f, 3.5f, 3.0f },
+    // ---- doubles (8 groups) ----
+    {  22.0f,  30.0f, 3.5f, 0.5f, 3.0f },   // L
+    {  25.5f,  25.5f, 0.5f, 3.5f, 3.0f },
+    { -22.0f, -30.0f, 3.5f, 0.5f, 3.0f },   // L (mirror)
+    { -25.5f, -25.5f, 0.5f, 3.5f, 3.0f },
+    { -23.5f,  16.0f, 3.5f, 0.5f, 3.0f },   // straight 14u run
+    { -16.5f,  16.0f, 3.5f, 0.5f, 3.0f },
+    {  23.5f, -16.0f, 3.5f, 0.5f, 3.0f },   // straight run (mirror)
+    {  16.5f, -16.0f, 3.5f, 0.5f, 3.0f },
+    { -38.0f,  34.0f, 0.5f, 3.5f, 3.0f },   // L
+    { -34.5f,  37.5f, 3.5f, 0.5f, 3.0f },
+    {  38.0f, -34.0f, 0.5f, 3.5f, 3.0f },   // L (mirror)
+    {  34.5f, -37.5f, 3.5f, 0.5f, 3.0f },
+    {  46.0f, -12.0f, 0.5f, 3.5f, 3.0f },   // tight alley pair
+    {  41.0f, -12.0f, 0.5f, 3.5f, 3.0f },
+    { -46.0f,  12.0f, 0.5f, 3.5f, 3.0f },   // alley (mirror)
+    { -41.0f,  12.0f, 0.5f, 3.5f, 3.0f },
+    // ---- triples (4 groups) ----
+    {   0.0f, -40.0f, 3.5f, 0.5f, 3.0f },   // U-bunker, opening north
+    {  -3.0f, -36.5f, 0.5f, 3.5f, 3.0f },
+    {   3.0f, -36.5f, 0.5f, 3.5f, 3.0f },
+    {   0.0f,  40.0f, 3.5f, 0.5f, 3.0f },   // U-bunker, opening south
+    {   3.0f,  36.5f, 0.5f, 3.5f, 3.0f },
+    {  -3.0f,  36.5f, 0.5f, 3.5f, 3.0f },
+    { -52.0f,  -8.0f, 0.5f, 3.5f, 3.0f },   // zigzag
+    { -48.5f,  -4.5f, 3.5f, 0.5f, 3.0f },
+    { -45.0f,  -1.0f, 0.5f, 3.5f, 3.0f },
+    {  52.0f,   8.0f, 0.5f, 3.5f, 3.0f },   // zigzag (mirror)
+    {  48.5f,   4.5f, 3.5f, 0.5f, 3.0f },
+    {  45.0f,   1.0f, 0.5f, 3.5f, 3.0f },
+    // ---- quads (4 groups) ----
+    {  16.0f, -28.0f, 3.5f, 0.5f, 3.0f },   // pinwheel courtyard
+    {  24.0f, -32.0f, 0.5f, 3.5f, 3.0f },
+    {  20.0f, -40.0f, 3.5f, 0.5f, 3.0f },
+    {  12.0f, -36.0f, 0.5f, 3.5f, 3.0f },
+    { -16.0f,  28.0f, 3.5f, 0.5f, 3.0f },   // pinwheel (mirror)
+    { -24.0f,  32.0f, 0.5f, 3.5f, 3.0f },
+    { -20.0f,  40.0f, 3.5f, 0.5f, 3.0f },
+    { -12.0f,  36.0f, 0.5f, 3.5f, 3.0f },
+    {  34.0f,  44.0f, 3.5f, 0.5f, 3.0f },   // rampart run + end hook
+    {  41.0f,  44.0f, 3.5f, 0.5f, 3.0f },
+    {  48.0f,  44.0f, 3.5f, 0.5f, 3.0f },
+    {  51.5f,  40.5f, 0.5f, 3.5f, 3.0f },
+    { -34.0f, -44.0f, 3.5f, 0.5f, 3.0f },   // rampart (mirror)
+    { -41.0f, -44.0f, 3.5f, 0.5f, 3.0f },
+    { -48.0f, -44.0f, 3.5f, 0.5f, 3.0f },
+    { -51.5f, -40.5f, 0.5f, 3.5f, 3.0f },
 };
 
 float WrapAngle(float a)
@@ -1762,7 +1803,7 @@ void TickRadar(GameState& gs, Projectile& pr)
 // face). A spot is COVER from an enemy when the spot->enemy segment crosses
 // an obstacle -- i.e. the wall eats the line of sight.
 struct CoverSpot { float x, z; bool wide; };
-constexpr int MaxCoverSpots = 240;   // 19 obstacles x 12 spots fits
+constexpr int MaxCoverSpots = 700;   // 55 obstacles x 12 spots fits
 static int GatherCoverSpots(CoverSpot* out, int cap)
 {
     int n = 0;
@@ -2053,9 +2094,10 @@ static bool PickCover(const GameState& gs, SoldierState& s,
             if (d2 < ndd) { ndd = d2; nearestId = enemies[e]; }
         }
     }
-    // which wall is the soldier hugging right now? Runs must go to ANOTHER
-    // wall -- orbiting one box forever never crosses the enemy's sight line
-    // (the exact camped-enemy deadlock the old peek used to solve)
+    // which wall CLUSTER is the soldier hugging right now? Runs must go to
+    // ANOTHER cluster -- composed groups (Ls, pinwheels...) are several
+    // boxes, and bouncing between two legs of one L is the same deadlock
+    // as orbiting one box: the enemy's sight line never gets crossed.
     auto obstacleAt = [](float x, float z)
     {
         int bi = 0, i = 0;
@@ -2070,6 +2112,7 @@ static bool PickCover(const GameState& gs, SoldierState& s,
         return bi;
     };
     int hereWall = obstacleAt(s.x, s.z);
+    float hereCx = kObstacles[hereWall].cx, hereCz = kObstacles[hereWall].cz;
 
     // pass 1: best full-cover spot anywhere
     float bestScore = -1e9f;
@@ -2094,12 +2137,15 @@ static bool PickCover(const GameState& gs, SoldierState& s,
         // the fight (and across open ground, where it shoots)
         score -= std::max(0.0f, nearestEnemy - SoldierFireRange * 0.85f) * 120.0f;
         // ROAM WIDE: anything near the current hideout is stale, and the
-        // SAME wall is a dead loop -- wall-to-wall sprints only
+        // SAME cluster is a dead loop -- group-to-group sprints only
         float cx = c.x - s.coverX, cz = c.z - s.coverZ;
-        if (cx * cx + cz * cz < 49.0f)
-            score -= 1200.0f;              // novelty: prefer a fresh spot
-        if (obstacleAt(c.x, c.z) == hereWall)
-            score -= 800.0f;               // and prefer ANOTHER wall
+        if (cx * cx + cz * cz < 144.0f)
+            score -= 1200.0f;              // novelty: a whole group away
+        int spotWall = obstacleAt(c.x, c.z);
+        float wdx = kObstacles[spotWall].cx - hereCx;
+        float wdz = kObstacles[spotWall].cz - hereCz;
+        if (wdx * wdx + wdz * wdz < 81.0f)
+            score -= 800.0f;               // same composed group: stale
         // the RUN is the peek: strongly prefer destinations whose route
         // swings through open ground where the gun can speak mid-sprint
         if (nearestId >= 0)
@@ -2213,11 +2259,34 @@ static bool FindAttackRun(const GameState& gs, SoldierState& s, int targetId)
             continue;                       // wide, but not a marathon
         if (d > bestD) { bestD = d; best = i; }
     }
-    if (best < 0)
-        return false;
-    s.coverX = spots[best].x;
-    s.coverZ = spots[best].z;
-    return true;
+    if (best >= 0)
+    {
+        s.coverX = spots[best].x;
+        s.coverZ = spots[best].z;
+        return true;
+    }
+    // OPEN-FIELD fallback: a sparse 120x120 map has camps with no cover
+    // spot in gun range at all -- ring the target and sprint to any clear
+    // firing point on it
+    for (int k = 0; k < 8; ++k)
+    {
+        float ang = DirectX::XM_2PI * float(k) / 8.0f;
+        float px = t.x + sinf(ang) * (SoldierFireRange * 0.7f);
+        float pz = t.z + cosf(ang) * (SoldierFireRange * 0.7f);
+        if (fabsf(px) > ArenaHalf - SoldierRadius
+            || fabsf(pz) > ArenaHalf - SoldierRadius)
+            continue;
+        if (PointHitsObstacle(px, 0.1f, pz, SoldierRadius))
+            continue;
+        if (SegmentBlockedByObstacles(px, pz, t.x, t.z, 0.6f))
+            continue;                       // must SEE the target there
+        if (SegmentBlockedByObstacles(s.x, s.z, px, pz, walk))
+            continue;                       // must be a straight sprint
+        s.coverX = px;
+        s.coverZ = pz;
+        return true;
+    }
+    return false;
 }
 
 // Fire at the current target if the reload is ready, it is in range, and
@@ -2622,6 +2691,13 @@ void GameState::TickSoldier(SoldierState& s)
                     s.state = SoldierMove;
                     s.stateTimer = 3.0f;
                 }
+                else if (s.sinceShot > 7.0f)
+                {
+                    // no reachable firing point AT ALL (walls box in every
+                    // sprint): HUNT -- the kite state charges when starving
+                    s.state = SoldierKite;
+                    s.stateTimer = 2.5f;
+                }
                 else if (PickCover(*this, s, enemies, ne))
                 {
                     s.state = SoldierMove;
@@ -2661,13 +2737,39 @@ void GameState::TickSoldier(SoldierState& s)
         }
         case SoldierKite:
         {
-            // no full cover: keep running (away + tangent) and shooting
             const PlayerState& t = players[nearest];
             float ax = s.x - t.x, az = s.z - t.z;
             float len = std::max(0.001f, sqrtf(ax * ax + az * az));
             ax /= len; az /= len;
-            moveX = ax + az * 0.65f;    // slide sideways while backing off
-            moveZ = az - ax * 0.65f;
+            if (s.sinceShot > 7.0f)
+            {
+                // HUNT: a starving soldier works its way IN, guns hot.
+                // Blind charging dies in concave corners (both axes of the
+                // push-out cancel), so probe headings fanning out from the
+                // charge direction and take the first open one.
+                float base = atan2f(-ax, -az);
+                static const float kFan[] = { 0.0f, 0.785f, -0.785f,
+                                              1.571f, -1.571f, 2.356f,
+                                              -2.356f, 3.1416f };
+                for (float off : kFan)
+                {
+                    float hd = base + off;
+                    float px = s.x + sinf(hd) * 1.6f;
+                    float pz = s.z + cosf(hd) * 1.6f;
+                    if (!PointHitsObstacle(px, 0.1f, pz, SoldierRadius))
+                    {
+                        moveX = sinf(hd);
+                        moveZ = cosf(hd);
+                        break;
+                    }
+                }
+            }
+            else
+            {
+                // no full cover: keep running (away + tangent) and shooting
+                moveX = ax + az * 0.65f;    // slide sideways, backing off
+                moveZ = az - ax * 0.65f;
+            }
             SoldierTryFire(*this, s);
             s.stateTimer -= TickDt;
             if (s.stateTimer <= 0.0f)

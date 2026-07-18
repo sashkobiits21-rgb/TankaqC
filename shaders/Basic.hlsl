@@ -8,7 +8,7 @@ cbuffer PerFrame : register(b0)
     float4   gCamPosFog;       // xyz = camera position, w = fog density
     float4   gScreen;          // xy = viewport pixels, z = shadow texel, w = shadows on
     float4   gViewer;          // xy = LOCAL tank xz, w = LOS box count
-    float4   gLosBoxes[24];    // STEALTH occluders: cx, cz, hx, hz
+    float4   gLosBoxes[56];    // STEALTH occluders: cx, cz, hx, hz
 };
 
 cbuffer PerObject : register(b1)

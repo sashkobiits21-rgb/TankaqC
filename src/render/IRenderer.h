@@ -206,7 +206,7 @@ struct FrameData
     // STEALTH occlusion inputs: the local tank + the static occluder boxes
     DirectX::XMFLOAT2 losViewer{};
     int losBoxCount = 0;
-    DirectX::XMFLOAT4 losBoxes[24]{};
+    DirectX::XMFLOAT4 losBoxes[56]{};   // big-map wall count fits
     PostSettings post;
     std::vector<RenderObject> objects;
     std::vector<VfxBurstData> bursts;       // explosion smoke/fire (max 16 used)

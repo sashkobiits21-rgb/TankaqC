@@ -254,10 +254,21 @@ int RunClassTest()
 
         g2.Tick(idle);
         check(countMine() == 1, "soldier spawns immediately after unlock");
-        // 40 s: the worst-case spawn pocket needs several roam-and-gun
-        // sprints (the run IS the peek now) across the arena before the
-        // first shot lands on a parked enemy
-        for (int t = 0; t < TickRate * 40; ++t) g2.Tick(idle);
+        // 60 s: the 120x120 field means longer marches -- worst-case spawn
+        // pockets need several roam-and-gun sprints (the run IS the peek)
+        // before the first shot lands on a parked enemy
+        for (int t = 0; t < TickRate * 60; ++t)
+        {
+            g2.Tick(idle);
+            if (t % (TickRate * 5) == 0)
+                for (const SoldierState& sd : g2.soldiers)
+                    if (sd.active)
+                        Log("s-trace t=%ds st=%d pos(%.1f %.1f) cover(%.1f "
+                            "%.1f) dry=%.1f cd=%.2f",
+                            t / TickRate, int(sd.state), sd.x, sd.z,
+                            sd.coverX, sd.coverZ, sd.sinceShot,
+                            sd.fireCooldown);
+        }
         check(countMine() == 1, "SoldierMax 1 respected across the cooldown");
         SoldierState* s0 = nullptr;
         for (SoldierState& s : g2.soldiers) if (s.active) s0 = &s;
@@ -779,7 +790,7 @@ int RunClassTest()
         // TREES: an inner shade island throws its long shadow across the
         // arena -- honest vampire cover with no collision
         {
-            const TreeSpot& tt = kTrees[4];   // (22, 15)
+            const TreeSpot& tt = kTrees[4];   // (44, 30)
             float th = TreeShadeHeight * tt.s;
             float tsx = tt.x - 0.707f / 0.460f * th * 0.6f;
             float tsz = tt.z - 0.538f / 0.460f * th * 0.6f;
@@ -878,9 +889,9 @@ int RunClassTest()
         check(clear, "every spawn point is clear of obstacles");
         check(spaced, "spawn points keep their distance from each other");
         // GATEWAYS: the arch gap is drivable, the pillars are not
-        check(!PointHitsObstacle(-14.0f, 0.1f, 12.0f, TankRadius),
+        check(!PointHitsObstacle(-30.0f, 0.1f, 0.0f, TankRadius),
               "the gateway arch gap fits a tank");
-        check(PointHitsObstacle(-14.0f, 0.1f, 16.655f, TankRadius),
+        check(PointHitsObstacle(-30.0f, 0.1f, 4.155f, TankRadius),
               "the gateway pillars still block");
         float sx, sz, syaw;
         gsp.SpawnPoint(0, sx, sz, syaw);
