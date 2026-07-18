@@ -332,7 +332,7 @@ float4 PSComposite(FsOut i) : SV_Target
     // display-space grade: a saturation push + a gentle contrast S around
     // the mid -- pennies of ALU in a pass that already touches every pixel
     float l2 = dot(outc, float3(0.299, 0.587, 0.114));
-    outc = saturate(lerp(l2.xxx, outc, 1.12));
+    outc = saturate(lerp(l2.xxx, outc, 1.22));
     outc = saturate((outc - 0.46) * 1.08 + 0.46);
     return float4(outc, 1.0);
 }
