@@ -101,6 +101,7 @@ struct App
     bool clicked = false;        // one-shot left click this frame
     bool rightClicked = false;   // one-shot right click (TEST revoke etc.)
     float camLeadX = 0, camLeadZ = 0;   // smoothed aim-lead camera offset
+    bool camLeadOn = true;              // settings toggle for the aim lead
 
     // assets / gpu handles
     TankModel tank;

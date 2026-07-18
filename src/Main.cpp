@@ -2284,6 +2284,8 @@ std::vector<UiButton> MenuButtons()
         static const char* filterNames[3] = { "SHARP", "SOFT", "SOFTER" };
         sprintf_s(buf, "SHADOW FILTER: %s", filterNames[g.post.shadowFilter]);
         labels.push_back(buf);
+        sprintf_s(buf, "AIM LEAD: %s", g.camLeadOn ? "ON" : "OFF");
+        labels.push_back(buf);
         labels.push_back("BACK");
 
         float sbh = 50, sgap = 12;
@@ -2454,6 +2456,7 @@ void HandleMenuClick()
         else if (b.label.rfind("SHADOW RES:", 0) == 0)
             g.post.shadowMapSize = g.post.shadowMapSize == 1024 ? 2048
                                  : g.post.shadowMapSize == 2048 ? 4096 : 1024;
+        else if (b.label.rfind("AIM LEAD:", 0) == 0) g.camLeadOn = !g.camLeadOn;
         else if (b.label.rfind("SHADOW FILTER:", 0) == 0)
             g.post.shadowFilter = (g.post.shadowFilter + 1) % 3;
         else if (b.label.rfind("ANTI-ALIASING:", 0) == 0)
@@ -3919,7 +3922,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             // fast flicks glide instead of snapping)
             {
                 float tx = 0.0f, tz = 0.0f;
-                if (InSession() && g.game.players[g.myId].active
+                if (g.camLeadOn && InSession()
+                    && g.game.players[g.myId].active
                     && g.game.players[g.myId].health > 0)
                 {
                     float a = g.game.players[g.myId].turretYaw;
@@ -3927,7 +3931,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                     tx = sinf(a) * LeadR;
                     tz = cosf(a) * LeadR;
                 }
-                float k = std::min(1.0f, float(g.frameDt) * 6.0f);
+                float k = std::min(1.0f, float(g.frameDt) * 16.0f);
                 g.camLeadX += (tx - g.camLeadX) * k;
                 g.camLeadZ += (tz - g.camLeadZ) * k;
             }
