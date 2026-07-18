@@ -44,7 +44,9 @@ namespace tankaq::net
 // v26: VAMPIRE rebalance (20% lifesteal, flat 5 HP/s sunburn) -- sim
 // constants are part of the contract.
 // v27: VAMPIRE scaling (steal 20%+2%/upgrade cap 50%, burn 5+0.5/upgrade).
-constexpr uint8_t ProtocolVersion = 27;
+// v28: TEMPLE centerpiece -- the center block became a 3-box collision
+// cross (NumObstacles 9); obstacle geometry is part of the sim contract.
+constexpr uint8_t ProtocolVersion = 28;
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t

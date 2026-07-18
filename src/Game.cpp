@@ -243,8 +243,15 @@ int CountClasses(const PlayerState& p)
 // Heights sized so shadows are USABLE COVER for vampires: a box must
 // throw a shade strip wider than a tank (shadow length ~= 1.2x height
 // along the fixed sun direction).
+// The center is the TEMPLE (user-authored stepped pyramid, assets/Temple):
+// its collision is a cross of three boxes -- the tiered body plus the two
+// low staircase strips running N-S and E-W. Low boxes (< 2.0 tall) still
+// block driving and rockets but are SKIPPED for sight lines / stealth LOS
+// (you can see over a staircase).
 const Obstacle kObstacles[NumObstacles] = {
-    {   0.0f,   0.0f, 3.0f, 3.0f, 4.0f },   // center block
+    {   0.0f,   0.0f, 4.0f,  4.0f,  4.7f }, // temple body (tiered pyramid)
+    {   0.0f,   0.0f, 1.95f, 5.95f, 1.6f }, // temple stairs, N-S strip
+    {   0.0f,   0.0f, 5.95f, 1.95f, 1.6f }, // temple stairs, E-W strip
     {  14.0f,  10.0f, 4.5f, 1.2f, 3.4f },
     { -14.0f, -10.0f, 4.5f, 1.2f, 3.4f },
     { -14.0f,  12.0f, 1.2f, 4.5f, 3.6f },
@@ -874,8 +881,12 @@ bool SegmentBlockedByObstacles(float x0, float z0, float x1, float z1,
                                float inflate)
 {
     for (const Obstacle& o : kObstacles)
+    {
+        if (o.height < 2.0f)
+            continue;   // sight lines pass over low boxes (temple stairs)
         if (SegHitsBox(x0, z0, x1, z1, o, inflate))
             return true;
+    }
     return false;
 }
 

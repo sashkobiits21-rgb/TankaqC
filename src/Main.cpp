@@ -1040,10 +1040,30 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
     }
     for (size_t i = 0; i < g.meshObstacles.size(); ++i)
     {
+        // the first three boxes are the temple's collision cross: when the
+        // temple model loaded, the model IS the visual -- skip the boxes
+        if (i < 3 && g.meshTemple[0] >= 0)
+            continue;
         const Obstacle& o = kObstacles[i];
         RenderObject ro{ g.meshObstacles[i], g.texWall,
             Store(XMMatrixTranslation(o.cx, o.height * 0.5f, o.cz)), { 1,1,1,0 } };
         ro.texNormal = g.texWallNRA;
+        frame.objects.push_back(ro);
+    }
+    // TEMPLE centerpiece: recenter the authored origin onto (0,0), drop the
+    // base onto the ground, scale x5 (body footprint then matches its 4.0
+    // half-extent collision box)
+    for (int i = 0; i < 3; ++i)
+    {
+        if (g.meshTemple[i] < 0)
+            continue;
+        XMMATRIX w = XMMatrixTranslation(0.0f, 0.6917f, 1.9239f)
+                   * XMMatrixScaling(5.0f, 5.0f, 5.0f);
+        RenderObject ro{ g.meshTemple[i],
+                         g.texTemple[i] >= 0 ? g.texTemple[i] : g.texWall,
+                         Store(w), { 1,1,1,0 } };
+        if (g.texTempleNRA[i] >= 0)
+            ro.texNormal = g.texTempleNRA[i];
         frame.objects.push_back(ro);
     }
     for (size_t i = 0; i < g.meshWalls.size(); ++i)
@@ -1062,7 +1082,11 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
     {
         int n = 0;
         for (const Obstacle& o : kObstacles)
+        {
+            if (o.height < 2.0f)
+                continue;   // stairs are see-over: not stealth occluders
             frame.losBoxes[n++] = XMFLOAT4(o.cx, o.cz, o.hx, o.hz);
+        }
         frame.losBoxCount = n;
         if (InSession() && g.game.players[g.myId].active)
         {
@@ -2262,6 +2286,47 @@ bool CreateAssets()
         g.meshObstacles.push_back(r->CreateMesh(box.verts.data(), box.verts.size(),
                                                 box.indices.data(), box.indices.size()));
     }
+    // TEMPLE centerpiece: user-authored stepped pyramid, three GLB parts
+    // (converted from the authored FBX set) + the Substance texture sets.
+    // Missing files leave meshTemple at -1 and the collision boxes render
+    // as plain walls instead.
+    {
+        static const char* kGlb[3] = { "assets/Temple/TempleBody.glb",
+                                       "assets/Temple/TempleStairs.glb",
+                                       "assets/Temple/TemplePlants.glb" };
+        static const char* kTex[3] = { "assets/Temple/TempleBodyTextures/",
+                                       "assets/Temple/TempleStairsTextures/",
+                                       "assets/Temple/TemplePlantsTextures/" };
+        for (int i = 0; i < 3; ++i)
+        {
+            MeshData md = LoadStaticGLB(kGlb[i]);
+            if (md.verts.empty())
+            {
+                Log("Temple: %s missing -- collision boxes stay visible",
+                    kGlb[i]);
+                break;
+            }
+            g.meshTemple[i] = r->CreateMesh(md.verts.data(), md.verts.size(),
+                                            md.indices.data(),
+                                            md.indices.size());
+            ImageData col = LoadImageFile(
+                std::string(kTex[i]) + "DefaultMaterial_Base_color.png");
+            if (col.width > 0)
+                g.texTemple[i] = r->CreateTexture(col.rgba.data(),
+                                                  col.width, col.height);
+            ImageData nrm = LoadImageFile(
+                std::string(kTex[i]) + "DefaultMaterial_Normal_OpenGL.png");
+            ImageData rgh = LoadImageFile(
+                std::string(kTex[i]) + "DefaultMaterial_Specular_roughness.png");
+            ImageData nra = MakeNraFromMaps(nrm, rgh);
+            if (nra.width > 0)
+                g.texTempleNRA[i] = r->CreateTexture(nra.rgba.data(),
+                                                     nra.width, nra.height);
+            Log("Temple part %d: %zu verts, tex %dx%d", i, md.verts.size(),
+                col.width, col.height);
+        }
+    }
+
     // boundary walls: +Z, -Z (long in X), +X, -X (long in Z)
     for (int i = 0; i < 4; ++i)
     {

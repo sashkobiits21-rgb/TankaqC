@@ -127,6 +127,12 @@ struct App
     uint8_t soldierAnimState[MaxSoldiers]{};   // last state fed to the animator
     bool soldierPrevMuzzle[MaxSoldiers]{};
 
+    // the TEMPLE centerpiece (assets/Temple, user-authored): three static
+    // GLB parts drawn over the invisible collision cross at the map center
+    int meshTemple[3]{ -1, -1, -1 };           // body, stairs, plants
+    int texTemple[3]{ -1, -1, -1 };            // base color per part
+    int texTempleNRA[3]{ -1, -1, -1 };         // normal+roughness per part
+
     // necromancer + radar visuals
     int meshSkull = -1, meshJaw = -1, meshPuddle = -1, meshRing = -1;
     int meshGhost = -1, meshWedge = -1;
