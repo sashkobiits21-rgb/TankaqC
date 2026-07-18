@@ -57,7 +57,10 @@ namespace tankaq::net
 // tree, and the rings see (and pop) poltergeist skulls.
 // v32: sun lowered (shadows ~2x longer) -- InSunlight geometry is part of
 // the sim contract (vampire burn).
-constexpr uint8_t ProtocolVersion = 32;
+// v33: RADAR MINES (bounces + radar): tiny RingSpawn/RingPop events are
+// the ONLY wire data -- radius/damage/lock/fade derive from replicated
+// upgrades on each machine. Mines never ride snapshots.
+constexpr uint8_t ProtocolVersion = 33;
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t
@@ -75,6 +78,8 @@ enum class MsgType : uint8_t
     TestGrant,     // client -> host, reliable: TEST mode free upgrade pick
     OwnedReset,    // host -> all, reliable: match start wiped all upgrades
     OwnedSync,     // host -> one client, reliable: full owned list (late join)
+    RingSpawn,     // host -> all, reliable: a bounce roll landed a RADAR MINE
+    RingPop,       // host -> all, reliable: a mine detonated early
 };
 
 #pragma pack(push, 1)
@@ -118,6 +123,23 @@ struct MsgTestGrant
 {
     uint8_t type = uint8_t(MsgType::TestGrant);
     uint8_t upgrade = 0;   // pool index; host validates TEST mode + range
+};
+
+// RADAR MINES: the roll SUCCEEDED -- that is the ONLY ring data on the
+// wire. Radius, damage, lock time and fade all derive from the owner's
+// replicated upgrades on each machine; timeouts need no message.
+struct MsgRingSpawn
+{
+    uint8_t type = uint8_t(MsgType::RingSpawn);
+    uint8_t slot = 0;         // mine pool slot (client mirrors it)
+    uint8_t owner = 0;
+    int16_t qx = 0, qz = 0;   // position * 128
+};
+
+struct MsgRingPop
+{
+    uint8_t type = uint8_t(MsgType::RingPop);
+    uint8_t slot = 0;
 };
 
 struct MsgReady

@@ -1167,6 +1167,78 @@ int RunClassTest()
               "radar rings recognize a poltergeist skull as prey");
     }
 
+    // ---- RADAR MINES: bounce stamps, local derivation, lock + blast ----
+    {
+        // deterministic hash spawn: keep a bouncing ring rocket alive and
+        // ricocheting off the arena walls -- 35%/bounce lands one fast
+        GameState gm{};
+        gm.SpawnPlayer(0);
+        gm.SpawnPlayer(1);
+        gm.phase = PhasePlaying;
+        gm.matchEndTick = gm.tick + 100000000u;
+        gm.players[0].x = -25; gm.players[0].z = -25;
+        gm.players[1].x = 25; gm.players[1].z = 25;
+        InputCmd idle[MaxPlayers]{};
+        bool stamped = false;
+        for (int burst = 0; burst < 30 && !stamped; ++burst)
+        {
+            Projectile& pr = gm.projectiles[0];
+            pr = Projectile{};
+            pr.active = true;
+            pr.owner = 0;
+            pr.x = 0; pr.z = -28; pr.y = 0.55f;
+            pr.yaw = XM_PI * 0.5f;          // east: wall after wall
+            pr.speed = 15.0f; pr.damage = 10; pr.life = 10.0f;
+            pr.bounces = 6;
+            pr.radarRange = 3.0f;
+            pr.radarLockNeed = 60.0f;       // never detonates in flight
+            for (int t = 0; t < TickRate * 5 && !stamped; ++t)
+            {
+                gm.Tick(idle);
+                for (const RadarMineState& rm : gm.radarMines)
+                    stamped |= rm.active;
+            }
+        }
+        check(stamped, "a bouncing ring rocket stamps a RADAR MINE");
+
+        // lock + blast from a hand-placed mine: values derive from stats
+        GameState gd2{};
+        gd2.SpawnPlayer(0);
+        gd2.SpawnPlayer(1);
+        gd2.phase = PhasePlaying;
+        gd2.matchEndTick = gd2.tick + 100000000u;
+        gd2.players[0].owned.push_back(uint8_t(UpgradeId::RadarClass));
+        gd2.RecalcStats(0);
+        gd2.players[1].x = 10; gd2.players[1].z = 10;
+        gd2.players[1].health = 100;
+        RadarMineState& rm = gd2.radarMines[0];
+        rm = RadarMineState{};
+        rm.active = true; rm.owner = 0;
+        rm.x = 10; rm.z = 10;               // right under the enemy
+        rm.life = RadarMineLife;
+        float lockNeed = gd2.players[0].stats[int(Stat::RadarLock)];
+        int steps = int(lockNeed / TickDt) + 3;
+        for (int t = 0; t < steps && rm.active; ++t)
+            TickRadarMine(gd2, rm);
+        int want = int(gd2.players[0].stats[int(Stat::Damage)]
+                       + gd2.players[0].stats[int(Stat::RadarDamage)] + 0.5f);
+        check(!rm.active && gd2.players[1].health == 100 - want,
+              "a charged mine blasts ring damage derived from owner stats");
+        check(rm.life > 0.1f,
+              "early detonation leaves life high (the pop-event marker)");
+
+        // an empty ring never charges, fades out silently
+        RadarMineState& rq = gd2.radarMines[1];
+        rq = RadarMineState{};
+        rq.active = true; rq.owner = 0;
+        rq.x = -25; rq.z = -25;             // nobody around
+        rq.life = RadarMineLife;
+        for (int t = 0; t < int(RadarMineLife / TickDt) + 3 && rq.active; ++t)
+            TickRadarMine(gd2, rq);
+        check(!rq.active && rq.life <= 0.05f,
+              "an ignored mine fades out (timeout needs no message)");
+    }
+
     Log("classtest done: %d failure(s)", fails);
     return fails;
 }

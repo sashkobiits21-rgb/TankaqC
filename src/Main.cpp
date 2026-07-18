@@ -1342,6 +1342,55 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
         }
     }
 
+    // RADAR MINES: rings stamped by bounces. The wire only carried the
+    // spawn event, so clients AGE them and estimate the lock fill locally
+    // from replicated positions + the owner's replicated stats; the host
+    // reads its own sim state. Everything fades toward the timeout.
+    for (int i = 0; i < MaxRadarMines; ++i)
+    {
+        RadarMineState& rm = g.game.radarMines[i];
+        if (!rm.active)
+            continue;
+        const PlayerState& own = g.game.players[rm.owner];
+        float R = std::max(0.5f, own.stats[int(Stat::RadarRange)]);
+        if (clientMode)
+        {
+            rm.life -= g.frameDt;
+            if (rm.life <= 0.0f || !own.active)
+            {
+                rm.active = false;
+                continue;
+            }
+            bool inside = false;
+            for (int e = 0; e < MaxPlayers && !inside; ++e)
+            {
+                const PlayerState& p = g.game.players[e];
+                if (!p.active || p.health <= 0 || e == rm.owner)
+                    continue;
+                float dx = p.x - rm.x, dz = p.z - rm.z;
+                float rr = R + TankRadius * 0.5f;
+                inside = dx * dx + dz * dz < rr * rr;
+            }
+            rm.lock = inside ? rm.lock + g.frameDt : 0.0f;
+        }
+        float fade = 0.35f + 0.65f * std::clamp(rm.life / RadarMineLife,
+                                                0.0f, 1.0f);
+        frame.objects.push_back({ g.meshRing, g.texWhite,
+            Store(XMMatrixScaling(R, 1.0f, R)
+                  * XMMatrixTranslation(rm.x, 0.05f, rm.z)),
+            { 1.0f * fade, 0.14f * fade, 0.1f * fade, 0.8f }, true });
+        float frac = std::clamp(
+            rm.lock / std::max(0.05f, own.stats[int(Stat::RadarLock)]),
+            0.0f, 1.0f);
+        int mw = int(frac * 24.0f + 0.5f);
+        for (int k = 0; k < mw; ++k)
+            frame.objects.push_back({ g.meshWedge, g.texWhite,
+                Store(XMMatrixScaling(R, 1.0f, R)
+                      * XMMatrixRotationY(float(k) * (XM_2PI / 24.0f))
+                      * XMMatrixTranslation(rm.x, 0.06f, rm.z)),
+                { 0.62f * fade, 0.30f * fade, 0.27f * fade, 0 }, true });
+    }
+
     // ------------------------------------------------ necromancer visuals
     // skulls: the rigged model chomping its OpenAndClose loop, homing at
     // head height (procedural cranium+jaw only if the GLB is missing)
@@ -3177,6 +3226,24 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         if (g.isHost)
             HostTestGrant(pid, upgrade);
     };
+    ev.onRingSpawn = [](int slot, int owner, float x, float z)
+    {
+        if (g.isHost || slot < 0 || slot >= MaxRadarMines)
+            return;
+        RadarMineState& rm = g.game.radarMines[slot];
+        rm = RadarMineState{};
+        rm.active = true;
+        rm.owner = uint8_t(owner);
+        rm.x = x;
+        rm.z = z;
+        rm.life = RadarMineLife;   // radius/damage/lock derive from the
+                                   // owner's replicated stats locally
+    };
+    ev.onRingPop = [](int slot)
+    {
+        if (!g.isHost && slot >= 0 && slot < MaxRadarMines)
+            g.game.radarMines[slot].active = false;
+    };
     ev.onUpgrade = [](int pid, uint8_t type)
     {
         if (g.isHost)
@@ -3341,6 +3408,24 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                         std::max(0.0f, g.net.avgOneWayMs(pid));
                 g.prevTick = g.game;
                 g.game.Tick(g.inputs);
+                // RADAR MINES: event-only replication. Diff against the
+                // pre-tick copy: fresh (or slot-recycled) mines send a tiny
+                // spawn; early detonations send a pop (a timeout's life had
+                // already drained, so it needs no message at all).
+                if (g.online)
+                    for (int k = 0; k < MaxRadarMines; ++k)
+                    {
+                        const RadarMineState& was = g.prevTick.radarMines[k];
+                        const RadarMineState& now = g.game.radarMines[k];
+                        if (now.active
+                            && (!was.active || was.x != now.x
+                                || was.z != now.z || was.owner != now.owner))
+                            g.net.BroadcastRingSpawn(k, now.owner,
+                                                     now.x, now.z);
+                        else if (!now.active && was.active
+                                 && was.life > 0.1f)
+                            g.net.BroadcastRingPop(k);
+                    }
                 if (g.online && g.game.tick % SnapshotEveryTicks == 0)
                 {
                     net::MsgSnapshot snap = BuildSnapshot();

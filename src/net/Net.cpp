@@ -683,6 +683,23 @@ void Net::Poll(const Events& ev)
                     if (ev.onUpgrade)
                         ev.onUpgrade(u->playerId, u->upgradeType);
                 }
+                else if (t == MsgType::RingSpawn
+                         && m->m_cbSize >= int(sizeof(MsgRingSpawn)))
+                {
+                    const MsgRingSpawn* r =
+                        reinterpret_cast<const MsgRingSpawn*>(d);
+                    if (ev.onRingSpawn)
+                        ev.onRingSpawn(r->slot, r->owner,
+                                       float(r->qx) / 128.0f,
+                                       float(r->qz) / 128.0f);
+                }
+                else if (t == MsgType::RingPop
+                         && m->m_cbSize >= int(sizeof(MsgRingPop)))
+                {
+                    if (ev.onRingPop)
+                        ev.onRingPop(
+                            reinterpret_cast<const MsgRingPop*>(d)->slot);
+                }
                 else if (t == MsgType::OwnedReset && m->m_cbSize >= 1)
                 {
                     if (ev.onOwnedReset)
@@ -736,6 +753,37 @@ void Net::SendTestGrantToHost(uint8_t upgrade)
     SteamNetworkingSockets()->SendMessageToConnection(
         m_hostConn, &msg, sizeof(msg), k_nSteamNetworkingSend_Reliable,
         nullptr);
+}
+
+void Net::BroadcastRingSpawn(int slot, int owner, float x, float z)
+{
+    if (m_mode != Mode::Host)
+        return;
+    MsgRingSpawn msg;
+    msg.slot = uint8_t(slot);
+    msg.owner = uint8_t(owner);
+    msg.qx = int16_t(std::clamp(x, -250.0f, 250.0f) * 128.0f);
+    msg.qz = int16_t(std::clamp(z, -250.0f, 250.0f) * 128.0f);
+    ISteamNetworkingSockets* s = SteamNetworkingSockets();
+    for (const Client& c : m_clients)
+        if (c.playerId >= 0)
+            s->SendMessageToConnection(c.conn, &msg, sizeof(msg),
+                                       k_nSteamNetworkingSend_Reliable,
+                                       nullptr);
+}
+
+void Net::BroadcastRingPop(int slot)
+{
+    if (m_mode != Mode::Host)
+        return;
+    MsgRingPop msg;
+    msg.slot = uint8_t(slot);
+    ISteamNetworkingSockets* s = SteamNetworkingSockets();
+    for (const Client& c : m_clients)
+        if (c.playerId >= 0)
+            s->SendMessageToConnection(c.conn, &msg, sizeof(msg),
+                                       k_nSteamNetworkingSend_Reliable,
+                                       nullptr);
 }
 
 void Net::BroadcastUpgrade(int playerId, uint8_t upgradeType)

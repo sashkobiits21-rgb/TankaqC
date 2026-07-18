@@ -37,6 +37,9 @@ public:
         std::function<void(int playerId, uint8_t upgradeType)> onUpgrade;
         std::function<void()> onOwnedReset;
         std::function<void(int playerId, const uint8_t* types, int count)> onOwnedSync;
+        // RADAR MINES: spawn/pop events are the mines' ONLY wire presence
+        std::function<void(int slot, int owner, float x, float z)> onRingSpawn;
+        std::function<void(int slot)> onRingPop;
     };
 
     bool InitSteam();                       // true if the Steam API came up
@@ -74,6 +77,8 @@ public:
     bool CreatePublicLobby(int need, int testMode);
     // host: owned-upgrade replication (all reliable)
     void BroadcastUpgrade(int playerId, uint8_t upgradeType);
+    void BroadcastRingSpawn(int slot, int owner, float x, float z);
+    void BroadcastRingPop(int slot);
     void BroadcastOwnedReset();
     void SendOwnedSyncTo(int toPlayerId, int aboutPlayerId,
                          const uint8_t* types, size_t count);

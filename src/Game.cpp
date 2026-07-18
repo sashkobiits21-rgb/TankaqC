@@ -1591,6 +1591,91 @@ void DetonateRadar(GameState& gs, Projectile& pr)
     pr.active = false;   // the detonation consumes the rocket
 }
 
+// RADAR MINE: a stamped root ring. Fades over RadarMineLife; while an
+// enemy body sits inside, the owner's lock charges; a full charge blasts
+// EVERYONE inside for rocket-grade ring damage (Damage + PAYLOAD). Radius,
+// lock and damage are read from the owner's stats LIVE -- both sides of
+// the wire derive identical values from the replicated upgrades.
+void TickRadarMine(GameState& gs, RadarMineState& rm)
+{
+    rm.life -= TickDt;
+    const PlayerState& own = gs.players[rm.owner];
+    if (rm.life <= 0.0f || !own.active)
+    {
+        rm.active = false;
+        return;
+    }
+    float R = own.stats[int(Stat::RadarRange)];
+    bool inside = false;
+    for (int id = 0; id < MaxPlayers && !inside; ++id)
+    {
+        const PlayerState& p = gs.players[id];
+        if (!p.active || p.health <= 0 || id == rm.owner)
+            continue;
+        float dx = p.x - rm.x, dz = p.z - rm.z;
+        float rr = R + TankRadius * 0.5f;
+        inside = dx * dx + dz * dz < rr * rr;
+    }
+    for (const SoldierState& s : gs.soldiers)
+    {
+        if (inside)
+            break;
+        if (!s.active || s.state >= SoldierDying || s.owner == rm.owner)
+            continue;
+        float dx = s.x - rm.x, dz = s.z - rm.z;
+        float rr = R + SoldierRadius;
+        inside = dx * dx + dz * dz < rr * rr;
+    }
+    if (!inside)
+    {
+        rm.lock = 0.0f;
+        return;
+    }
+    rm.lock += TickDt;
+    if (rm.lock < own.stats[int(Stat::RadarLock)])
+        return;
+    int dmg = int(own.stats[int(Stat::Damage)]
+                  + own.stats[int(Stat::RadarDamage)] + 0.5f);
+    for (int id = 0; id < MaxPlayers; ++id)
+    {
+        const PlayerState& p = gs.players[id];
+        if (!p.active || p.health <= 0 || id == rm.owner)
+            continue;
+        float dx = p.x - rm.x, dz = p.z - rm.z;
+        float rr = R + TankRadius * 0.5f;
+        if (dx * dx + dz * dz < rr * rr)
+            gs.ApplyDamage(rm.owner, id, dmg, 5);
+    }
+    for (SoldierState& s : gs.soldiers)
+    {
+        if (!s.active || s.state >= SoldierDying || s.owner == rm.owner)
+            continue;
+        float dx = s.x - rm.x, dz = s.z - rm.z;
+        float rr = R + SoldierRadius;
+        if (dx * dx + dz * dz < rr * rr)
+        {
+            s.health -= float(dmg);
+            s.lastHitBy = rm.owner;
+        }
+    }
+    for (SkullState& sk : gs.skulls)   // poltergeist pests pop here too
+    {
+        if (!sk.active || sk.owner == rm.owner
+            || !HasUpgrade(gs.players[sk.owner], UpgradeId::Poltergeist))
+            continue;
+        float dx = sk.x - rm.x, dz = sk.z - rm.z;
+        float rr = R + SkullRadius;
+        if (dx * dx + dz * dz < rr * rr)
+        {
+            SpawnPuddle(gs, sk.owner, sk.x, sk.z);
+            sk.active = false;
+        }
+    }
+    // detonated: leave `life` untouched -- the host's event emitter tells
+    // an early pop (life still high) apart from a silent timeout
+    rm.active = false;
+}
+
 // One lock decides (the root circle contains every child, so it always
 // charges first); a full charge detonates the ENTIRE tree.
 void TickRadar(GameState& gs, Projectile& pr)
@@ -3105,6 +3190,32 @@ void GameState::Tick(const InputCmd* inputs)
                     SpawnSoldierAt(pr.owner, pr.x, pr.z);
             }
         }
+        // RADAR MINES: a bouncing ring rocket may STAMP its root ring onto
+        // the wall it kissed -- 35% per bounce, deterministic hash (third
+        // stream, independent of fission and draft rolls)
+        if (pr.bounces < bouncesBefore && pr.radarRange > 0.0f)
+        {
+            int slot = int(&pr - &projectiles[0]);
+            uint32_t mh = tick * 0x9E3779B9u ^ uint32_t(slot * 193 + 29);
+            mh ^= mh << 13; mh ^= mh >> 17; mh ^= mh << 5;
+            if (float(mh & 0xFFFF) / 65535.0f < RadarMineChance)
+            {
+                int free = -1, low = 0;
+                for (int k = 0; k < MaxRadarMines; ++k)
+                {
+                    if (!radarMines[k].active) { free = k; break; }
+                    if (radarMines[k].life < radarMines[low].life)
+                        low = k;
+                }
+                RadarMineState& rm = radarMines[free >= 0 ? free : low];
+                rm = RadarMineState{};
+                rm.active = true;
+                rm.owner = pr.owner;
+                rm.x = pr.x;
+                rm.z = pr.z;
+                rm.life = RadarMineLife;
+            }
+        }
         if (pr.bounces < bouncesBefore && pr.splitChance > 0.0f)
         {
             int slot = int(&pr - &projectiles[0]);
@@ -3230,6 +3341,9 @@ void GameState::Tick(const InputCmd* inputs)
     for (AcidBallState& ab : acidBalls)
         if (ab.active)
             TickAcidBall(*this, ab);
+    for (RadarMineState& rm : radarMines)
+        if (rm.active)
+            TickRadarMine(*this, rm);
     for (PuddleState& pu : puddles)
         if (pu.active)
             TickPuddle(*this, pu);

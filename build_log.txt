@@ -2,6 +2,7 @@
 
 C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Microsoft\VC\v180\Microsoft.CppBuild.targets(561,5): warning MSB8029: The Intermediate directory or Output directory cannot reside under the Temporary directory as it could lead to issues with incremental build. [C:\Tankaq\build\ZERO_CHECK.vcxproj]
 C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Microsoft\VC\v180\Microsoft.CppBuild.targets(561,5): warning MSB8029: The Intermediate directory or Output directory cannot reside under the Temporary directory as it could lead to issues with incremental build. [C:\Tankaq\build\TankaqClient.vcxproj]
+  AssetLoad.cpp
   Game.cpp
   Main.cpp
   Tests.cpp

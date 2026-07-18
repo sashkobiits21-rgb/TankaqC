@@ -410,6 +410,8 @@ void DetonateRadar(GameState& gs, Projectile& pr);
 void TickSkull(GameState& gs, SkullState& sk);
 void TickAcidBall(GameState& gs, AcidBallState& ab);
 void TickRadar(GameState& gs, Projectile& pr);
+struct RadarMineState;
+void TickRadarMine(GameState& gs, RadarMineState& rm);
 
 struct Obstacle
 {
@@ -580,6 +582,27 @@ struct AcidBallState
     float hopT = 0;        // time into the current hop
 };
 
+// RADAR MINES (bounces + radar synergy): every wall bounce of a ring
+// rocket has a 35% chance to STAMP a stationary copy of its root ring
+// onto the spot. The ring fades over RadarMineLife; an enemy loitering
+// inside charges the owner's lock and eats rocket-grade ring damage.
+// BANDWIDTH: the wire carries ONLY a spawn event (slot/owner/xz) on a
+// successful roll and a pop event on early detonation -- radius, damage,
+// lock time and fade all derive from the owner's replicated upgrades on
+// every machine. Timeouts need no message at all.
+constexpr int   MaxRadarMines = 64;
+constexpr float RadarMineChance = 0.35f;
+constexpr float RadarMineLife = 6.0f;
+
+struct RadarMineState
+{
+    bool active = false;
+    uint8_t owner = 0;
+    float x = 0, z = 0;
+    float life = 0;
+    float lock = 0;        // host-authoritative; clients estimate visuals
+};
+
 struct PuddleState
 {
     bool active = false;
@@ -660,6 +683,7 @@ struct GameState
     PuddleState puddles[MaxPuddles];
     GhostState ghosts[MaxGhosts];
     AcidBallState acidBalls[MaxAcidBalls];
+    RadarMineState radarMines[MaxRadarMines];
     GrenadeState grenades[MaxGrenades];
     uint32_t tick = 0;
     uint8_t phase = PhaseLobby;
