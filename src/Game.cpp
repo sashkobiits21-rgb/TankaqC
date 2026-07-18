@@ -2335,7 +2335,7 @@ void GameState::Tick(const InputCmd* inputs)
         {
             if (InSunlight(p.x, p.z))
             {
-                p.sunAccum += MaxHealthFor(p) * VampireBurnFrac * TickDt;
+                p.sunAccum += VampireBurnPerSec * TickDt;
                 while (p.sunAccum >= 1.0f && p.health > 0)
                 {
                     p.sunAccum -= 1.0f;

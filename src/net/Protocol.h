@@ -41,7 +41,9 @@ namespace tankaq::net
 // v25: TEST match mode (mode-filtered matchmaking, free upgrade grants,
 // testMode byte in snapshots) + rule-bender owned-list strips resync over
 // OwnedSync.
-constexpr uint8_t ProtocolVersion = 25;
+// v26: VAMPIRE rebalance (20% lifesteal, flat 5 HP/s sunburn) -- sim
+// constants are part of the contract.
+constexpr uint8_t ProtocolVersion = 26;
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t

@@ -1085,8 +1085,6 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
         XMFLOAT4 tint = kPlayerTint[i % MaxLobbyPlayers];   // per-player identity
         if (p.possessTimer > 0)
             tint = { 0.45f, 0.6f, 1.5f, 0.15f };            // ghost-ridden blue
-        if (p.hitFlash > 0)
-            tint = { 1.0f, 0.25f, 0.2f, 0.35f };
         if (dead)
             tint = { 0.35f, 0.33f, 0.3f, 0 };
 

@@ -733,7 +733,7 @@ int RunClassTest()
         gv.RecalcStats(0);
         vamp.health = 50;
         gv.ApplyDamage(0, 1, 40, 0);
-        check(vamp.health == 54, "VAMPIRE drinks 10% of the wound");
+        check(vamp.health == 58, "VAMPIRE drinks 20% of the wound");
         const Obstacle& ob = kObstacles[0];
         float sx = ob.cx - 0.489f / 0.636f * ob.height * 0.5f;
         float sz = ob.cz - 0.372f / 0.636f * ob.height * 0.5f;
@@ -742,8 +742,8 @@ int RunClassTest()
         vamp.x = 0; vamp.z = -20; vamp.health = 100;
         InputCmd idle[MaxPlayers]{};
         for (int t = 0; t < TickRate * 2; ++t) gv.Tick(idle);
-        check(vamp.health <= 82 && vamp.health >= 78,
-              "sunlight burns ~10%% max HP per second");
+        check(vamp.health <= 91 && vamp.health >= 89,
+              "sunlight burns a flat 5 HP per second");
 
         // TERRORIST: the death blast falls off with distance
         GameState gt{};

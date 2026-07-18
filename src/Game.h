@@ -150,8 +150,8 @@ constexpr float TerroristPlateau = 3.0f;  // 100% max HP inside one tank
                                           // weaker: 60% at the edge of the
                                           // plateau, sliding gently to zero
 constexpr float TerroristFalloffTop = 0.6f;
-constexpr float VampireLifesteal = 0.10f; // fraction of damage dealt
-constexpr float VampireBurnFrac = 0.10f;  // of max HP, per second in the sun
+constexpr float VampireLifesteal = 0.20f; // fraction of damage dealt
+constexpr float VampireBurnPerSec = 5.0f; // flat HP per second in the sun
 constexpr float StealthSlow = 0.65f;      // -35% speed, fixed
 constexpr float StealthDamageMul = 0.85f; // -15% rocket damage, fixed
 constexpr float DrunkenMin = 0.80f;       // speed wander band
