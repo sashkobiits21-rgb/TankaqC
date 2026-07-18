@@ -98,6 +98,7 @@ struct App
     int mouseX = 0, mouseY = 0;
     bool wantQuit = false;
     bool clicked = false;        // one-shot left click this frame
+    bool rightClicked = false;   // one-shot right click (TEST revoke etc.)
 
     // assets / gpu handles
     TankModel tank;
@@ -374,6 +375,7 @@ void BuildOwnedRow(FrameData& frame);
 void HandleShopClick(float mx, float my);
 void RotatedRect(float cx, float cy, float w, float h, float ang, UiColor c);
 void RequestTestGrant(uint8_t upgrade);   // TEST mode: 1 click = 1 copy
+void RequestTestRevoke(uint8_t upgrade);  // TEST mode: right-click = -1 copy
 void IconUv(int icon, float& u0, float& u1);
 void AddIconQuad(FrameData& frame, int icon, float cx, float cy, float half,
                  float alpha, float ang = 0.0f);

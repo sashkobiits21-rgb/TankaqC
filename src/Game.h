@@ -225,6 +225,7 @@ enum class UpgradeId : uint8_t
     AcidHound,
     RicochetDraft,
     Martyrdom,
+    RadarMines,
     Count
 };
 constexpr int UpgradeCount = int(UpgradeId::Count);
@@ -271,6 +272,7 @@ inline constexpr MutationPair kMutations[] = {
     { UpgradeId::AcidHound,    ClassNecro,   ClassBouncy },
     { UpgradeId::RicochetDraft, ClassSoldier, ClassBouncy },
     { UpgradeId::Martyrdom,    ClassSoldier, ClassBouncy },
+    { UpgradeId::RadarMines,   ClassRadar,   ClassBouncy },
 };
 inline bool IsMutation(UpgradeId id)
 { return UpgradeDef(id).rarity == RarityMutation; }

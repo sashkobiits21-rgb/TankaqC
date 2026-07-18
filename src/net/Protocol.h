@@ -74,7 +74,9 @@ namespace tankaq::net
 // 24 respread trees. All sim contract.
 // v39: BUBBLE continuous collision -- crossing tests moved into the dome's
 // relative frame (prev-center tracking); sim behavior change.
-constexpr uint8_t ProtocolVersion = 39;
+// v40: RADAR MINES is a MUTATION card now (radar+bouncy pair; pool grew)
+// and TEST mode gained TestRevoke (-1 owned copy, OwnedSync resync).
+constexpr uint8_t ProtocolVersion = 40;
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t
@@ -94,6 +96,7 @@ enum class MsgType : uint8_t
     OwnedSync,     // host -> one client, reliable: full owned list (late join)
     RingSpawn,     // host -> all, reliable: a bounce roll landed a RADAR MINE
     RingPop,       // host -> all, reliable: a mine detonated early
+    TestRevoke,    // client -> host, reliable: TEST mode -1 copy of an upgrade
 };
 
 #pragma pack(push, 1)
@@ -137,6 +140,12 @@ struct MsgTestGrant
 {
     uint8_t type = uint8_t(MsgType::TestGrant);
     uint8_t upgrade = 0;   // pool index; host validates TEST mode + range
+};
+
+struct MsgTestRevoke
+{
+    uint8_t type = uint8_t(MsgType::TestRevoke);
+    uint8_t upgrade = 0;   // pool index; host removes ONE owned copy
 };
 
 // RADAR MINES: the roll SUCCEEDED -- that is the ONLY ring data on the

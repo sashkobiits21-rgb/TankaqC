@@ -531,6 +531,12 @@ void BuildOwnedRow(FrameData& frame)
             g.ui.Text(x + 2, y + tile - 10, 1.2f,
                       { 1, 1, 1, hov ? 0.95f : 0.6f }, b);
         }
+        // TEST mode: right-click = -1 copy (removes the entry at 1)
+        if (hov && g.rightClicked && g.game.testMode)
+        {
+            g.rightClicked = false;
+            RequestTestRevoke(types[i]);
+        }
         if (hov) { hoverIdx = i; hoverX = x; }
     }
 

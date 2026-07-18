@@ -2153,6 +2153,44 @@ void HostTestGrant(int pid, uint8_t upg)
     }
 }
 
+// TEST mode: -1 owned copy (right-click on the owned strip). Removal
+// cannot ride the append-only upgrade events, so every peer gets a full
+// OwnedSync for the player afterwards. Revoking a class CARD leaves its
+// family upgrades owned -- test tooling removes exactly what was clicked.
+void HostTestRevoke(int pid, uint8_t upg)
+{
+    if (!g.game.testMode || upg >= UpgradeCount)
+        return;
+    PlayerState& p = g.game.players[pid];
+    if (!p.active)
+        return;
+    for (size_t i = p.owned.size(); i-- > 0; )
+        if (p.owned[i] == upg)
+        {
+            p.owned.erase(p.owned.begin() + i);
+            g.game.RecalcStats(pid);
+            p.health = std::min(p.health, MaxHealthFor(p));
+            for (int to = 0; to < MaxLobbyPlayers; ++to)
+                if (to != g.myId && g.game.players[to].active)
+                    g.net.SendOwnedSyncTo(to, pid, p.owned.data(),
+                                          int(p.owned.size()));
+            Log("test revoke: player %d -1 of type %d (owned %zu)", pid,
+                int(upg), p.owned.size());
+            return;
+        }
+}
+
+void RequestTestRevoke(uint8_t upgrade)
+{
+    if (!g.game.testMode)
+        return;
+    if (g.isHost)
+        HostTestRevoke(g.myId, upgrade);
+    else
+        g.net.SendTestRevokeToHost(upgrade);
+    snd::Play(snd::Sfx::Click, 0.4f, 0.8f * SndJitter(0.06f));
+}
+
 void RequestTestGrant(uint8_t upgrade)
 {
     if (!g.game.testMode)
@@ -2555,6 +2593,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_LBUTTONUP:
         g.mouseDown = false;
         ReleaseCapture();
+        return 0;
+    case WM_RBUTTONDOWN:
+        g.rightClicked = true;   // consumed by the UI, cleared per frame
         return 0;
     }
     return DefWindowProc(hwnd, msg, wp, lp);
@@ -3447,6 +3488,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         if (g.isHost)
             HostTestGrant(pid, upgrade);
     };
+    ev.onTestRevoke = [](int pid, uint8_t upgrade)
+    {
+        if (g.isHost)
+            HostTestRevoke(pid, upgrade);
+    };
     ev.onRingSpawn = [](int slot, int owner, float x, float z)
     {
         if (g.isHost || slot < 0 || slot >= MaxRadarMines)
@@ -4265,6 +4311,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         }
 
         g.renderer->RenderFrame(frame);
+        g.rightClicked = false;   // one-shot: the UI build had its chance
         QueryPerformanceCounter(&dbgD);
 
         // Background throttle. A covered/unfocused window's Present(1) stops

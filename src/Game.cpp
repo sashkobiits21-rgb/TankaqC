@@ -208,6 +208,9 @@ const UpgradeType kUpgradePool[UpgradeCount] = {
     { U(Martyrdom),    "MARTYRDOM",
       "NO NADES - DEAD SOLDIERS EXPLODE",                             7, 130,
       {}, 0 },
+    { U(RadarMines),   "RADAR MINES",
+      "BOUNCES STAMP FADING RING MINES",                              7, 130,
+      {}, 0 },
 };
 #undef S
 #undef U
@@ -3393,10 +3396,11 @@ void GameState::Tick(const InputCmd* inputs)
                     SpawnSoldierAt(pr.owner, pr.x, pr.z);
             }
         }
-        // RADAR MINES: a bouncing ring rocket may STAMP its root ring onto
-        // the wall it kissed -- 35% per bounce, deterministic hash (third
-        // stream, independent of fission and draft rolls)
-        if (pr.bounces < bouncesBefore && pr.radarRange > 0.0f)
+        // RADAR MINES mutation (radar+bouncy): a bouncing ring rocket may
+        // STAMP its root ring onto the wall it kissed -- 35% per bounce,
+        // deterministic hash (third stream, independent of fission/draft)
+        if (pr.bounces < bouncesBefore && pr.radarRange > 0.0f
+            && HasUpgrade(players[pr.owner], UpgradeId::RadarMines))
         {
             int slot = int(&pr - &projectiles[0]);
             uint32_t mh = tick * 0x9E3779B9u ^ uint32_t(slot * 193 + 29);

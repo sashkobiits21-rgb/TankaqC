@@ -617,6 +617,14 @@ void Net::Poll(const Events& ev)
                         ev.onTestGrant(client->playerId,
                             reinterpret_cast<const MsgTestGrant*>(d)->upgrade);
                 }
+                else if (t == MsgType::TestRevoke
+                         && m->m_cbSize >= int(sizeof(MsgTestRevoke))
+                         && client->playerId >= 0)
+                {
+                    if (ev.onTestRevoke)
+                        ev.onTestRevoke(client->playerId,
+                            reinterpret_cast<const MsgTestRevoke*>(d)->upgrade);
+                }
                 else if (t == MsgType::Ready && m->m_cbSize >= int(sizeof(MsgReady))
                          && client->playerId >= 0)
                 {
@@ -749,6 +757,18 @@ void Net::SendTestGrantToHost(uint8_t upgrade)
         || m_clientState != ClientState::Connected)
         return;
     MsgTestGrant msg;
+    msg.upgrade = upgrade;
+    SteamNetworkingSockets()->SendMessageToConnection(
+        m_hostConn, &msg, sizeof(msg), k_nSteamNetworkingSend_Reliable,
+        nullptr);
+}
+
+void Net::SendTestRevokeToHost(uint8_t upgrade)
+{
+    if (m_mode != Mode::Client || !m_hostConn
+        || m_clientState != ClientState::Connected)
+        return;
+    MsgTestRevoke msg;
     msg.upgrade = upgrade;
     SteamNetworkingSockets()->SendMessageToConnection(
         m_hostConn, &msg, sizeof(msg), k_nSteamNetworkingSend_Reliable,

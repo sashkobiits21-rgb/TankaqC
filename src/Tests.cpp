@@ -1232,6 +1232,10 @@ int RunClassTest()
         gm.matchEndTick = gm.tick + 100000000u;
         gm.players[0].x = -25; gm.players[0].z = -25;
         gm.players[1].x = 25; gm.players[1].z = 25;
+        gm.players[0].owned.push_back(uint8_t(UpgradeId::RadarClass));
+        gm.players[0].owned.push_back(uint8_t(UpgradeId::BouncyClass));
+        gm.players[0].owned.push_back(uint8_t(UpgradeId::RadarMines));
+        gm.RecalcStats(0);   // the stamp roll is MUTATION-gated now
         InputCmd idle[MaxPlayers]{};
         bool stamped = false;
         for (int burst = 0; burst < 30 && !stamped; ++burst)

@@ -28,6 +28,7 @@ public:
         std::function<void(int playerId, const MsgInput&)> onInput;
         std::function<void(int playerId, int slot)> onPurchase;
         std::function<void(int playerId, uint8_t upgrade)> onTestGrant;
+        std::function<void(int playerId, uint8_t upgrade)> onTestRevoke;
         std::function<void(int playerId, bool ready)> onReady;
         // client side
         std::function<void(int myPlayerId)> onWelcome;
@@ -71,6 +72,7 @@ public:
     void SendInputToHost(const MsgInput& msg);
     void SendPurchaseToHost(int slot);
     void SendTestGrantToHost(uint8_t upgrade);
+    void SendTestRevokeToHost(uint8_t upgrade);
     void SendReadyToHost(bool ready);
     void BroadcastSnapshot(const MsgSnapshot& snap);
     void QuickMatch(int need, int testMode);
