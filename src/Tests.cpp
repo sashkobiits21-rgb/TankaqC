@@ -774,8 +774,8 @@ int RunClassTest()
               "inside one tank length: the blast takes 100%% max HP");
         check(gt.players[0].score == 1,
               "the terrorist scores the posthumous kill");
-        check(gt.players[3].health == 84,
-              "11 u out: the wide wave still lands 16 damage");
+        check(gt.players[3].health == 59,
+              "11 u out: the wide wave still lands 41 damage");
         check(gt.players[2].health == 100,
               "outside the radius: untouched");
 

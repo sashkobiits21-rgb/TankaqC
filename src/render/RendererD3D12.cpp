@@ -25,7 +25,24 @@ constexpr UINT CbAlign = 256;
 constexpr UINT MaxObjectsPerFrame = 256;
 constexpr UINT MaxSkinnedPerFrame = 40;   // soldiers + skulls + rigtest
 constexpr UINT PaletteBytes = 64 * 64;   // MaxBones float4x4, 256-aligned
-constexpr UINT PaletteBase = (MaxObjectsPerFrame + 16) * CbAlign;
+
+// CB ring slot map (256-byte slots). PerFrameCB outgrew a single slot when
+// the STEALTH LOS boxes landed (560 bytes = 3 slots), which used to make the
+// shadow-pass copy bleed into the VfxCB slot right after it -- killing every
+// VFX draw on this backend. Every tenant now has an explicit, size-asserted
+// home (asserts follow the struct definitions below):
+//   [0..2]              main-pass PerFrameCB
+//   [3..255]            per-object CBs
+//   [256..257]          PostCB
+//   [258..260]          shadow-pass PerFrameCB
+//   [261..263]          VfxCB
+//   [264..272]          UiBurnCB
+//   [273..]             bone palettes
+constexpr UINT FrameCbSlots = 3;
+constexpr UINT ShadowCbSlot = MaxObjectsPerFrame + 2;
+constexpr UINT VfxCbSlot    = MaxObjectsPerFrame + 5;
+constexpr UINT BurnCbSlot   = MaxObjectsPerFrame + 8;
+constexpr UINT PaletteBase  = (MaxObjectsPerFrame + 17) * CbAlign;
 constexpr UINT UiVbBytes = 4 * 1024 * 1024;
 constexpr UINT MaxTextures = 64;
 constexpr UINT PostSrvBase = MaxTextures;      // 9 groups spaced 8 descriptors apart
@@ -89,6 +106,18 @@ struct PostCB
     XMFLOAT4 params2;       // giIntensity, aoRadius, aoStrength, skyGi
     XMFLOAT4 params3;       // giW, giH, 1/giW, 1/giH
 };
+
+// the slot map above only holds while these stay inside their reservations
+static_assert(sizeof(PerFrameCB) <= FrameCbSlots * CbAlign,
+              "PerFrameCB outgrew its slots: update the CB ring map");
+static_assert(sizeof(PostCB) <= (ShadowCbSlot - MaxObjectsPerFrame) * CbAlign,
+              "PostCB outgrew its slots: update the CB ring map");
+static_assert(sizeof(PerFrameCB) <= (VfxCbSlot - ShadowCbSlot) * CbAlign,
+              "shadow PerFrameCB outgrew its slots: update the CB ring map");
+static_assert(sizeof(VfxCB) <= (BurnCbSlot - VfxCbSlot) * CbAlign,
+              "VfxCB outgrew its slots: update the CB ring map");
+static_assert(sizeof(UiBurnCB) <= PaletteBase - BurnCbSlot * CbAlign,
+              "UiBurnCB outgrew its slots: update the CB ring map");
 
 struct GpuMesh
 {
@@ -495,12 +524,12 @@ public:
         for (size_t i = 0; i < numScorches; ++i)
             vc.scorches[i] = XMFLOAT4(frame.scorches[i].pos.x, frame.scorches[i].pos.y,
                                       frame.scorches[i].pos.z, frame.scorches[i].age);
-        UINT64 vfxCbOffset = UINT64(MaxObjectsPerFrame + 3) * CbAlign;
+        UINT64 vfxCbOffset = UINT64(VfxCbSlot) * CbAlign;
         memcpy(m_cbMapped[fi] + vfxCbOffset, &vc, sizeof(vc));
 
         PerFrameCB sf = pf;
         sf.viewProj = frame.lightViewProj;   // shadow pass renders from the sun
-        UINT64 shadowCbOffset = UINT64(MaxObjectsPerFrame + 2) * CbAlign;
+        UINT64 shadowCbOffset = UINT64(ShadowCbSlot) * CbAlign;
         memcpy(m_cbMapped[fi] + shadowCbOffset, &sf, sizeof(sf));
 
         // Bone palettes for skinned draws (own ring region, root CBV b2).
@@ -522,7 +551,7 @@ public:
         std::vector<Drawable> drawables;
         drawables.reserve(frame.objects.size());
         {
-            UINT objIndex = 1;
+            UINT objIndex = FrameCbSlots;   // frame CB owns slots 0..2
             for (const RenderObject& obj : frame.objects)
             {
                 if (obj.mesh < 0 || obj.mesh >= int(m_meshes.size())
@@ -819,7 +848,7 @@ public:
                     bc.uv[q] = XMFLOAT4(b.u0, b.v0, b.u1, b.v1);
                 }
                 bc.misc = XMFLOAT4(float(burnCount), frame.time, 5.0f, 0);
-                UINT64 burnCbOffset = UINT64(MaxObjectsPerFrame + 6) * CbAlign;
+                UINT64 burnCbOffset = UINT64(BurnCbSlot) * CbAlign;
                 memcpy(m_cbMapped[fi] + burnCbOffset, &bc, sizeof(bc));
                 m_cmd->SetGraphicsRootConstantBufferView(1, cbBase + burnCbOffset);
                 if (haveAtlas)

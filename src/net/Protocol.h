@@ -46,7 +46,8 @@ namespace tankaq::net
 // v27: VAMPIRE scaling (steal 20%+2%/upgrade cap 50%, burn 5+0.5/upgrade).
 // v28: TEMPLE centerpiece -- the center block became a 3-box collision
 // cross (NumObstacles 9); obstacle geometry is part of the sim contract.
-constexpr uint8_t ProtocolVersion = 28;
+// v29: TERRORIST blast radius doubled (14 -> 28).
+constexpr uint8_t ProtocolVersion = 29;
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t

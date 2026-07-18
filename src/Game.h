@@ -144,7 +144,7 @@ enum : uint8_t { ClassSoldier = 0, ClassBouncy, ClassNecro, ClassRadar,
 constexpr int kMaxClasses = 2;
 
 // UNIQUE rule-benders ------------------------------------------------------
-constexpr float TerroristRadius = 14.0f;  // death blast reach (huge)
+constexpr float TerroristRadius = 28.0f;  // death blast reach (near map-wide)
 constexpr float TerroristPlateau = 3.0f;  // 100% max HP inside one tank
                                           // length; beyond it the wave is
                                           // weaker: 60% at the edge of the
