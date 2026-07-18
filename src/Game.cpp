@@ -182,6 +182,20 @@ const UpgradeType kUpgradePool[UpgradeCount] = {
     { U(Stealth),      "STEALTH",
       "WALLS HIDE YOU  -35% SPD -15% DMG",                            6, 120,
       {}, 0 },
+    // MUTATIONS: light green class-pair fusions -- need both classes of one
+    // of their pairs (kMutations), one copy, and ONE mutation per player EVER
+    { U(Bubble),       "BUBBLE",
+      "SHIELD IS A ONE-WAY TRAP DOME",                                7, 130,
+      {}, 0 },
+    { U(SpatialArmor), "SPATIAL ARMOR",
+      "DEFLECTS HOME IN - 2X SPD+DMG",                                7, 130,
+      {}, 0 },
+    { U(HauntedSquad), "HAUNTED SQUAD",
+      "DEAD SOLDIERS RISE AS HALF-GHOSTS",                            7, 130,
+      {}, 0 },
+    { U(BonePlatoon),  "BONE PLATOON",
+      "SOLDIERS FIRE SKULLS, MIXED STATS",                            7, 130,
+      {}, 0 },
 };
 #undef S
 #undef U
@@ -201,8 +215,18 @@ const char* ValidateUpgradePool()
         if (isCard != (u.rarity == RarityClass))
             return "class cards (and only cards) use the CLASS rarity";
         if (!isCard && (u.rarity < 0 || u.rarity > 4)
-            && u.rarity != RarityUnique)
+            && u.rarity != RarityUnique && u.rarity != RarityMutation)
             return "bad rarity";
+        if (u.rarity == RarityMutation)
+        {
+            bool paired = false;
+            for (const MutationPair& m : kMutations)
+                paired |= m.id == UpgradeId(i);
+            if (!paired)
+                return "mutation missing from the kMutations pair table";
+            if (u.modCount != 0)
+                return "mutations are pure rule-benders, no stat mods";
+        }
         if (u.baseCost <= 0 || u.modCount < 0 || u.modCount > MaxModsPerUpgrade)
             return "bad cost/modCount";
         if (u.classReq != ClassNone && u.classReq >= ClassCount)
@@ -227,6 +251,24 @@ bool HasClass(const PlayerState& p, uint8_t cls)
 {
     for (uint8_t t : p.owned)
         if (kUpgradePool[t].classGrant == cls)
+            return true;
+    return false;
+}
+
+bool HasAnyMutation(const PlayerState& p)
+{
+    for (uint8_t t : p.owned)
+        if (kUpgradePool[t].rarity == RarityMutation)
+            return true;
+    return false;
+}
+
+bool MutationEligible(const PlayerState& p, UpgradeId id)
+{
+    if (HasAnyMutation(p))
+        return false;             // ONE mutation per player, ever
+    for (const MutationPair& m : kMutations)
+        if (m.id == id && HasClass(p, m.a) && HasClass(p, m.b))
             return true;
     return false;
 }
@@ -564,18 +606,22 @@ void GameState::GenerateOffer(int id)
         if (HasUpgrade(p, UpgradeId::TripleDoctrine) && u.rarity <= 4
             && u.classReq == ClassNone && u.classGrant == ClassNone)
             return false;
+        // MUTATIONS: both classes of a pair, no mutation owned yet
+        if (u.rarity == RarityMutation && !MutationEligible(p, UpgradeId(i)))
+            return false;
         return true;
     };
 
     // rarity roll: common 35 / uncommon 23 / rare 17 / CLASS 10 / epic 8 /
     // legendary 5 / UNIQUE 2 -- gold rule-benders are the rarest sight
     uint32_t r = NextRand() % 100;
-    int rarity = r < 35 ? 0
-               : r < 58 ? 1
-               : r < 75 ? 2
-               : r < 85 ? RarityClass
-               : r < 93 ? 3
-               : r < 98 ? 4 : RarityUnique;
+    int rarity = r < 32 ? 0
+               : r < 55 ? 1
+               : r < 72 ? 2
+               : r < 82 ? RarityClass
+               : r < 90 ? 3
+               : r < 95 ? 4
+               : r < 97 ? RarityUnique : RarityMutation;
     // uniform pick among eligible pool entries of that rarity; an empty class
     // band (both classes taken) degrades to rare, any other empty band falls
     // back to a uniform pick over everything eligible
@@ -637,10 +683,29 @@ void StripForUnique(PlayerState& p, UpgradeId bought)
     {
         const UpgradeType& u = kUpgradePool[p.owned[i]];
         bool isClassy = u.classGrant != ClassNone || u.classReq != ClassNone;
+        // mutations live off class pairs: PURE ARSENAL burns them too
+        isClassy |= u.rarity == RarityMutation;
         bool isNormal = u.rarity <= 4 && !isClassy;
         if ((arsenal && isClassy) || (!arsenal && isNormal))
             p.owned.erase(p.owned.begin() + i);
     }
+}
+
+// After any purchase, mutation offers still riding the conveyor may have
+// become impossible (a mutation was bought, or PURE ARSENAL burned the
+// classes). They vanish on the spot -- same spirit as stale class cards,
+// but visible: an offer you can never buy is clutter, not choice.
+static void SweepStaleMutationOffers(PlayerState& p)
+{
+    for (Offer& o : p.offers)
+        if (o.active == OfferActive
+            && kUpgradePool[o.type].rarity == RarityMutation
+            && !MutationEligible(p, UpgradeId(o.type)))
+            o = Offer{};
+    for (size_t i = p.pendingOffers.size(); i-- > 0; )
+        if (kUpgradePool[p.pendingOffers[i].type].rarity == RarityMutation
+            && !MutationEligible(p, UpgradeId(p.pendingOffers[i].type)))
+            p.pendingOffers.erase(p.pendingOffers.begin() + i);
 }
 
 bool GameState::TryPurchase(int id, int slot)
@@ -676,6 +741,10 @@ bool GameState::TryPurchase(int id, int slot)
                 && HasUpgrade(p, UpgradeId::TripleDoctrine)))
             return false;
     }
+    // MUTATIONS can also go stale on the conveyor (a class stripped, or a
+    // mutation bought from another slot): re-validate here too
+    if (u.rarity == RarityMutation && !MutationEligible(p, UpgradeId(o.type)))
+        return false;
     if (p.money < o.cost)
         return false;
     p.money = uint16_t(p.money - o.cost);
@@ -686,6 +755,7 @@ bool GameState::TryPurchase(int id, int slot)
     if (u.grant != UpgradeId::Count)
         p.owned.push_back(uint8_t(u.grant));
     StripForUnique(p, UpgradeId(o.type));
+    SweepStaleMutationOffers(p);
 
     int prevMax = MaxHealthFor(p);
     RecalcStats(id);
@@ -890,7 +960,8 @@ bool SegmentBlockedByObstacles(float x0, float z0, float x1, float z1,
     return false;
 }
 
-static void SpawnGhost(GameState& gs, int owner, float x, float z);
+static void SpawnGhost(GameState& gs, int owner, float x, float z,
+                       bool weak = false);
 
 void GameState::ApplyDamage(int shooterId, int victimId, int rawDamage,
                             int hitMoney)
@@ -1001,7 +1072,8 @@ static int NearestEnemyTank(const GameState& gs, int owner, float x, float z)
     return best;
 }
 
-static void SpawnGhost(GameState& gs, int owner, float x, float z)
+static void SpawnGhost(GameState& gs, int owner, float x, float z,
+                       bool weak)
 {
     for (GhostState& gh : gs.ghosts)
     {
@@ -1012,6 +1084,7 @@ static void SpawnGhost(GameState& gs, int owner, float x, float z)
         gh.owner = uint8_t(owner);
         gh.x = x;
         gh.z = z;
+        gh.weak = weak;   // HAUNTED SQUAD: half possession bite
         return;
     }
 }
@@ -1029,6 +1102,10 @@ static void SpawnPuddle(GameState& gs, int owner, float x, float z)
         pu.z = std::clamp(z, -ArenaHalf + 0.5f, ArenaHalf - 0.5f);
         pu.life = o.stats[int(Stat::AcidDuration)];
         pu.dps = o.stats[int(Stat::AcidDps)];
+        // BONE PLATOON: acid bites with an equal blend of the two families
+        if (HasUpgrade(o, UpgradeId::BonePlatoon))
+            pu.dps = (o.stats[int(Stat::AcidDps)]
+                      + o.stats[int(Stat::SoldierDamage)]) * 0.5f;
         return;
     }
 }
@@ -1228,10 +1305,12 @@ static void TickGhost(GameState& gs, GhostState& gh)
     gh.z = t.z + cosf(gh.angle) * gh.orbitR;
     if (gh.orbitR <= TankRadius + 0.3f)
     {
-        // POSSESSION: bake the necromancer's stats into the victim
+        // POSSESSION: bake the necromancer's stats into the victim.
+        // HAUNTED SQUAD half-ghosts possess at half strength.
         const PlayerState& o = gs.players[gh.owner];
-        t.possessTimer = o.stats[int(Stat::PossessDuration)];
-        t.possessDps = o.stats[int(Stat::PossessDps)];
+        float mul = gh.weak ? 0.5f : 1.0f;
+        t.possessTimer = o.stats[int(Stat::PossessDuration)] * mul;
+        t.possessDps = o.stats[int(Stat::PossessDps)] * mul;
         t.possessedBy = gh.owner;
         gh.active = false;
     }
@@ -1414,14 +1493,63 @@ static int GatherCoverSpots(CoverSpot* out, int cap)
 // FRESHEST aim (not the jitter-lagged turret), and the test is the tick's
 // SEGMENT against the face plane -- fast shells cannot tunnel between two
 // positions, and the shell's own radius counts at the edges.
+float BubbleRadiusFor(const PlayerState& p)
+{
+    return BubbleRadius * p.stats[int(Stat::ShieldWidth)]
+         / kBaseStats[int(Stat::ShieldWidth)];
+}
+
+void BubbleCenter(const PlayerState& p, float& cx, float& cz)
+{
+    float d = BubbleRadiusFor(p) + BubbleGap;
+    cx = p.x + sinf(p.shieldAimYaw) * d;
+    cz = p.z + cosf(p.shieldAimYaw) * d;
+}
+
 bool ShieldDeflectStep(GameState& gs, Projectile& pr)
 {
     for (int id = 0; id < MaxPlayers; ++id)
     {
         PlayerState& sp = gs.players[id];
-        if (!sp.active || sp.health <= 0 || sp.shieldTimer <= 0.0f
-            || id == pr.owner)
+        if (!sp.active || sp.health <= 0 || sp.shieldTimer <= 0.0f)
             continue;
+        // ---- BUBBLE mutation: a one-way trap dome instead of a face ----
+        // Rockets pass IN freely (any owner, the dome owner's included);
+        // any rocket crossing the wall from the INSIDE ricochets back,
+        // gains bounces, and (enemy shells) flips to the dome owner.
+        if (HasUpgrade(sp, UpgradeId::Bubble))
+        {
+            float bcx, bcz;
+            BubbleCenter(sp, bcx, bcz);
+            float R = BubbleRadiusFor(sp);
+            float step = pr.speed * TickDt;
+            float vx = sinf(pr.yaw) * step, vz = cosf(pr.yaw) * step;
+            float pxPrev = pr.x - vx, pzPrev = pr.z - vz;
+            float dPrev = sqrtf((pxPrev - bcx) * (pxPrev - bcx)
+                              + (pzPrev - bcz) * (pzPrev - bcz));
+            float dNow = sqrtf((pr.x - bcx) * (pr.x - bcx)
+                             + (pr.z - bcz) * (pr.z - bcz));
+            float wall = R - ProjectileRadius;
+            if (dPrev >= wall || dNow < wall || dNow < 1e-4f)
+                continue;                 // outside, or not crossing out
+            float nx = (pr.x - bcx) / dNow, nz = (pr.z - bcz) / dNow;
+            float rvx = sinf(pr.yaw), rvz = cosf(pr.yaw);
+            float rn = rvx * nx + rvz * nz;
+            rvx -= 2.0f * rn * nx;
+            rvz -= 2.0f * rn * nz;
+            pr.yaw = atan2f(rvx, rvz);
+            pr.x = bcx + nx * (wall - 0.05f);   // back inside the wall
+            pr.z = bcz + nz * (wall - 0.05f);
+            pr.bounces += BubbleBounceGain;
+            if (pr.owner != id)
+            {
+                pr.owner = uint8_t(id);   // now it fights for the trapper
+                pr.deflected = 1;         // orange from here on
+            }
+            return true;
+        }
+        if (id == pr.owner)
+            continue;                     // flat face: own rockets pass
         float fx = sinf(sp.shieldAimYaw), fz = cosf(sp.shieldAimYaw);
         float cxp = sp.x + fx * ShieldDist;
         float czp = sp.z + fz * ShieldDist;
@@ -1455,6 +1583,29 @@ bool ShieldDeflectStep(GameState& gs, Projectile& pr)
         pr.bounces += 1;                  // one free ricochet, always
         pr.owner = uint8_t(id);           // now it fights for the shieldman
         pr.deflected = 1;                 // orange from here on
+        // ---- SPATIAL ARMOR mutation: the barrier is a marksman's mirror.
+        // The deflected shell leaves aimed square at the nearest enemy,
+        // twice as fast and twice as hard -- stacking on every deflection
+        // (speed capped so segment tests stay sound).
+        if (HasUpgrade(sp, UpgradeId::SpatialArmor))
+        {
+            int tgt = -1;
+            float bestD2 = 1e18f;
+            for (int e = 0; e < MaxPlayers; ++e)
+            {
+                const PlayerState& ep = gs.players[e];
+                if (!ep.active || ep.health <= 0 || e == id)
+                    continue;
+                float dx = ep.x - pr.x, dz = ep.z - pr.z;
+                float d2 = dx * dx + dz * dz;
+                if (d2 < bestD2) { bestD2 = d2; tgt = e; }
+            }
+            if (tgt >= 0)
+                pr.yaw = atan2f(gs.players[tgt].x - pr.x,
+                                gs.players[tgt].z - pr.z);
+            pr.speed = std::min(pr.speed * SpatialArmorMul, SpatialSpeedCap);
+            pr.damage *= 2;
+        }
         return true;
     }
     return false;
@@ -1698,6 +1849,34 @@ static void SoldierTryFire(GameState& gs, SoldierState& s)
     // the box and detonates on the corner instead of reaching the target
     if (SegmentBlockedByObstacles(s.x, s.z, t.x, t.z, ProjectileRadius + 0.1f))
         return;
+    // BONE PLATOON mutation: the squad fires SKULLS instead of rockets.
+    // Cadence, contact damage and (at burst) acid are an equal blend of the
+    // two families: interval = avg(SkullRate, 1/fireRate), contact damage
+    // = avg(soldier rocket damage, SkullDamage).
+    const PlayerState& ownr = gs.players[s.owner];
+    if (HasUpgrade(ownr, UpgradeId::BonePlatoon))
+    {
+        for (SkullState& sk : gs.skulls)
+        {
+            if (sk.active)
+                continue;
+            float yaw = atan2f(dx, dz);
+            sk = SkullState{};
+            sk.active = true;
+            sk.owner = s.owner;
+            sk.x = s.x + sinf(yaw) * 0.8f;
+            sk.z = s.z + cosf(yaw) * 0.8f;
+            sk.yaw = yaw;
+            sk.life = 8.0f;
+            sk.dmg = (s.damage + ownr.stats[int(Stat::SkullDamage)]) * 0.5f;
+            s.fireCooldown = (ownr.stats[int(Stat::SkullRate)]
+                              + 1.0f / std::max(0.1f, s.fireRate)) * 0.5f;
+            s.muzzleFlash = 0.12f;
+            s.yaw = yaw;
+            break;
+        }
+        return;                    // no free skull slot = hold fire
+    }
     for (Projectile& pr : gs.projectiles)
     {
         if (pr.active)
@@ -1907,6 +2086,11 @@ void GameState::TickSoldier(SoldierState& s)
             && players[s.lastHitBy].active
             && HasClass(players[s.lastHitBy], ClassNecro))
             SpawnGhost(*this, s.lastHitBy, s.x, s.z);
+        // HAUNTED SQUAD mutation: the owner's dead soldiers rise as HALF
+        // ghosts (possession duration and damage halved) and go hunting
+        if (s.health <= 0.0f && players[s.owner].active
+            && HasUpgrade(players[s.owner], UpgradeId::HauntedSquad))
+            SpawnGhost(*this, s.owner, s.x, s.z, true);
         s.state = SoldierDying;
         s.deathTimer = SoldierDeathTime;
         return;
@@ -2157,6 +2341,9 @@ void GameState::TickSoldier(SoldierState& s)
 void GameState::AdvanceMovement(int id, const InputCmd& inRaw)
 {
     PlayerState& p = players[id];
+    // BUBBLE trap: remember where this tick started -- a tank that BEGAN
+    // fully inside someone's dome is contained for the whole tick
+    float bubblePrevX = p.x, bubblePrevZ = p.z;
     // POSSESSION: the ghost drives. Deterministic chaos derived from the
     // remaining-time bucket so client prediction replays the exact same
     // swerves after rebasing possessTimer from the snapshot.
@@ -2239,6 +2426,33 @@ void GameState::AdvanceMovement(int id, const InputCmd& inRaw)
         p.z += dz * speed * TickDt;
         p.hullYaw = MoveTowardsAngle(p.hullYaw, atan2f(dx, dz),
                                      HullFaceSpeed * TickDt);
+    }
+
+    // BUBBLE mutation: a one-way dome. Driving IN is free; a tank that
+    // started this tick fully inside is clamped back inside -- and dragged
+    // along as the dome rides ahead of its owner's aim. Applied BEFORE
+    // obstacle resolution so walls always win over the wall of the dome.
+    for (int b = 0; b < MaxPlayers; ++b)
+    {
+        const PlayerState& bp = players[b];
+        if (b == id || !bp.active || bp.health <= 0
+            || bp.shieldTimer <= 0.0f || !HasUpgrade(bp, UpgradeId::Bubble))
+            continue;
+        float bcx, bcz;
+        BubbleCenter(bp, bcx, bcz);
+        float inR = BubbleRadiusFor(bp) - TankRadius;
+        if (inR <= 0.2f)
+            continue;
+        float pdx = bubblePrevX - bcx, pdz = bubblePrevZ - bcz;
+        if (pdx * pdx + pdz * pdz > (inR + 0.10f) * (inR + 0.10f))
+            continue;                     // was not fully inside: free
+        float dx = p.x - bcx, dz = p.z - bcz;
+        float d = sqrtf(dx * dx + dz * dz);
+        if (d > inR && d > 1e-4f)
+        {
+            p.x = bcx + dx / d * inR;     // no way out until it pops
+            p.z = bcz + dz / d * inR;
+        }
     }
 
     p.x = std::clamp(p.x, -ArenaHalf + TankRadius, ArenaHalf - TankRadius);

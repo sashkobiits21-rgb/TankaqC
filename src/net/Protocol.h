@@ -47,7 +47,10 @@ namespace tankaq::net
 // v28: TEMPLE centerpiece -- the center block became a 3-box collision
 // cross (NumObstacles 9); obstacle geometry is part of the sim contract.
 // v29: TERRORIST blast radius doubled (14 -> 28).
-constexpr uint8_t ProtocolVersion = 29;
+// v30: MUTATIONS (light green class-pair fusions, one per player ever):
+// BUBBLE / SPATIAL ARMOR / HAUNTED SQUAD / BONE PLATOON. Pool grew, rarity
+// bands shifted, sim gained the trap dome + mirror deflection rules.
+constexpr uint8_t ProtocolVersion = 30;
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t

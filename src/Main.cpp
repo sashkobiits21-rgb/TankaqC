@@ -1165,14 +1165,42 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
         // SHIELD barrier: a pale energy lattice riding the turret facing.
         // See-through by construction (slats + posts), since the scene pass
         // draws opaque geometry only.
-        if (!dead && p.shieldTimer > 0.0f && g.meshShieldSlat >= 0)
+        if (!dead && p.shieldTimer > 0.0f && g.meshShieldSlat >= 0
+            && HasUpgrade(p, UpgradeId::Bubble))
+        {
+            // BUBBLE mutation: a light-green trap dome riding ahead of the
+            // aim -- a cage of stacked rings on a hemisphere profile (the
+            // scene pass is opaque-only, so see-through by construction)
+            float R = BubbleRadiusFor(p);
+            float fx = sinf(rTurret), fz = cosf(rTurret);
+            float cx = rx + fx * (R + BubbleGap);
+            float cz = rz + fz * (R + BubbleGap);
+            float flick = 0.9f + 0.1f * sinf(float(g.time) * 7.0f + i * 2.3f);
+            XMFLOAT4 glow{ 0.45f * flick, 1.0f * flick, 0.5f * flick, 0.8f };
+            for (int k = 0; k < 6; ++k)
+            {
+                float h = R * 1.02f;
+                float y = 0.12f + (h - 0.12f) * float(k) / 5.0f * 0.92f;
+                float rr = sqrtf(std::max(0.02f, 1.0f - (y * y) / (h * h)))
+                         * R;
+                frame.objects.push_back({ g.meshRing, g.texWhite,
+                    Store(XMMatrixScaling(rr, 1.0f, rr)
+                          * XMMatrixTranslation(cx, y, cz)),
+                    glow, true });
+            }
+        }
+        else if (!dead && p.shieldTimer > 0.0f && g.meshShieldSlat >= 0)
         {
             float w2 = p.stats[int(Stat::ShieldWidth)] * 0.5f;
             float fx = sinf(rTurret), fz = cosf(rTurret);
             float cx = rx + fx * ShieldDist, cz = rz + fz * ShieldDist;
             float rgx = cosf(rTurret), rgz = -sinf(rTurret);   // lateral
             float flick = 0.9f + 0.1f * sinf(float(g.time) * 9.0f + i * 2.3f);
-            XMFLOAT4 glow{ 0.5f * flick, 0.85f * flick, 1.1f * flick, 0.8f };
+            // SPATIAL ARMOR tints the barrier its mutation green
+            bool sa = HasUpgrade(p, UpgradeId::SpatialArmor);
+            XMFLOAT4 glow = sa
+                ? XMFLOAT4{ 0.45f * flick, 1.0f * flick, 0.5f * flick, 0.8f }
+                : XMFLOAT4{ 0.5f * flick, 0.85f * flick, 1.1f * flick, 0.8f };
             XMMATRIX rot = XMMatrixRotationY(rTurret);
             const float slatY[3] = { 0.16f, 0.72f, 1.28f };
             for (float y : slatY)

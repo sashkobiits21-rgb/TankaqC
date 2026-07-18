@@ -329,7 +329,7 @@ inline bool UiHotContains(float mx, float my)
 // ------------------------------------------------------------ shared layout
 constexpr float kCardW = 150, kCardH = 96, kCardGap = 10, kShopHeader = 34;
 constexpr int kNumSlats = 4;
-extern const UiColor kRarityCol[7];   // + UNIQUE gold               // indexed by UpgradeType::rarity
+extern const UiColor kRarityCol[8];   // + UNIQUE gold + MUTATION green  // indexed by UpgradeType::rarity
 extern const UiColor kPlayerUiCol[MaxLobbyPlayers];
 
 // ------------------------------------------------------- cross-module calls

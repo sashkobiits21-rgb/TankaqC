@@ -900,6 +900,101 @@ int RunClassTest()
               "quantized fields survive within tolerance");
     }
 
+    // ---- MUTATIONS: pair gating, one-per-player, dome trap, mirror ----
+    {
+        GameState gm{};
+        gm.SpawnPlayer(0);
+        gm.SpawnPlayer(1);
+        gm.phase = PhasePlaying;
+        gm.matchEndTick = gm.tick + 100000000u;
+        PlayerState& mu = gm.players[0];
+        check(!MutationEligible(mu, UpgradeId::Bubble),
+              "no classes: no mutations");
+        mu.owned.push_back(uint8_t(UpgradeId::ShieldClass));
+        mu.owned.push_back(uint8_t(UpgradeId::RadarClass));
+        check(MutationEligible(mu, UpgradeId::Bubble)
+                  && MutationEligible(mu, UpgradeId::SpatialArmor),
+              "shield+radar unlock both pair mutations");
+        check(!MutationEligible(mu, UpgradeId::BonePlatoon),
+              "the wrong pair unlocks nothing");
+        mu.owned.push_back(uint8_t(UpgradeId::Bubble));
+        check(!MutationEligible(mu, UpgradeId::SpatialArmor),
+              "one mutation per player, ever");
+        gm.RecalcStats(0);
+
+        // BUBBLE: a rocket inside heading out ricochets back and flips
+        mu.x = 0; mu.z = -20; mu.shieldAimYaw = 0; mu.shieldTimer = 4.0f;
+        gm.players[1].x = 20; gm.players[1].z = 20;
+        float bcx, bcz;
+        BubbleCenter(mu, bcx, bcz);
+        float R = BubbleRadiusFor(mu);
+        Projectile pr{};
+        pr.active = true;
+        pr.owner = 1;
+        pr.x = bcx; pr.z = bcz + R - ProjectileRadius + 0.10f;
+        pr.yaw = 0;                       // heading +Z: straight at the wall
+        pr.speed = 15.0f; pr.damage = 10; pr.bounces = 0;
+        check(ShieldDeflectStep(gm, pr), "the dome wall catches it inside");
+        check(pr.bounces == BubbleBounceGain && pr.owner == 0
+                  && pr.deflected == 1,
+              "inner ricochet: +2 bounces, flipped orange to the trapper");
+        float dAfter = sqrtf((pr.x - bcx) * (pr.x - bcx)
+                           + (pr.z - bcz) * (pr.z - bcz));
+        check(dAfter < R, "the shell stays inside the dome");
+        Projectile in{};
+        in.active = true; in.owner = 1;
+        in.x = bcx; in.z = bcz + R + 1.0f;   // just outside, flying in
+        in.yaw = XM_PI;                       // heading -Z, into the dome
+        in.speed = 15.0f;
+        check(!ShieldDeflectStep(gm, in), "outside shells enter freely");
+
+        // BUBBLE: a tank that began fully inside cannot leave
+        PlayerState& trapped = gm.players[1];
+        trapped.x = bcx; trapped.z = bcz;
+        InputCmd esc[MaxPlayers]{};
+        esc[1].moveZ = 1.0f;                  // floor it toward the wall
+        for (int t = 0; t < TickRate * 2; ++t)
+        {
+            mu.shieldTimer = 4.0f;            // hold the dome up
+            gm.AdvanceMovement(1, esc[1]);
+        }
+        float td = sqrtf((trapped.x - bcx) * (trapped.x - bcx)
+                       + (trapped.z - bcz) * (trapped.z - bcz));
+        check(td <= R - TankRadius + 0.01f, "no way out of the dome");
+
+        // SPATIAL ARMOR: deflection homes in, doubles speed and damage
+        GameState ga{};
+        ga.SpawnPlayer(0);
+        ga.SpawnPlayer(1);
+        ga.phase = PhasePlaying;
+        ga.matchEndTick = ga.tick + 100000000u;
+        PlayerState& sa = ga.players[0];
+        sa.owned.push_back(uint8_t(UpgradeId::ShieldClass));
+        sa.owned.push_back(uint8_t(UpgradeId::RadarClass));
+        sa.owned.push_back(uint8_t(UpgradeId::SpatialArmor));
+        ga.RecalcStats(0);
+        sa.x = 0; sa.z = 0; sa.shieldAimYaw = 0; sa.shieldTimer = 4.0f;
+        ga.players[1].x = 0; ga.players[1].z = 20;
+        Projectile ps{};
+        ps.active = true; ps.owner = 1;
+        ps.x = 0; ps.z = ShieldDist + 0.1f;   // right at the face, incoming
+        ps.yaw = XM_PI;                        // heading -Z into the barrier
+        ps.speed = 15.0f; ps.damage = 10; ps.bounces = 0;
+        check(ShieldDeflectStep(ga, ps), "the mirror face catches it");
+        check(ps.damage == 20 && fabsf(ps.speed - 30.0f) < 0.01f,
+              "SPATIAL ARMOR doubles speed and damage");
+        float wantYaw = atan2f(ga.players[1].x - ps.x,
+                               ga.players[1].z - ps.z);
+        check(fabsf(ps.yaw - wantYaw) < 0.001f,
+              "the deflected shell leaves aimed square at the enemy");
+
+        // PURE ARSENAL burns mutations along with the classes
+        sa.owned.push_back(uint8_t(UpgradeId::PureArsenal));
+        StripForUnique(sa, UpgradeId::PureArsenal);
+        check(!HasAnyMutation(sa) && CountClasses(sa) == 0,
+              "PURE ARSENAL burns classes and their mutations");
+    }
+
     Log("classtest done: %d failure(s)", fails);
     return fails;
 }

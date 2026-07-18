@@ -165,6 +165,29 @@ constexpr float DrunkenMax = 1.30f;
 constexpr int   DrunkenSegTicks = 96;     // new sway target every 1.5 s
 constexpr int RarityClass = 5;    // rolled between rare and epic
 constexpr int RarityUnique = 6;   // gold rule-benders, 2% band, stackable
+constexpr int RarityMutation = 7; // light green class-pair fusions: a player
+                                  // may own ONE mutation EVER (even with
+                                  // three classes), one copy, and it needs
+                                  // both classes of one of its pairs
+
+// MUTATIONS ----------------------------------------------------------------
+// BUBBLE: the barrier becomes a one-way trap dome that rides ahead of the
+// aim. Tanks and rockets enter freely; nothing gets out. Rockets ricochet
+// on the inside of the wall, gaining bounces and (enemy shells) flipping to
+// the dome owner -- shooting while trapped only makes it worse. Fully
+// contained tanks stay contained until the dome expires.
+constexpr float BubbleRadius = 4.6f;      // base dome radius (ShieldWidth scales)
+constexpr float BubbleGap = 1.8f;         // center rides R+gap ahead: the
+                                          // dome never covers its owner
+constexpr int   BubbleBounceGain = 2;     // bounces gained per inner ricochet
+// SPATIAL ARMOR: the flat barrier becomes a marksman's mirror -- deflected
+// rockets leave aimed square at the nearest enemy, twice as fast and twice
+// as hard. Stacks on every deflection; speed capped for sim sanity.
+constexpr float SpatialArmorMul = 2.0f;
+constexpr float SpatialSpeedCap = ProjectileSpeed * 3.0f;
+// HAUNTED SQUAD: soldiers that die rise as HALF ghosts (possession duration
+// and damage halved). BONE PLATOON: soldiers fire skulls instead of rockets;
+// cadence, contact damage and acid are an equal blend of both families.
 
 // Stable identity for every upgrade. The wire sends these as uint8 pool
 // indices, so ORDER IS THE PROTOCOL: append new entries before Count, never
@@ -194,6 +217,10 @@ enum class UpgradeId : uint8_t
     Vampire,
     Terrorist,
     Stealth,
+    Bubble,
+    SpatialArmor,
+    HauntedSquad,
+    BonePlatoon,
     Count
 };
 constexpr int UpgradeCount = int(UpgradeId::Count);
@@ -226,6 +253,25 @@ const char* ValidateUpgradePool();
 struct PlayerState;
 bool HasClass(const PlayerState& p, uint8_t cls);
 int CountClasses(const PlayerState& p);
+
+// Which class pairs unlock which mutation. A mutation may sit in several
+// pairs (BUBBLE serves both the radar and the bouncy shieldman).
+struct MutationPair { UpgradeId id; uint8_t a, b; };
+inline constexpr MutationPair kMutations[] = {
+    { UpgradeId::Bubble,       ClassShield,  ClassRadar  },
+    { UpgradeId::Bubble,       ClassShield,  ClassBouncy },
+    { UpgradeId::SpatialArmor, ClassShield,  ClassRadar  },
+    { UpgradeId::HauntedSquad, ClassSoldier, ClassNecro  },
+    { UpgradeId::BonePlatoon,  ClassSoldier, ClassNecro  },
+};
+inline bool IsMutation(UpgradeId id)
+{ return UpgradeDef(id).rarity == RarityMutation; }
+bool HasAnyMutation(const PlayerState& p);
+// offerable/purchasable: no mutation owned yet + both classes of some pair
+bool MutationEligible(const PlayerState& p, UpgradeId id);
+// BUBBLE geometry (sim + rendering share it)
+float BubbleRadiusFor(const PlayerState& p);
+void BubbleCenter(const PlayerState& p, float& cx, float& cz);
 
 // ------------------------------------------------------------------ offers
 // Each player runs a conveyor of up to 6 offers; a new random one arrives
@@ -484,6 +530,7 @@ struct GhostState
     float angle = 0;      // orbit phase around the target
     float orbitR = GhostOrbitStart;
     float life = GhostLifetime;   // vanishes when it runs out: RUN
+    bool weak = false;   // HAUNTED SQUAD rises: half possession (host-only)
 };
 
 // One tick of projectile flight: lifetime, movement, and the wall/obstacle

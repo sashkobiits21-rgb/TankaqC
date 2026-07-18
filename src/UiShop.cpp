@@ -13,7 +13,7 @@ using namespace DirectX;
 namespace tankaq
 {
 
-const UiColor kRarityCol[7] = {
+const UiColor kRarityCol[8] = {
     { 0.35f, 0.37f, 0.35f, 0.96f },   // common
     { 0.15f, 0.40f, 0.20f, 0.96f },   // uncommon
     { 0.14f, 0.28f, 0.55f, 0.96f },   // rare
@@ -21,6 +21,7 @@ const UiColor kRarityCol[7] = {
     { 0.62f, 0.35f, 0.10f, 0.96f },   // legendary
     { 0.07f, 0.44f, 0.47f, 0.96f },   // class card (teal)
     { 0.72f, 0.58f, 0.09f, 0.96f },   // UNIQUE (gold rule-benders)
+    { 0.42f, 0.72f, 0.34f, 0.96f },   // MUTATION (light green fusions)
 };
 
 void OpenShop()
@@ -159,7 +160,7 @@ static void BuildTestGrid(FrameData& frame)
         float cx = px + kPad + (i % kCols) * kCell;
         float cy = py + 46.0f + (i / kCols) * kCell;
         const UpgradeType& u = kUpgradePool[i];
-        UiColor bg = kRarityCol[std::clamp(u.rarity, 0, 6)];
+        UiColor bg = kRarityCol[std::clamp(u.rarity, 0, 7)];
         bool hov = g.mouseX >= cx && g.mouseX < cx + kCell - 4
                 && g.mouseY >= cy && g.mouseY < cy + kCell - 4;
         if (hov) hover = i;
@@ -374,7 +375,7 @@ void BuildShop(FrameData& frame)
         float dx = std::max(fx.ox - fx.x, fx.x + fx.w - fx.ox);
         float dy = std::max(fx.oy - fx.y, fx.y + fx.h - fx.oy);
         float maxR = sqrtf(dx * dx + dy * dy) + 8.0f;
-        UiColor bg = kRarityCol[std::clamp(fx.rarity, 0, 6)];
+        UiColor bg = kRarityCol[std::clamp(fx.rarity, 0, 7)];
         UiBurnQuad q{ fx.x, fx.y, fx.w, fx.h, bg.r, bg.g, bg.b, bg.a,
                       fx.ox, fx.oy, progress, maxR };
         frame.uiBurn.push_back(q);
@@ -456,11 +457,11 @@ void BuildShop(FrameData& frame)
         g.ui.Text(tx + 10, ty + 56, 1.8f,
                   afford ? UiColor{ 0.55f, 1, 0.55f, 1 }
                          : UiColor{ 1, 0.45f, 0.4f, 1 }, tip);
-        static const char* rarityNames[7] = { "COMMON", "UNCOMMON", "RARE",
+        static const char* rarityNames[8] = { "COMMON", "UNCOMMON", "RARE",
                                               "EPIC", "LEGENDARY", "CLASS",
-                                              "UNIQUE" };
+                                              "UNIQUE", "MUTATION" };
         g.ui.Text(tx + 10, ty + 74, 1.4f, { 1, 1, 1, 0.6f },
-                  rarityNames[std::clamp(def.rarity, 0, 6)]);
+                  rarityNames[std::clamp(def.rarity, 0, 7)]);
     }
 }
 
@@ -507,7 +508,7 @@ void BuildOwnedRow(FrameData& frame)
         const UpgradeType& u = kUpgradePool[types[i]];
         bool hov = float(g.mouseX) >= x && float(g.mouseX) <= x + tile
                 && float(g.mouseY) >= y && float(g.mouseY) <= y + tile;
-        UiColor bg = kRarityCol[std::clamp(u.rarity, 0, 6)];
+        UiColor bg = kRarityCol[std::clamp(u.rarity, 0, 7)];
         bg.a = hov ? 0.85f : 0.5f;
         g.ui.Rect(x, y, tile, tile, bg);
         AddIconQuad(frame, types[i], x + tile * 0.5f, y + tile * 0.5f, 12,
@@ -530,7 +531,7 @@ void BuildOwnedRow(FrameData& frame)
         float ty = y + tile + 6;
         g.ui.Rect(tx, ty, tw, th, { 0.05f, 0.06f, 0.05f, 0.94f });
         g.ui.RectOutline(tx, ty, tw, th, 2,
-                         kRarityCol[std::clamp(u.rarity, 0, 6)]);
+                         kRarityCol[std::clamp(u.rarity, 0, 7)]);
         g.ui.Text(tx + 8, ty + 8, 1.8f, { 1, 1, 1, 1 }, u.name);
         g.ui.Text(tx + 8, ty + 28, 1.4f, { 0.85f, 0.9f, 0.85f, 1 }, u.desc);
         char own[24];
