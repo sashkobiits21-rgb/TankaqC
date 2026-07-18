@@ -161,6 +161,8 @@ struct RenderObject
     int paletteIndex = -1;
     // STEALTH: clip pixels without 2D line-of-sight from the local tank
     float losClip = 0.0f;
+    // smoke-style noise dissolve, 0 = solid .. 1 = fully eaten (puddles)
+    float dissolve = 0.0f;
     // STEALTH: fully hidden right now -> also cast no shadow this frame
     bool noShadow = false;
 };
@@ -208,6 +210,10 @@ struct FrameData
     DirectX::XMFLOAT2 losViewer{};
     int losBoxCount = 0;
     DirectX::XMFLOAT4 losBoxes[56]{};   // big-map wall count fits
+    // refraction shockwaves for the post pass: x, z = world center,
+    // z-component = current radius, w = strength (fades with age)
+    DirectX::XMFLOAT4 shock[4]{};
+    int shockCount = 0;
     PostSettings post;
     std::vector<RenderObject> objects;
     std::vector<VfxBurstData> bursts;       // explosion smoke/fire (max 16 used)

@@ -1,15 +1,16 @@
-﻿CMake is re-running because C:/Tankaq/build/CMakeFiles/generate.stamp is out-of-date.
-  the file 'C:/Tankaq/CMakeLists.txt'
-  is newer than 'C:/Tankaq/build/CMakeFiles/generate.stamp.depend'
-  result='-1'
--- Selecting Windows SDK version 10.0.26100.0 to target Windows 10.0.26200.
--- Configuring done (0.2s)
--- Generating done (0.1s)
--- Build files have been written to: C:/Tankaq/build
-MSBuild version 18.7.8+1ac568fee for .NET Framework
+﻿MSBuild version 18.7.8+1ac568fee for .NET Framework
 
 C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Microsoft\VC\v180\Microsoft.CppBuild.targets(561,5): warning MSB8029: The Intermediate directory or Output directory cannot reside under the Temporary directory as it could lead to issues with incremental build. [C:\Tankaq\build\ZERO_CHECK.vcxproj]
 C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Microsoft\VC\v180\Microsoft.CppBuild.targets(561,5): warning MSB8029: The Intermediate directory or Output directory cannot reside under the Temporary directory as it could lead to issues with incremental build. [C:\Tankaq\build\TankaqClient.vcxproj]
+  Anim.cpp
+  AssetLoad.cpp
+  Main.cpp
+  Tests.cpp
+  Ui.cpp
+  UiHud.cpp
+  UiShop.cpp
+  RendererD3D11.cpp
+  RendererD3D12.cpp
   TankaqClient.vcxproj -> C:\Tankaq\bin\Release\TankaqClient.exe
 C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Microsoft\VC\v180\Microsoft.CppBuild.targets(561,5): warning MSB8029: The Intermediate directory or Output directory cannot reside under the Temporary directory as it could lead to issues with incremental build. [C:\Tankaq\build\ALL_BUILD.vcxproj]
 BUILDDONE

@@ -161,6 +161,8 @@ struct App
 
     // necromancer + radar visuals
     int meshSkull = -1, meshJaw = -1, meshPuddle = -1, meshRing = -1;
+    int meshPuddleVar[8]{ -1, -1, -1, -1, -1, -1, -1, -1 };  // splat prefabs
+    int texAcid = -1, texAcidNRA = -1;
     int meshGhost = -1, meshWedge = -1;
     // grenades (FRAG PACK) + the launcher prop welded to the soldier's hand
     int meshGrenade = -1;
@@ -186,7 +188,13 @@ struct App
     bool prevGrenadeActive[MaxGrenades]{};     // boom on grenade fuse-out
     DirectX::XMFLOAT3 prevGrenadePos[MaxGrenades]{};
     int prevPlayerHealth[MaxPlayers]{};        // TERRORIST death detection
-    std::vector<std::pair<DirectX::XMFLOAT3, double>> shockwaves;
+    struct Shockwave
+    {
+        DirectX::XMFLOAT3 pos;
+        double t0;
+        bool sounded = false;   // one-shot when the ring reaches the camera
+    };
+    std::vector<Shockwave> shockwaves;
     float prevProjRadar[MaxProjectiles]{};     // per-circle explosion VFX
     float prevProjYaw[MaxProjectiles]{};       // tree layout at death time
     uint8_t prevProjRings[MaxProjectiles]{};

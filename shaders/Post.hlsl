@@ -23,6 +23,8 @@ cbuffer PostCB : register(b0)
     float4 gParams;        // x = gi rays, y = temporal samples, z = gi on, w = ao on
     float4 gParams2;       // x = gi intensity, y = ao radius, z = ao strength, w = sky gi
     float4 gParams3;       // giW, giH, 1/giW, 1/giH (GI target resolution)
+    float4 gShock[4];      // refraction rings: world x, z, radius, strength
+    float4 gShockMeta;     // x = count
 };
 
 Texture2D texA : register(t0);
@@ -345,21 +347,52 @@ float4 PSComposite(FsOut i) : SV_Target
 float4 PSAA(FsOut i) : SV_Target
 {
     float2 px = gScreen.zw;
-    float3 c = texA.SampleLevel(sPoint, i.uv, 0).rgb;
-    float3 n = texA.SampleLevel(sLinear, i.uv + float2(0, -px.y), 0).rgb;
-    float3 s = texA.SampleLevel(sLinear, i.uv + float2(0, px.y), 0).rgb;
-    float3 e = texA.SampleLevel(sLinear, i.uv + float2(px.x, 0), 0).rgb;
-    float3 w = texA.SampleLevel(sLinear, i.uv + float2(-px.x, 0), 0).rgb;
+    float2 uv = i.uv;
+
+    // SHOCKWAVE REFRACTION: each blast is an invisible expanding glass
+    // ring. Project its world center + radius into screen space; pixels in
+    // a band around the ring sample the frame from a radially displaced
+    // position (light bending), and the band also boosts the tent blur so
+    // the rim smears glassily in screen space.
+    float blurBoost = 0.0;
+    float aspect = gScreen.x / gScreen.y;
+    for (int sIdx = 0; sIdx < int(gShockMeta.x); ++sIdx)
+    {
+        float4 sw = gShock[sIdx];
+        float4 cp = mul(float4(sw.x, 0.1, sw.y, 1.0), gViewProj);
+        if (cp.w <= 0.01) continue;
+        float2 css = cp.xy / cp.w * float2(0.5, -0.5) + 0.5;
+        float4 rp = mul(float4(sw.x + sw.z, 0.1, sw.y, 1.0), gViewProj);
+        float2 rss = rp.xy / rp.w * float2(0.5, -0.5) + 0.5;
+        float radSS = length((rss - css) * float2(aspect, 1.0));
+        float2 d = (uv - css) * float2(aspect, 1.0);
+        float dist = length(d);
+        float band = max(radSS, 0.001) * 0.12 + 0.012;
+        float x = (dist - radSS) / band;
+        if (abs(x) > 1.6) continue;
+        float prof = exp(-x * x * 2.0);
+        float2 dir = dist > 1e-4 ? d / dist : float2(0, 0);
+        dir.x /= aspect;
+        uv -= dir * prof * sw.w * 0.016;    // pull inward: a lens front
+        blurBoost = max(blurBoost, prof * sw.w);
+    }
+
+    float3 c = texA.SampleLevel(sLinear, uv, 0).rgb;
+    float3 n = texA.SampleLevel(sLinear, uv + float2(0, -px.y), 0).rgb;
+    float3 s = texA.SampleLevel(sLinear, uv + float2(0, px.y), 0).rgb;
+    float3 e = texA.SampleLevel(sLinear, uv + float2(px.x, 0), 0).rgb;
+    float3 w = texA.SampleLevel(sLinear, uv + float2(-px.x, 0), 0).rgb;
 
     const float3 L = float3(0.299, 0.587, 0.114);
     float lC = dot(c, L), lN = dot(n, L), lS = dot(s, L), lE = dot(e, L), lW = dot(w, L);
     float lMin = min(lC, min(min(lN, lS), min(lE, lW)));
     float lMax = max(lC, max(max(lN, lS), max(lE, lW)));
     float contrast = lMax - lMin;
-    if (contrast < 0.06)
+    if (contrast < 0.06 && blurBoost < 0.05)
         return float4(c, 1.0);
 
     float3 tent = (n + s + e + w) * 0.25;
     float blend = saturate(contrast * 5.0 - 0.2) * 0.62;
+    blend = max(blend, saturate(blurBoost) * 0.85);   // glassy smeared rim
     return float4(lerp(c, tent, blend), 1.0);
 }

@@ -1161,6 +1161,88 @@ ImageData MakeSolidTexture(uint8_t r, uint8_t g, uint8_t b)
     return img;
 }
 
+MeshData MakePuddleSplat(uint32_t seed)
+{
+    MeshData m;
+    uint32_t s = seed * 747796405u + 2891336453u;
+    auto rnd = [&]()
+    {
+        s ^= s << 13; s ^= s >> 17; s ^= s << 5;
+        return float(s & 0xFFFFFF) / float(0xFFFFFF);
+    };
+    auto uvOf = [](float x, float z, float& u, float& v)
+    {
+        u = x / 2.8f + 0.5f;
+        v = z / 2.8f + 0.5f;
+    };
+    // wobbly disc: radius modulated by two sine harmonics so nothing is a
+    // perfect circle -- reads as a hand-drawn splash blob
+    auto addBlob = [&](float cx, float cz, float r)
+    {
+        const int Seg = 26;
+        float p1 = rnd() * XM_2PI, p2 = rnd() * XM_2PI;
+        uint32_t base = uint32_t(m.verts.size());
+        Vertex c{};
+        c.px = cx; c.py = 0; c.pz = cz;
+        c.ny = 1;
+        uvOf(cx, cz, c.u, c.v);
+        m.verts.push_back(c);
+        for (int k = 0; k <= Seg; ++k)
+        {
+            float a = XM_2PI * float(k) / float(Seg);
+            float rr = r * (1.0f + 0.20f * sinf(3.0f * a + p1)
+                                 + 0.11f * sinf(7.0f * a + p2));
+            Vertex v{};
+            v.px = cx + sinf(a) * rr;
+            v.pz = cz + cosf(a) * rr;
+            v.ny = 1;
+            uvOf(v.px, v.pz, v.u, v.v);
+            m.verts.push_back(v);
+        }
+        for (int k = 1; k <= Seg; ++k)
+        {
+            m.indices.push_back(base);
+            m.indices.push_back(base + uint32_t(k));
+            m.indices.push_back(base + uint32_t(k + 1));
+        }
+    };
+    // thin neck joining two blob centers (overlap shades identically in the
+    // opaque pass, so the union just works)
+    auto addNeck = [&](float ax, float az, float bx, float bz, float w)
+    {
+        float dx = bx - ax, dz = bz - az;
+        float len = sqrtf(dx * dx + dz * dz);
+        if (len < 1e-4f) return;
+        float nx = -dz / len * w, nz = dx / len * w;
+        uint32_t base = uint32_t(m.verts.size());
+        float qx[4] = { ax + nx, ax - nx, bx - nx, bx + nx };
+        float qz[4] = { az + nz, az - nz, bz - nz, bz + nz };
+        for (int k = 0; k < 4; ++k)
+        {
+            Vertex v{};
+            v.px = qx[k]; v.pz = qz[k]; v.ny = 1;
+            uvOf(v.px, v.pz, v.u, v.v);
+            m.verts.push_back(v);
+        }
+        m.indices.push_back(base); m.indices.push_back(base + 1);
+        m.indices.push_back(base + 2);
+        m.indices.push_back(base); m.indices.push_back(base + 2);
+        m.indices.push_back(base + 3);
+    };
+    addBlob(0, 0, 0.70f + rnd() * 0.20f);
+    int sats = 2 + int(rnd() * 2.999f);   // 2..4 satellites
+    for (int b = 0; b < sats; ++b)
+    {
+        float ang = rnd() * XM_2PI;
+        float d = 0.60f + rnd() * 0.55f;
+        float bx = sinf(ang) * d, bz = cosf(ang) * d;
+        addNeck(0, 0, bx, bz, 0.09f + rnd() * 0.09f);
+        addBlob(bx, bz, 0.26f + rnd() * 0.26f);
+    }
+    ComputeTangents(m);
+    return m;
+}
+
 MeshData MakeDisc(float radius, float y, int segments)
 {
     MeshData m;

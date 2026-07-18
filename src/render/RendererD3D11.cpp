@@ -74,6 +74,8 @@ struct PostCB
     XMFLOAT4 params;        // giRays, temporalSamples, giOn, aoOn
     XMFLOAT4 params2;       // giIntensity, aoRadius, aoStrength, skyGi
     XMFLOAT4 params3;       // giW, giH, 1/giW, 1/giH
+    XMFLOAT4 shock[4];      // refraction rings: x, z, radius, strength
+    XMFLOAT4 shockMeta;     // x = count
 };
 
 struct GpuMesh
@@ -398,7 +400,7 @@ public:
                 PerObjectCB po{};
                 po.world = obj.world;
                 po.tint = obj.tint;
-                po.misc2 = XMFLOAT4(obj.losClip, 0.0f, 0.0f, 0.0f);
+                po.misc2 = XMFLOAT4(obj.losClip, obj.dissolve, 0.0f, 0.0f);
                 UpdateCB(m_cbObject.Get(), &po, sizeof(po));
                 const GpuMesh& mesh = m_meshes[obj.mesh];
                 BindMeshVs(mesh, obj, frame);   // static or skinned VS/layout
@@ -457,7 +459,7 @@ public:
             po.misc = XMFLOAT4(obj.isDynamic ? 1.0f : 0.0f,
                                obj.deformDist, obj.deformAge,
                                obj.deformDist >= 0.0f ? 1.0f : 0.0f);
-            po.misc2 = XMFLOAT4(obj.losClip, 0.0f, 0.0f, 0.0f);
+            po.misc2 = XMFLOAT4(obj.losClip, obj.dissolve, 0.0f, 0.0f);
             UpdateCB(m_cbObject.Get(), &po, sizeof(po));
 
             const GpuMesh& mesh = m_meshes[obj.mesh];
@@ -575,6 +577,9 @@ public:
                              frame.post.aoEnabled ? 1.0f : 0.0f);
         pc.params2 = XMFLOAT4(frame.post.giIntensity, 0.9f, 1.0f, 0.35f);
         pc.params3 = XMFLOAT4(float(m_giW), float(m_giH), 1.0f / m_giW, 1.0f / m_giH);
+        for (int s = 0; s < 4; ++s)
+            pc.shock[s] = frame.shock[s];
+        pc.shockMeta = XMFLOAT4(float(frame.shockCount), 0, 0, 0);
         UpdateCB(m_cbPost.Get(), &pc, sizeof(pc));
 
         m_ctx->IASetInputLayout(nullptr);

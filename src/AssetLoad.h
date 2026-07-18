@@ -111,6 +111,10 @@ MeshData MakeGroundPlane(float halfSize, float uvTiles);
 MeshData MakeSphere(float radius, int slices, int stacks);
 MeshData MakeRocket();   // +Z forward, z in [-0.5, 0.5] (squish shader relies on it)
 MeshData MakeDisc(float radius, float y, int segments);       // flat, +Y up
+// A drawn paint-splash: wobbly central blob + 2-4 satellite blobs joined by
+// thin necks, one flat mesh, UVs = top projection. Deterministic per seed
+// (8 variants get built at boot and reused like prefabs).
+MeshData MakePuddleSplat(uint32_t seed);
 MeshData MakeRing(float radius, float width, int segments);   // flat annulus
 MeshData MakeGhostMesh();   // lathed spook: dome + pinched waist + wavy hem
 MeshData MakePieWedge();    // 15-degree flat sector, radius 1 (countdown fill)

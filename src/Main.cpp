@@ -804,7 +804,7 @@ void UpdateVfxFromSim()
         // swallow every other explosion
         if (g.prevSoldierKami[i] && !kamiNow && InSession())
         {
-            g.shockwaves.push_back({ g.prevSoldierKamiPos[i], g.time });
+            g.shockwaves.push_back({ g.prevSoldierKamiPos[i], g.time, false });
             if (g.bursts.size() >= 16)
                 g.bursts.erase(g.bursts.begin());
             g.bursts.push_back({ g.prevSoldierKamiPos[i], g.time });
@@ -842,7 +842,7 @@ void UpdateVfxFromSim()
         if (g.prevPlayerHealth[i] > 0 && p.health <= 0 && p.active
             && HasUpgrade(p, UpgradeId::Terrorist) && InSession())
         {
-            g.shockwaves.push_back({ XMFLOAT3(p.x, 0.1f, p.z), g.time });
+            g.shockwaves.push_back({ XMFLOAT3(p.x, 0.1f, p.z), g.time, false });
             if (g.bursts.size() >= 16)
                 g.bursts.erase(g.bursts.begin());
             g.bursts.push_back({ XMFLOAT3(p.x, 0.6f, p.z), g.time });
@@ -852,8 +852,23 @@ void UpdateVfxFromSim()
         g.prevPlayerHealth[i] = p.active ? p.health : 0;
     }
     while (!g.shockwaves.empty()
-           && g.time - g.shockwaves.front().second > 0.8)
+           && g.time - g.shockwaves.front().t0 > 0.8)
         g.shockwaves.erase(g.shockwaves.begin());
+    // the GLASS ring: a distinct whump the moment the expanding front
+    // sweeps over the local camera
+    for (auto& sw : g.shockwaves)
+    {
+        if (sw.sounded)
+            continue;
+        float u = std::clamp(float(g.time - sw.t0) / 0.8f, 0.0f, 1.0f);
+        float r = TerroristRadius * (1.0f - (1.0f - u) * (1.0f - u));
+        float dx = g.camFocus.x - sw.pos.x, dz = g.camFocus.z - sw.pos.z;
+        if (dx * dx + dz * dz <= r * r)
+        {
+            sw.sounded = true;
+            snd::Play(snd::Sfx::Glass, 0.9f, 0.45f * SndJitter(0.05f));
+        }
+    }
 
     // prune dead effects
     while (!g.bursts.empty() && g.time - g.bursts.front().t0 > 3.0)
@@ -1637,19 +1652,32 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
             { 0.35f, 0.95f, 0.2f, 0.8f }, true });
     }
 
-    // acid puddles: flat green discs, shrinking out in their last second
+    // acid puddles: procedural splat prefabs (slot picks one of 8), the goo
+    // texture, and a smoke-style NOISE DISSOLVE over the final stretch of
+    // life instead of the old shrink
     for (int i = 0; i < MaxPuddles; ++i)
     {
         const PuddleState& pu = g.game.puddles[i];
         if (!pu.active)
             continue;
-        float fade = std::clamp(pu.life, 0.0f, 1.0f);
-        float pulse = 1.0f + 0.05f * sinf(float(g.time) * 4.0f + float(i));
-        float s = PuddleRadius * pulse * (0.35f + 0.65f * fade);
-        frame.objects.push_back({ g.meshPuddle, g.texWhite,
-            Store(XMMatrixScaling(s, 1.0f, s)
-                  * XMMatrixTranslation(pu.x, 0.0f, pu.z)),
-            { 0.3f, 0.9f, 0.18f, 0.3f }, true });
+        int var = i % 8;
+        int mesh = g.meshPuddleVar[var] >= 0 ? g.meshPuddleVar[var]
+                                             : g.meshPuddle;
+        float yaw = float((i * 2654435761u) & 1023u) * (XM_2PI / 1024.0f);
+        RenderObject ro{ mesh,
+                         g.texAcid >= 0 ? g.texAcid : g.texWhite,
+                         Store(XMMatrixRotationY(yaw)
+                               * XMMatrixScaling(PuddleRadius, 1.0f,
+                                                 PuddleRadius)
+                               * XMMatrixTranslation(pu.x, 0.03f, pu.z)),
+                         g.texAcid >= 0
+                             ? XMFLOAT4{ 0.9f, 1.05f, 0.8f, 0.35f }
+                             : XMFLOAT4{ 0.3f, 0.9f, 0.18f, 0.3f },
+                         true };
+        if (g.texAcidNRA >= 0)
+            ro.texNormal = g.texAcidNRA;
+        ro.dissolve = std::clamp(1.0f - pu.life / 1.2f, 0.0f, 0.999f);
+        frame.objects.push_back(ro);
     }
 
     // ghosts: pale wisps spiraling toward their victim (through walls)
@@ -1688,23 +1716,19 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
             { 0.75f, 0.85f, 1.15f, 0.85f }, true });
     }
 
-    // TERRORIST shockwaves: a ring races out to the blast radius and fades
+    // SHOCKWAVES are pure refraction now: no geometry, just the expanding
+    // ring's world data handed to the post pass, which bends the already-
+    // rendered frame around it (glass front, screen-space blurred rim)
+    frame.shockCount = 0;
     for (const auto& sw : g.shockwaves)
     {
-        float age = float(g.time - sw.second);
-        if (age < 0.0f || age > 0.8f)
+        float age = float(g.time - sw.t0);
+        if (age < 0.0f || age > 0.8f || frame.shockCount >= 4)
             continue;
         float u = age / 0.8f;
         float r = TerroristRadius * (1.0f - (1.0f - u) * (1.0f - u));
-        float fade = 1.0f - u;
-        frame.objects.push_back({ g.meshRing, g.texWhite,
-            Store(XMMatrixScaling(r, 1.0f, r)
-                  * XMMatrixTranslation(sw.first.x, 0.10f, sw.first.z)),
-            { 1.0f * fade, 0.5f * fade, 0.12f * fade, 1.0f }, true });
-        frame.objects.push_back({ g.meshRing, g.texWhite,
-            Store(XMMatrixScaling(r * 0.82f, 1.0f, r * 0.82f)
-                  * XMMatrixTranslation(sw.first.x, 0.16f, sw.first.z)),
-            { 0.9f * fade, 0.25f * fade, 0.08f * fade, 1.0f }, true });
+        frame.shock[frame.shockCount++] =
+            XMFLOAT4(sw.pos.x, sw.pos.z, r, 1.0f - u);
     }
 
     // grenades: interpolated ballistic hops, red pulse once the fuse is lit
@@ -2787,7 +2811,10 @@ bool CreateAssets()
 
     ImageData palette = g.tank.palette;
     g.texPalette = r->CreateTexture(palette.rgba.data(), palette.width, palette.height);
-    ImageData groundTex = MakeGroundTexture(256);
+    // stylized brown dirt (generated, tileable); procedural gray fallback
+    ImageData groundTex = LoadImageFile("assets/ground/dirt.png");
+    if (groundTex.width == 0)
+        groundTex = MakeGroundTexture(256);
     g.texGround = r->CreateTexture(groundTex.rgba.data(), groundTex.width, groundTex.height);
     ImageData wallTex = MakeWallTexture(256);   // higher res: the normal map
                                                 // needs mortar-line detail
@@ -2819,6 +2846,25 @@ bool CreateAssets()
         MeshData disc = MakeDisc(1.0f, 0.04f, 24);
         g.meshPuddle = r->CreateMesh(disc.verts.data(), disc.verts.size(),
                                      disc.indices.data(), disc.indices.size());
+        // acid splats: 8 procedural paint-splash prefabs + the goo texture
+        for (int k = 0; k < 8; ++k)
+        {
+            MeshData sp = MakePuddleSplat(uint32_t(k) * 7919u + 3u);
+            g.meshPuddleVar[k] = r->CreateMesh(sp.verts.data(),
+                                               sp.verts.size(),
+                                               sp.indices.data(),
+                                               sp.indices.size());
+        }
+        ImageData acid = LoadImageFile("assets/fx/acid.png");
+        if (acid.width > 0)
+        {
+            g.texAcid = r->CreateTexture(acid.rgba.data(), acid.width,
+                                         acid.height);
+            ImageData acidNRA = MakeNormalRoughFromTexture(acid, 1.4f,
+                                                           0.12f, 0.45f);
+            g.texAcidNRA = r->CreateTexture(acidNRA.rgba.data(),
+                                            acidNRA.width, acidNRA.height);
+        }
         MeshData ring = MakeRing(1.0f, 0.06f, 48);
         g.meshRing = r->CreateMesh(ring.verts.data(), ring.verts.size(),
                                    ring.indices.data(), ring.indices.size());

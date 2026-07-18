@@ -291,6 +291,33 @@ PsOut PSMesh(VsOut i)
         n = normalize(tn.x * T + tn.y * B + tn.z * ng);
     }
 
+    // NOISE DISSOLVE (gMisc2.y): eaten like smoke -- a 2-octave value
+    // noise thresholded against the dissolve amount, with a brightened
+    // burn line right at the eating edge
+    float burnEdge = 1.0;
+    if (gMisc2.y > 0.001)
+    {
+        float2 nuv = i.uv * 6.0;
+        float nz = 0.0;
+        float amp = 0.62;
+        [unroll]
+        for (int oct = 0; oct < 2; ++oct)
+        {
+            float2 f = floor(nuv), fr = frac(nuv);
+            fr = fr * fr * (3.0 - 2.0 * fr);
+            float a0 = frac(sin(dot(f, float2(127.1, 311.7))) * 43758.5453);
+            float a1 = frac(sin(dot(f + float2(1, 0), float2(127.1, 311.7))) * 43758.5453);
+            float a2 = frac(sin(dot(f + float2(0, 1), float2(127.1, 311.7))) * 43758.5453);
+            float a3 = frac(sin(dot(f + float2(1, 1), float2(127.1, 311.7))) * 43758.5453);
+            nz += lerp(lerp(a0, a1, fr.x), lerp(a2, a3, fr.x), fr.y) * amp;
+            nuv *= 2.13;
+            amp *= 0.55;
+        }
+        if (nz < gMisc2.y)
+            discard;
+        burnEdge = 1.0 + 0.9 * (1.0 - smoothstep(gMisc2.y, gMisc2.y + 0.14, nz));
+    }
+
     float3 sun = gSunDirAmbient.xyz;
     float ndl = saturate(dot(n, sun));
     float shadow = SampleShadow(i.wpos, ndl);
@@ -323,6 +350,7 @@ PsOut PSMesh(VsOut i)
                            + SunColor * (ndl * 0.9 * shadow))
                + spec * SunColor;
     lit = lerp(lit, albedo, gTint.a); // emissive-ish flash
+    lit *= burnEdge;                  // dissolve edge glows as it eats
 
     float dist = length(gCamPosFog.xyz - i.wpos);
     float fog = 1.0 - exp(-dist * gCamPosFog.w);
