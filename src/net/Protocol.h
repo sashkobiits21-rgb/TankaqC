@@ -55,7 +55,9 @@ namespace tankaq::net
 // the acid ball (snapshot section appended after grenades). MaxSoldiers
 // 12 -> 32 (wire arrays). RADAR buff: direct body hits detonate the ring
 // tree, and the rings see (and pop) poltergeist skulls.
-constexpr uint8_t ProtocolVersion = 31;
+// v32: sun lowered (shadows ~2x longer) -- InSunlight geometry is part of
+// the sim contract (vampire burn).
+constexpr uint8_t ProtocolVersion = 32;
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t

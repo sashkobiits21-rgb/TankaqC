@@ -1038,10 +1038,11 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
     // With GI on, the flat ambient term drops and bounce light fills it back in.
     frame.ambient = g.post.giEnabled ? 0.20f : 0.34f;
 
-    // Sun at a lower angle for readable shadows. The ortho box follows the
-    // camera focus (tighter box = sharper shadows) and its translation snaps
-    // to the shadow texel grid so edges don't shimmer while driving.
-    frame.sunDir = XMFLOAT3(0.489f, 0.636f, 0.372f);   // pre-normalized
+    // Sun at a LOW angle: shadows stretch to ~1.9x caster height (twice the
+    // old length) -- long readable cover for vampires. The ortho box follows
+    // the camera focus (tighter box = sharper shadows) and its translation
+    // snaps to the shadow texel grid so edges don't shimmer while driving.
+    frame.sunDir = XMFLOAT3(0.707f, 0.460f, 0.538f);   // pre-normalized
     {
         const float BoxSize = 58.0f;
         XMVECTOR sun = XMVectorSet(frame.sunDir.x, frame.sunDir.y, frame.sunDir.z, 0);

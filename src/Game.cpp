@@ -295,8 +295,8 @@ int CountClasses(const PlayerState& p)
 }
 
 // Heights sized so shadows are USABLE COVER for vampires: a box must
-// throw a shade strip wider than a tank (shadow length ~= 1.2x height
-// along the fixed sun direction).
+// throw a shade strip wider than a tank (shadow length ~= 1.9x height
+// along the fixed low sun direction).
 // The center is the TEMPLE (user-authored stepped pyramid, assets/Temple):
 // its collision is a cross of three boxes -- the tiered body plus the two
 // low staircase strips running N-S and E-W. Low boxes (< 2.0 tall) still
@@ -1224,9 +1224,10 @@ void TickAcidBall(GameState& gs, AcidBallState& ab)
 static bool ShadowedByBox(float px, float pz, float cx, float cz,
                           float hx, float hz, float height)
 {
-    // frame.sunDir (0.489, 0.636, 0.372), pre-normalized; rays travel -sun
-    const float Lx = -0.489f / 0.636f * height;
-    const float Lz = -0.372f / 0.636f * height;
+    // frame.sunDir (0.707, 0.460, 0.538), pre-normalized; rays travel -sun.
+    // The low sun throws shadows ~1.9x the caster height (long vampire cover).
+    const float Lx = -0.707f / 0.460f * height;
+    const float Lz = -0.538f / 0.460f * height;
     float lo = 0.0f, hi = 1.0f;
     auto axis = [&](float p, float c, float h, float L)
     {

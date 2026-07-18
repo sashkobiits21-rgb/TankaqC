@@ -770,8 +770,8 @@ int RunClassTest()
         for (int k = 0; k < 5; ++k)
             vamp.owned.pop_back();
         const Obstacle& ob = kObstacles[0];
-        float sx = ob.cx - 0.489f / 0.636f * ob.height * 0.5f;
-        float sz = ob.cz - 0.372f / 0.636f * ob.height * 0.5f;
+        float sx = ob.cx - 0.707f / 0.460f * ob.height * 0.5f;
+        float sz = ob.cz - 0.538f / 0.460f * ob.height * 0.5f;
         check(!InSunlight(sx, sz), "a box shades its shadow volume");
         check(InSunlight(0.0f, -20.0f), "mid-lane ground is sunlit");
         vamp.x = 0; vamp.z = -20; vamp.health = 100;
