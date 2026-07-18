@@ -797,7 +797,10 @@ void UpdateVfxFromSim()
     {
         const SoldierState& s = g.game.soldiers[i];
         bool kamiNow = s.active && s.state == SoldierKamikaze;
-        if (g.prevSoldierKami[i] && !s.active && InSession())
+        // fire on ANY exit from the kamikaze state -- a slot can be reused
+        // by a fresh soldier in the same frame (drafts!), which used to
+        // swallow every other explosion
+        if (g.prevSoldierKami[i] && !kamiNow && InSession())
         {
             g.shockwaves.push_back({ g.prevSoldierKamiPos[i], g.time });
             if (g.bursts.size() >= 16)

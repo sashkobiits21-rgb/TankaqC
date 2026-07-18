@@ -139,9 +139,20 @@ static void BreakSlats()
 
 // TEST mode: the whole pool on one panel; hover for details, one click
 // grants one copy (host-validated, replicated like a purchase).
+// The pool outgrew a fixed 6-wide grid: on short windows the NEWEST rows
+// (the mutations) fell off the bottom of the screen. Columns now widen so
+// every entry always fits the window height.
+static int TestGridCols()
+{
+    float availH = float(g.height) - 8.0f - 46.0f - 50.0f;
+    int rowsFit = std::max(1, int(availH / 54.0f));
+    int cols = (UpgradeCount + rowsFit - 1) / rowsFit;
+    return std::max(6, cols);
+}
+
 static void BuildTestGrid(FrameData& frame)
 {
-    constexpr int kCols = 6;
+    const int kCols = TestGridCols();
     constexpr float kCell = 54.0f, kPad = 10.0f;
     int rows = (UpgradeCount + kCols - 1) / kCols;
     float panelW = kPad * 2 + kCols * kCell;
@@ -185,7 +196,7 @@ static void BuildTestGrid(FrameData& frame)
 
 void HandleTestGridClick(float mx, float my)
 {
-    constexpr int kCols = 6;
+    const int kCols = TestGridCols();
     constexpr float kCell = 54.0f, kPad = 10.0f;
     float px = g.shopPanel[0], py = g.shopPanel[1];
     int col = int((mx - px - kPad) / kCell);
