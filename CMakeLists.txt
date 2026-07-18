@@ -9,7 +9,10 @@ if(NOT EXISTS "${STEAM_SDK}/public/steam/steam_api.h")
   message(FATAL_ERROR "Steamworks SDK not found at ${STEAM_SDK}")
 endif()
 
+enable_language(RC)
 add_executable(TankaqClient WIN32
+  res/Tankaq.rc
+  res/Tankaq.manifest
   src/Main.cpp
   src/UiShop.cpp
   src/UiHud.cpp
