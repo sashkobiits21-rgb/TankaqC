@@ -960,12 +960,12 @@ static bool SegHitsBox(float x0, float z0, float x1, float z1,
 }
 
 bool SegmentBlockedByObstacles(float x0, float z0, float x1, float z1,
-                               float inflate)
+                               float inflate, float aboveHeight)
 {
     for (const Obstacle& o : kObstacles)
     {
-        if (o.height < 2.0f)
-            continue;   // sight lines pass over low boxes (temple stairs)
+        if (aboveHeight > 0.0f && o.height < aboveHeight)
+            continue;   // eyes see over low boxes (temple stairs)
         if (SegHitsBox(x0, z0, x1, z1, o, inflate))
             return true;
     }
@@ -1924,6 +1924,36 @@ static bool PickCover(const GameState& gs, SoldierState& s,
         }
     };
 
+    // the nearest enemy anchors the "run is the peek" route preference
+    int nearestId = -1;
+    {
+        float ndd = 1e18f;
+        for (int e = 0; e < ne; ++e)
+        {
+            const PlayerState& t = gs.players[enemies[e]];
+            float dx = t.x - s.x, dz = t.z - s.z;
+            float d2 = dx * dx + dz * dz;
+            if (d2 < ndd) { ndd = d2; nearestId = enemies[e]; }
+        }
+    }
+    // which wall is the soldier hugging right now? Runs must go to ANOTHER
+    // wall -- orbiting one box forever never crosses the enemy's sight line
+    // (the exact camped-enemy deadlock the old peek used to solve)
+    auto obstacleAt = [](float x, float z)
+    {
+        int bi = 0, i = 0;
+        float bd = 1e18f;
+        for (const Obstacle& o : kObstacles)
+        {
+            float d = std::max(fabsf(x - o.cx) - o.hx,
+                               fabsf(z - o.cz) - o.hz);
+            if (d < bd) { bd = d; bi = i; }
+            ++i;
+        }
+        return bi;
+    };
+    int hereWall = obstacleAt(s.x, s.z);
+
     // pass 1: best full-cover spot anywhere
     float bestScore = -1e9f;
     int best = -1;
@@ -1946,9 +1976,25 @@ static bool PickCover(const GameState& gs, SoldierState& s,
         // worthless -- this pushes the soldier obstacle-to-obstacle toward
         // the fight (and across open ground, where it shoots)
         score -= std::max(0.0f, nearestEnemy - SoldierFireRange * 0.85f) * 120.0f;
+        // ROAM WIDE: anything near the current hideout is stale, and the
+        // SAME wall is a dead loop -- wall-to-wall sprints only
         float cx = c.x - s.coverX, cz = c.z - s.coverZ;
-        if (cx * cx + cz * cz < 4.0f)
-            score -= 1200.0f;              // novelty: prefer a NEW spot
+        if (cx * cx + cz * cz < 49.0f)
+            score -= 1200.0f;              // novelty: prefer a fresh spot
+        if (obstacleAt(c.x, c.z) == hereWall)
+            score -= 800.0f;               // and prefer ANOTHER wall
+        // the RUN is the peek: strongly prefer destinations whose route
+        // swings through open ground where the gun can speak mid-sprint
+        if (nearestId >= 0)
+        {
+            const PlayerState& tt = gs.players[nearestId];
+            float mx = (c.x + s.x) * 0.5f, mz = (c.z + s.z) * 0.5f;
+            float tdx = tt.x - mx, tdz = tt.z - mz;
+            if (tdx * tdx + tdz * tdz
+                    < SoldierFireRange * SoldierFireRange
+                && !SegmentBlockedByObstacles(mx, mz, tt.x, tt.z, 0.2f))
+                score += 1500.0f;
+        }
         if (score > bestScore)
         {
             bestScore = score;
@@ -2005,18 +2051,19 @@ static bool PickCover(const GameState& gs, SoldierState& s,
     return true;
 }
 
-// The PEEK: the nearest reachable point that has clear line of sight to the
-// target within gun range. Cover keeps the soldier hidden both ways, so
-// without stepping out it would never shoot a camped enemy -- this is the
-// "walks out, shoots, walks back" of the design. Returns false when no such
-// point exists (relocate instead).
-static bool FindPeek(const GameState& gs, SoldierState& s, int targetId)
+// The WIDE ATTACK RUN: when the roam has not produced a shot in a while
+// (a camped enemy whose corner no hidden route ever crosses), pick an
+// EXPOSED firing point -- clear line to the target, inside gun range, one
+// straight sprint away -- preferring the FARTHEST such point, so the run
+// arcs wide around the wall instead of the old poke-out-and-back peek.
+// The soldier fires the whole way there and tucks into fresh cover after.
+static bool FindAttackRun(const GameState& gs, SoldierState& s, int targetId)
 {
     const PlayerState& t = gs.players[targetId];
     CoverSpot spots[MaxCoverSpots];
     int n = GatherCoverSpots(spots, MaxCoverSpots);
     const float walk = SoldierRadius * 0.8f;
-    float bestD = 1e18f;
+    float bestD = -1.0f;
     int best = -1;
     for (int i = 0; i < n; ++i)
     {
@@ -2026,14 +2073,11 @@ static bool FindPeek(const GameState& gs, SoldierState& s, int targetId)
             continue;
         float ex = t.x - c.x, ez = t.z - c.z;
         if (ex * ex + ez * ez > SoldierFireRange * SoldierFireRange * 0.81f)
-            continue;                       // must end up in gun range
-        // sight line tested with a WIDE margin: the peek point must be
-        // properly out in the open (a grazing corner line is not a peek,
-        // and a soldier hugging the wall is too hard to punish)
-        if (SegmentBlockedByObstacles(c.x, c.z, t.x, t.z, 0.8f))
-            continue;
+            continue;                       // must end inside gun range
+        if (SegmentBlockedByObstacles(c.x, c.z, t.x, t.z, 0.6f))
+            continue;                       // must SEE the target there
         if (SegmentBlockedByObstacles(s.x, s.z, c.x, c.z, walk))
-            continue;                       // must be a straight run
+            continue;                       // must be a straight sprint
         bool occupied = false;
         for (int id = 0; id < MaxPlayers && !occupied; ++id)
         {
@@ -2048,9 +2092,9 @@ static bool FindPeek(const GameState& gs, SoldierState& s, int targetId)
             continue;
         float dx = c.x - s.x, dz = c.z - s.z;
         float d = dx * dx + dz * dz;
-        if (d > 81.0f)
-            continue;                       // a peek is a step, not a journey
-        if (d < bestD) { bestD = d; best = i; }
+        if (d < 4.0f || d > 196.0f)
+            continue;                       // wide, but not a marathon
+        if (d > bestD) { bestD = d; best = i; }
     }
     if (best < 0)
         return false;
@@ -2102,6 +2146,7 @@ static void SoldierTryFire(GameState& gs, SoldierState& s)
                               + 1.0f / std::max(0.1f, s.fireRate)) * 0.5f;
             s.muzzleFlash = 0.12f;
             s.yaw = yaw;
+            s.sinceShot = 0.0f;
             break;
         }
         return;                    // no free skull slot = hold fire
@@ -2137,6 +2182,7 @@ static void SoldierTryFire(GameState& gs, SoldierState& s)
         s.fireCooldown = 1.0f / std::max(0.1f, s.fireRate);
         s.muzzleFlash = 0.12f;
         s.yaw = yaw;   // square up to the shot
+        s.sinceShot = 0.0f;
         break;
     }
 }
@@ -2302,6 +2348,7 @@ void GameState::TickSoldier(SoldierState& s)
     s.fireCooldown = std::max(0.0f, s.fireCooldown - TickDt);
     s.muzzleFlash = std::max(0.0f, s.muzzleFlash - TickDt);
     s.hitFlash = std::max(0.0f, s.hitFlash - TickDt);
+    s.sinceShot += TickDt;
 
     if (s.state == SoldierKamikaze)
     {
@@ -2442,51 +2489,26 @@ void GameState::TickSoldier(SoldierState& s)
             break;
         case SoldierCover:
         {
-            // ducked + hidden; face the threat, hold fire, then PEEK if a
-            // sight-line point is in reach, else relocate to fresh cover
+            // ducked + hidden; face the threat, catch a breath -- then RUN.
+            // No peeking: the loop is hide -> sprint WIDE to a hiding spot
+            // behind ANOTHER wall, guns blazing the whole way across the
+            // open (SoldierMove fires on the move).
             const PlayerState& t = players[nearest];
             s.yaw = atan2f(t.x - s.x, t.z - s.z);
             s.stateTimer -= TickDt;
             if (s.stateTimer <= 0.0f)
             {
-                if (s.fireCooldown <= 0.0f && FindPeek(*this, s, nearest))
+                // a DRY roam means every hidden route dodges the enemy's
+                // corner: force a wide attack run at an exposed point
+                if (s.sinceShot > 3.0f && FindAttackRun(*this, s, nearest))
                 {
-                    s.state = SoldierPeek;
-                    s.stateTimer = 3.5f;   // give up the peek eventually
+                    s.state = SoldierMove;
+                    s.stateTimer = 3.0f;
                 }
                 else if (PickCover(*this, s, enemies, ne))
                 {
                     s.state = SoldierMove;
-                    s.stateTimer = 2.0f;
-                }
-                else
-                {
-                    s.state = SoldierKite;
-                    s.stateTimer = 0.6f;
-                }
-            }
-            break;
-        }
-        case SoldierPeek:
-        {
-            // run out toward the sight line, shooting the moment it opens;
-            // at the peek point HOLD until the shot lands (or the timer says
-            // this peek is a dud) -- one landed shot sends it back to cover
-            float cdBefore = s.fireCooldown;
-            SoldierTryFire(*this, s);
-            bool fired = s.fireCooldown > cdBefore;
-            float dx = s.coverX - s.x, dz = s.coverZ - s.z;
-            if (dx * dx + dz * dz > 0.16f)   // still approaching
-            {
-                moveX = dx; moveZ = dz;
-            }
-            s.stateTimer -= TickDt;
-            if (fired || s.stateTimer <= 0.0f)
-            {
-                if (PickCover(*this, s, enemies, ne))
-                {
-                    s.state = SoldierMove;
-                    s.stateTimer = 2.0f;
+                    s.stateTimer = 3.0f;   // longer runs: farther spots
                 }
                 else
                 {

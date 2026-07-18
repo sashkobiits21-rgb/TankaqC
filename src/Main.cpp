@@ -1164,8 +1164,8 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
                 float szp = rz + (s == 8 ? 0.0f : cosf(ang) * 1.3f);
                 if (!SegmentBlockedByObstacles(frame.losViewer.x,
                                                frame.losViewer.y,
-                                               sxp, szp, 0.0f))
-                    hidden = false;
+                                               sxp, szp, 0.0f, 2.0f))
+                    hidden = false;   // eyes see over the temple stairs
             }
             if (g.frameCounter % 300 == 0)
                 Log("stealth: clip on player %d, viewer(%.1f %.1f) tank(%.1f %.1f) hidden=%d",
@@ -1641,11 +1641,25 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
                 }
             }
 
-            // torso aim at the target tank while peeking/kiting
+            // torso aim only with a REAL firing line: walls (and stairs)
+            // block guns, so no more shooting animations into a wall --
+            // that was the "soldier shoots nothing" look. And the gun-up
+            // layer follows actual muzzle evidence instead of looping for
+            // the whole run.
             bool aiming = (s.state == SoldierMove || s.state == SoldierKite
                            || s.state == SoldierPeek)
                        && s.targetId < MaxPlayers
-                       && g.game.players[s.targetId].active;
+                       && g.game.players[s.targetId].active
+                       && !SegmentBlockedByObstacles(
+                              sx, sz,
+                              g.game.players[s.targetId].x,
+                              g.game.players[s.targetId].z, 0.2f);
+            if (s.muzzleFlash > 0.0f)
+                g.soldierGunTime[i] = g.time;
+            if (an.layers[1].clip >= 0)
+                an.layers[1].targetWeight =
+                    (aiming && g.time - g.soldierGunTime[i] < 0.8) ? 1.0f
+                                                                   : 0.0f;
             an.aim.active = aiming;
             if (aiming)
             {

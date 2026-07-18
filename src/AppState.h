@@ -126,6 +126,9 @@ struct App
     Animator soldierAnim[MaxSoldiers];
     uint8_t soldierAnimState[MaxSoldiers]{};   // last state fed to the animator
     bool soldierPrevMuzzle[MaxSoldiers]{};
+    double soldierGunTime[MaxSoldiers]{};      // last muzzle evidence: the
+                                               // gun-up pose follows SHOTS,
+                                               // not the whole run
 
     // the TEMPLE centerpiece (assets/Temple, user-authored): three static
     // GLB parts drawn over the invisible collision cross at the map center

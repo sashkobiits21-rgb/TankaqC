@@ -254,10 +254,10 @@ int RunClassTest()
 
         g2.Tick(idle);
         check(countMine() == 1, "soldier spawns immediately after unlock");
-        // 20 s: the worst-case spawn pocket needs a multi-hop detour around
-        // its own obstacle + parked owner tank, then a peek, before the
-        // first shot lands
-        for (int t = 0; t < TickRate * 20; ++t) g2.Tick(idle);
+        // 40 s: the worst-case spawn pocket needs several roam-and-gun
+        // sprints (the run IS the peek now) across the arena before the
+        // first shot lands on a parked enemy
+        for (int t = 0; t < TickRate * 40; ++t) g2.Tick(idle);
         check(countMine() == 1, "SoldierMax 1 respected across the cooldown");
         SoldierState* s0 = nullptr;
         for (SoldierState& s : g2.soldiers) if (s.active) s0 = &s;
@@ -270,6 +270,19 @@ int RunClassTest()
               "soldier engaged (cover/move/kite) with an enemy present");
         bool enemyHurt = g2.players[1].health < MaxHealthFor(g2.players[1])
                       || owner.score > 0;
+        if (s0)
+        {
+            float ddx = g2.players[1].x - s0->x, ddz = g2.players[1].z - s0->z;
+            Log("soldier diag: s(%.1f %.1f) st=%d cover(%.1f %.1f) "
+                "enemy(%.1f %.1f) dist=%.1f los=%d cd=%.2f hp1=%d",
+                s0->x, s0->z, int(s0->state), s0->coverX, s0->coverZ,
+                g2.players[1].x, g2.players[1].z,
+                sqrtf(ddx * ddx + ddz * ddz),
+                SegmentBlockedByObstacles(s0->x, s0->z, g2.players[1].x,
+                                          g2.players[1].z,
+                                          ProjectileRadius + 0.1f) ? 0 : 1,
+                s0->fireCooldown, g2.players[1].health);
+        }
         check(enemyHurt, "soldier fire damaged the enemy tank");
 
         if (s0)
@@ -489,9 +502,15 @@ int RunClassTest()
               "FRAG PACK arms soldiers with 2 grenades per life");
         own.x = 0; own.z = -24;
         g9.players[1].x = 0; g9.players[1].z = -16;   // 8 u: lob range
+        g9.players[1].health = 100000;   // must SURVIVE the 20 s barrage --
+                                         // a kill would respawn it across
+                                         // the map, out of lob range
         check(g9.SpawnSoldier(0), "soldier spawned for the grenade test");
+        // 20 s: the roam-and-gun loop swings in and out of the 15 u lob
+        // range, so the two throws land in proximity windows, not back to
+        // back like the old peek loop
         bool seen = false, armedMidair = false;
-        for (int t = 0; t < TickRate * 8; ++t)
+        for (int t = 0; t < TickRate * 20; ++t)
         {
             g9.Tick(idle);
             for (const GrenadeState& gr : g9.grenades)
@@ -502,6 +521,12 @@ int RunClassTest()
         }
         check(seen, "soldier lobbed a grenade");
         check(armedMidair, "first bounce armed the 2 s fuse");
+        Log("grenade diag: active=%d state=%d grenades=%d wait=%.1f "
+            "s(%.1f %.1f) enemy(%.1f %.1f)",
+            g9.soldiers[0].active ? 1 : 0, int(g9.soldiers[0].state),
+            g9.soldiers[0].grenades, g9.soldiers[0].grenadeWait,
+            g9.soldiers[0].x, g9.soldiers[0].z,
+            g9.players[1].x, g9.players[1].z);
         check(g9.soldiers[0].active && g9.soldiers[0].grenades == 0,
               "both grenades expended (2 per life, cooldown paced)");
 

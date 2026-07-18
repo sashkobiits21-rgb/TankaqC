@@ -468,6 +468,8 @@ struct SoldierState
     float speed = 4.0f, damage = 10.0f, fireRate = 1.0f;
     int grenades = 0;             // throws left this life (FRAG PACK)
     float grenadeWait = 0;        // seconds until the next throw
+    float sinceShot = 0;          // host-only: dry spell length -- a long
+                                  // one triggers a WIDE attack run
 };
 
 // A lobbed grenade: real ballistics (gravity, restitution) bouncing off the
@@ -487,10 +489,13 @@ struct GrenadeState
 
 // 2D line-of-sight: does the segment cross any obstacle box (expanded by
 // `inflate` -- pass a body radius to test WALKABILITY instead of sight)?
-// Everything relevant flies below the shortest obstacle; height is ignored.
+// By default EVERY box blocks (rockets fly below the shortest obstacle --
+// the temple stairs eat shells just fine). Pass `aboveHeight` > 0 to skip
+// boxes shorter than it: EYES see over the stairs even though guns don't.
 bool PointHitsObstacle(float x, float y, float z, float radius);
 bool SegmentBlockedByObstacles(float x0, float z0, float x1, float z1,
-                               float inflate = 0.0f);
+                               float inflate = 0.0f,
+                               float aboveHeight = 0.0f);
 
 // ------------------------------------------------------------ necromancer
 // Skulls: launched from the tank every SkullRate seconds, fly STRAIGHT at
