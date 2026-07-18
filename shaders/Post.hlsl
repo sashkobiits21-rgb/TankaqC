@@ -321,10 +321,14 @@ float4 PSComposite(FsOut i) : SV_Target
         outc += gi * albedo * gParams2.x * ao;
     }
 
-    // gentle filmic finish: small saturation lift + highlight rolloff
+    // FILMIC FINISH: exposure + the ACES fit (Narkowicz). The scene target
+    // is small-float now, so highlights arrive unclipped and ROLL OFF here
+    // instead of slamming into white; mids keep their contrast.
+    const float Exposure = 1.15;
     float luma = dot(outc, float3(0.299, 0.587, 0.114));
-    outc = max(0.0, lerp(luma.xxx, outc, 1.12));
-    outc = outc * (1.0 + outc * 0.18) / (1.0 + outc * 0.30);
+    outc = max(0.0, lerp(luma.xxx, outc, 1.06));   // mild pre-grade sat
+    float3 x = outc * Exposure;
+    outc = saturate((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14));
     return float4(outc, 1.0);
 }
 

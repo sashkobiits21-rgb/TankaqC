@@ -683,7 +683,7 @@ public:
                                                Rtv(m_sceneNormal.rtvIndex),
                                                Rtv(m_sceneAlbedo.rtvIndex) };
         D3D12_CPU_DESCRIPTOR_HANDLE dsv = m_dsvHeap->GetCPUDescriptorHandleForHeapStart();
-        float clearColor[4] = { 0.62f, 0.72f, 0.83f, 1.0f };
+        float clearColor[4] = { 0.85f, 0.95f, 1.10f, 1.0f };   // pre-tonemap sky
         float clearNormal[4] = { 0.5f, 0.5f, 0.5f, 1.0f };
         float clearBlack[4] = { 0, 0, 0, 0 };
         m_cmd->ClearRenderTargetView(mrt[0], clearColor, 0, nullptr);
@@ -1086,7 +1086,9 @@ private:
         if (!m_shadowMap && !CreateShadowMap(error))
             return false;
 
-        if (!CreateTarget(m_sceneColor, DXGI_FORMAT_R8G8B8A8_UNORM, 3, error, m_width, m_height)) return false;
+        // HDR scene light: small-float target so highlights survive to the
+        // tonemapper instead of clipping at 1.0
+        if (!CreateTarget(m_sceneColor, DXGI_FORMAT_R11G11B10_FLOAT, 3, error, m_width, m_height)) return false;
         if (!CreateTarget(m_sceneNormal, DXGI_FORMAT_R8G8B8A8_UNORM, 4, error, m_width, m_height)) return false;
         if (!CreateTarget(m_sceneAlbedo, DXGI_FORMAT_R8G8B8A8_UNORM, 5, error, m_width, m_height)) return false;
         if (!CreateTarget(m_ao, DXGI_FORMAT_R8_UNORM, 6, error, m_width, m_height)) return false;
@@ -1367,7 +1369,7 @@ private:
         pso.InputLayout = { meshEls, 4 };
         pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
         pso.NumRenderTargets = 3;
-        pso.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+        pso.RTVFormats[0] = DXGI_FORMAT_R11G11B10_FLOAT;   // HDR scene light
         pso.RTVFormats[1] = DXGI_FORMAT_R8G8B8A8_UNORM;
         pso.RTVFormats[2] = DXGI_FORMAT_R8G8B8A8_UNORM;
         pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
@@ -1515,7 +1517,7 @@ private:
             p.RasterizerState.DepthClipEnable = TRUE;
             p.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
             p.NumRenderTargets = 2;
-            p.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+            p.RTVFormats[0] = DXGI_FORMAT_R11G11B10_FLOAT;   // HDR scene
             p.RTVFormats[1] = DXGI_FORMAT_R8G8B8A8_UNORM;
             p.SampleDesc.Count = 1;
             if (FAILED(m_device->CreateGraphicsPipelineState(&p, IID_PPV_ARGS(&m_psoScorch))))
@@ -1546,7 +1548,7 @@ private:
             p.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
             p.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
             p.NumRenderTargets = 1;
-            p.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+            p.RTVFormats[0] = DXGI_FORMAT_R11G11B10_FLOAT;   // HDR scene
             p.DSVFormat = DXGI_FORMAT_D32_FLOAT;
             p.SampleDesc.Count = 1;
             if (FAILED(m_device->CreateGraphicsPipelineState(&p, IID_PPV_ARGS(&m_psoVfx))))

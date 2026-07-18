@@ -411,7 +411,7 @@ public:
         }
 
         // ---------------- scene pass (G-buffer MRT) ----------------
-        float clearColor[4] = { 0.62f, 0.72f, 0.83f, 1.0f };
+        float clearColor[4] = { 0.85f, 0.95f, 1.10f, 1.0f };   // pre-tonemap sky
         float clearNormal[4] = { 0.5f, 0.5f, 0.5f, 1.0f };
         float clearBlack[4] = { 0, 0, 0, 0 };
         m_ctx->ClearRenderTargetView(m_sceneColor.rtv.Get(), clearColor);
@@ -857,7 +857,7 @@ private:
         if (FAILED(m_device->CreateShaderResourceView(depth.Get(), &svd, &m_depthSrv)))
         { error = "depth SRV failed"; return false; }
 
-        bool ok = m_sceneColor.Create(m_device.Get(), m_width, m_height, DXGI_FORMAT_R8G8B8A8_UNORM)
+        bool ok = m_sceneColor.Create(m_device.Get(), m_width, m_height, DXGI_FORMAT_R11G11B10_FLOAT)
                && m_sceneNormal.Create(m_device.Get(), m_width, m_height, DXGI_FORMAT_R8G8B8A8_UNORM)
                && m_sceneAlbedo.Create(m_device.Get(), m_width, m_height, DXGI_FORMAT_R8G8B8A8_UNORM)
                && m_ao.Create(m_device.Get(), m_width, m_height, DXGI_FORMAT_R8_UNORM)

@@ -31,7 +31,7 @@ Texture2D    gNra     : register(t2);   // normal rgb (tangent space) + roughnes
 SamplerState gSampler : register(s0);
 SamplerComparisonState gShadowSampler : register(s1);
 
-static const float3 FogColor = float3(0.62, 0.72, 0.83);
+static const float3 FogColor = float3(0.85, 0.95, 1.10);   // pre-tonemap sky
 
 // ---------------- mesh ----------------
 struct VsIn
@@ -310,11 +310,18 @@ PsOut PSMesh(VsOut i)
     float F = 0.04 + 0.96 * pow(1.0 - saturate(dot(h, v)), 5.0);
     float spec = D * G * F / max(4.0 * ndv * ndl, 1e-3) * ndl * shadow;
 
+    // SPLIT LIGHT TEMPERATURE: the sun is a warm body, the fill is cool
+    // sky. Lit faces lean golden, shaded faces fall toward blue -- hue
+    // contrast on top of value contrast (the orange-teal axis), which is
+    // what makes the sun/shade boundary read instead of just dimming.
+    const float3 SunColor = float3(1.05, 0.93, 0.76);
     // Hemisphere ambient: cool sky light from above, warm ground bounce below.
     float hemi = n.y * 0.5 + 0.5;
-    float3 ambientColor = lerp(float3(1.04, 0.96, 0.82), float3(0.82, 0.92, 1.10), hemi);
+    float3 ambientColor = lerp(float3(1.00, 0.92, 0.78), float3(0.68, 0.79, 1.12), hemi);
 
-    float3 lit = albedo * (gSunDirAmbient.w * ambientColor + ndl * 0.9 * shadow) + spec;
+    float3 lit = albedo * (gSunDirAmbient.w * ambientColor
+                           + SunColor * (ndl * 0.9 * shadow))
+               + spec * SunColor;
     lit = lerp(lit, albedo, gTint.a); // emissive-ish flash
 
     float dist = length(gCamPosFog.xyz - i.wpos);
