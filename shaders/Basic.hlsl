@@ -290,7 +290,21 @@ PsOut PSMesh(VsOut i)
         suv = float2(cs * f.x - sn * f.y, sn * f.x + cs * f.y) + 0.5
             + floor(h * 16.0) * 0.25;
     }
-    float3 albedo = gAlbedo.Sample(gSampler, suv).rgb * gTint.rgb;
+    float3 albedo = gAlbedo.Sample(gSampler, suv).rgb;
+    if (gMisc2.z > 0.5)
+    {
+        // rotation alone cannot hide a repeating FEATURE grid -- so blend
+        // a second lattice (rotated 30 deg, scaled 0.37x: incommensurate,
+        // the two never beat in phase) and drift brightness at map scale
+        // so no two regions of ground read identical
+        const float cs2 = 0.8660, sn2 = 0.5;
+        float2 uv2 = float2(cs2 * i.uv.x - sn2 * i.uv.y,
+                            sn2 * i.uv.x + cs2 * i.uv.y) * 0.37;
+        albedo = lerp(albedo, gAlbedo.Sample(gSampler, uv2).rgb, 0.45);
+        float macro = gAlbedo.Sample(gSampler, i.uv * 0.017).g;
+        albedo *= 0.78 + 0.55 * macro;
+    }
+    albedo *= gTint.rgb;
 
     // NRA material map: tangent-space normal in rgb, roughness in a
     float4 nra = gNra.Sample(gSampler, suv);
