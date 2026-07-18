@@ -50,7 +50,12 @@ namespace tankaq::net
 // v30: MUTATIONS (light green class-pair fusions, one per player ever):
 // BUBBLE / SPATIAL ARMOR / HAUNTED SQUAD / BONE PLATOON. Pool grew, rarity
 // bands shifted, sim gained the trap dome + mirror deflection rules.
-constexpr uint8_t ProtocolVersion = 30;
+// v31: mutations wave 2 -- POLTERGEIST + ACID HOUND (necro+bouncy),
+// RICOCHET DRAFT + MARTYRDOM (soldier+bouncy). New replicated entity:
+// the acid ball (snapshot section appended after grenades). MaxSoldiers
+// 12 -> 32 (wire arrays). RADAR buff: direct body hits detonate the ring
+// tree, and the rings see (and pop) poltergeist skulls.
+constexpr uint8_t ProtocolVersion = 31;
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t
@@ -222,6 +227,13 @@ struct GhostNet
     float x = 0, z = 0;
 };
 
+struct AcidBallNet
+{
+    uint8_t active = 0;
+    float x = 0, z = 0;
+    float y = 0;          // hop height (quantized /32 on the wire)
+};
+
 struct SoldierNet
 {
     uint8_t active = 0;
@@ -259,6 +271,7 @@ struct MsgSnapshot
     PuddleNet puddles[MaxPuddles];
     GhostNet ghosts[MaxGhosts];
     GrenadeNet grenades[MaxGrenades];
+    AcidBallNet acidBalls[MaxAcidBalls];
 };
 
 #pragma pack(pop)

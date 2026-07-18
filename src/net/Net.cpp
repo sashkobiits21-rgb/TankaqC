@@ -881,6 +881,16 @@ int PackSnapshot(const MsgSnapshot& s, uint8_t* out)
         W16s(p, QPos(q.x)); W16s(p, QPos(q.z));
         W8(p, uint8_t(std::clamp(q.y, 0.0f, 7.9f) * 32.0f));
     }
+    cnt = p; W8(p, 0);
+    for (int i = 0; i < MaxAcidBalls; ++i)
+    {
+        const AcidBallNet& q = s.acidBalls[i];
+        if (!q.active) continue;
+        ++*cnt;
+        W8(p, uint8_t(i));
+        W16s(p, QPos(q.x)); W16s(p, QPos(q.z));
+        W8(p, uint8_t(std::clamp(q.y, 0.0f, 7.9f) * 32.0f));
+    }
     return int(p - out);
 }
 
@@ -961,6 +971,16 @@ bool UnpackSnapshot(const uint8_t* data, int size, MsgSnapshot& out)
         GrenadeNet& q = out.grenades[slot % MaxGrenades];
         q.active = 1;
         q.owner = R8(p); q.fuse255 = R8(p);
+        q.x = UQPos(R16s(p)); q.z = UQPos(R16s(p));
+        q.y = float(R8(p)) / 32.0f;
+    }
+    if (!need(1)) return false;
+    for (int n = R8(p); n-- > 0; )
+    {
+        if (!need(6)) return false;
+        int slot = R8(p);
+        AcidBallNet& q = out.acidBalls[slot % MaxAcidBalls];
+        q.active = 1;
         q.x = UQPos(R16s(p)); q.z = UQPos(R16s(p));
         q.y = float(R8(p)) / 32.0f;
     }

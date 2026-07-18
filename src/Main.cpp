@@ -263,6 +263,13 @@ void ApplySnapshot(const net::MsgSnapshot& s)
             gr.fuse = in.fuse255 == 255 ? -1.0f : in.fuse255 / 100.0f;
         }
     }
+    for (int i = 0; i < MaxAcidBalls; ++i)
+    {
+        const net::AcidBallNet& in = s.acidBalls[i];
+        AcidBallState& ab = g.game.acidBalls[i];
+        ab.active = in.active != 0;
+        if (ab.active) { ab.x = in.x; ab.z = in.z; ab.y = in.y; }
+    }
     for (int i = 0; i < MaxProjectiles; ++i)
     {
         g.game.projectiles[i].radarRange = s.projectiles[i].radar16 / 16.0f;
@@ -485,6 +492,13 @@ net::MsgSnapshot BuildSnapshot()
         out.flags = uint8_t((sl.muzzleFlash > 0 ? 1 : 0)
                           | (sl.hitFlash > 0 ? 2 : 0));
         out.x = sl.x; out.z = sl.z; out.yaw = sl.yaw;
+    }
+    for (int i = 0; i < MaxAcidBalls; ++i)
+    {
+        const AcidBallState& ab = g.game.acidBalls[i];
+        net::AcidBallNet& out = s.acidBalls[i];
+        out.active = ab.active ? 1 : 0;
+        out.x = ab.x; out.z = ab.z; out.y = ab.y;
     }
     return s;
 }
@@ -760,6 +774,27 @@ void UpdateVfxFromSim()
         g.prevSkullActive[i] = sk.active;
         if (sk.active)
             g.prevSkullPos[i] = XMFLOAT3(sk.x, SkullY, sk.z);
+    }
+    // MARTYRDOM kamikazes go out with the terrorist treatment (for now):
+    // expanding shockwave ring + explosion where the fuse ran dry
+    for (int i = 0; i < MaxSoldiers; ++i)
+    {
+        const SoldierState& s = g.game.soldiers[i];
+        bool kamiNow = s.active && s.state == SoldierKamikaze;
+        if (g.prevSoldierKami[i] && !s.active && InSession())
+        {
+            g.shockwaves.push_back({ g.prevSoldierKamiPos[i], g.time });
+            if (g.bursts.size() >= 16)
+                g.bursts.erase(g.bursts.begin());
+            g.bursts.push_back({ g.prevSoldierKamiPos[i], g.time });
+            snd::Play(snd::Sfx::Explosion,
+                      SndDistVol(g.prevSoldierKamiPos[i].x,
+                                 g.prevSoldierKamiPos[i].z, 1.0f),
+                      0.7f * SndJitter(0.08f));
+        }
+        g.prevSoldierKami[i] = kamiNow;
+        if (kamiNow)
+            g.prevSoldierKamiPos[i] = XMFLOAT3(s.x, 0.1f, s.z);
     }
     // grenades pop with the full explosion treatment where they fused out
     for (int i = 0; i < MaxGrenades; ++i)
@@ -1383,6 +1418,44 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
         }
     }
 
+    // ACID HOUND: the hunting blob -- a wobbling green sphere hopping along
+    // its puddle trail (position interpolated like every fire-and-forget)
+    for (int i = 0; i < MaxAcidBalls; ++i)
+    {
+        const AcidBallState& ab = g.game.acidBalls[i];
+        if (!ab.active)
+            continue;
+        float ax = ab.x, az = ab.z, ay = ab.y;
+        if (clientMode)
+        {
+            if (g.haveTwoSnaps && g.snapPrev.acidBalls[i].active
+                && g.snapCurr.acidBalls[i].active)
+            {
+                const net::AcidBallNet& a = g.snapPrev.acidBalls[i];
+                const net::AcidBallNet& b = g.snapCurr.acidBalls[i];
+                float t = std::clamp(float((g.time - g.snapCurrTime)
+                                           / (SnapshotEveryTicks * TickDt)),
+                                     0.0f, 1.0f);
+                ax = a.x + (b.x - a.x) * t;
+                az = a.z + (b.z - a.z) * t;
+                ay = a.y + (b.y - a.y) * t;
+            }
+        }
+        else if (g.prevTick.acidBalls[i].active)
+        {
+            const AcidBallState& a = g.prevTick.acidBalls[i];
+            ax = a.x + (ab.x - a.x) * g.tickAlpha;
+            az = a.z + (ab.z - a.z) * g.tickAlpha;
+            ay = a.y + (ab.y - a.y) * g.tickAlpha;
+        }
+        float wob = 1.0f + 0.18f * sinf(float(g.time) * 12.0f + float(i));
+        float sc = 2.4f * wob;                // meshFlash is a 0.22 sphere
+        frame.objects.push_back({ g.meshFlash, g.texWhite,
+            Store(XMMatrixScaling(sc, sc * (2.0f - wob), sc)
+                  * XMMatrixTranslation(ax, 0.30f + ay, az)),
+            { 0.35f, 0.95f, 0.2f, 0.8f }, true });
+    }
+
     // acid puddles: flat green discs, shrinking out in their last second
     for (int i = 0; i < MaxPuddles; ++i)
     {
@@ -1559,6 +1632,9 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
                     if (sc.death >= 0)
                         an.PlayLayer(0, sc.death, false, 1.0f, true);
                     break;
+                case SoldierKamikaze:   // dead man running
+                    if (sc.run >= 0) an.PlayLayer(0, sc.run, true, 1.0f);
+                    break;
                 default:   // guard
                     if (sc.idle >= 0) an.PlayLayer(0, sc.idle, true, 1.0f);
                     break;
@@ -1638,10 +1714,22 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
                 }
             }
 
-            XMMATRIX world = XMMatrixScaling(g.rigScale, g.rigScale,
-                                             g.rigScale)
+            // MARTYRDOM kamikaze theatre: cartoon hops, random swelling and
+            // shrinking, red strobing -- all client-side, zero wire cost
+            float kamiY = 0.0f, kamiS = 1.0f;
+            bool kami = s.state == SoldierKamikaze;
+            if (kami)
+            {
+                float t = float(g.time);
+                kamiY = fabsf(sinf(t * 9.0f + float(i) * 1.3f)) * 0.55f;
+                kamiS = 1.0f + 0.30f * sinf(t * 11.0f + float(i) * 2.1f)
+                             + 0.15f * sinf(t * 23.0f + float(i) * 0.7f);
+            }
+            XMMATRIX world = XMMatrixScaling(g.rigScale * kamiS,
+                                             g.rigScale * kamiS,
+                                             g.rigScale * kamiS)
                            * XMMatrixRotationY(syaw)
-                           * XMMatrixTranslation(sx, 0.0f, sz);
+                           * XMMatrixTranslation(sx, kamiY, sz);
             for (size_t p = 0; p < g.meshRigParts.size(); ++p)
             {
                 if (!g.rigPartVisible[p])
@@ -1650,6 +1738,8 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
                 XMFLOAT4 tint{ c.x, c.y, c.z, 0 };
                 if (s.hitFlash > 0)
                     tint = { 1.0f, 0.3f, 0.25f, 0.35f };
+                if (kami && sinf(float(g.time) * 16.0f + float(i)) > 0.0f)
+                    tint = { 1.0f, 0.18f, 0.12f, 0.55f };   // red strobe
                 RenderObject ro{ g.meshRigParts[p],
                                  g.texRig >= 0 ? g.texRig : g.texWhite,
                                  Store(world), tint, true };

@@ -196,6 +196,18 @@ const UpgradeType kUpgradePool[UpgradeCount] = {
     { U(BonePlatoon),  "BONE PLATOON",
       "SOLDIERS FIRE SKULLS, MIXED STATS",                            7, 130,
       {}, 0 },
+    { U(Poltergeist),  "POLTERGEIST",
+      "SKULLS PESTER FOREVER TIL SHOT",                               7, 130,
+      {}, 0 },
+    { U(AcidHound),    "ACID HOUND",
+      "SKULLS BURST INTO A HUNTING BLOB",                             7, 130,
+      {}, 0 },
+    { U(RicochetDraft), "RICOCHET DRAFT",
+      "1 SOLDIER - BOUNCES DRAFT TO 32",                              7, 130,
+      {}, 0 },
+    { U(Martyrdom),    "MARTYRDOM",
+      "NO NADES - DEAD SOLDIERS EXPLODE",                             7, 130,
+      {}, 0 },
 };
 #undef S
 #undef U
@@ -1035,7 +1047,7 @@ void GameState::ApplyDamage(int shooterId, int victimId, int rawDamage,
             }
             for (SoldierState& s : soldiers)
             {
-                if (!s.active || s.state == SoldierDying
+                if (!s.active || s.state >= SoldierDying
                     || s.owner == victimId)
                     continue;
                 float dx = s.x - bx, dz = s.z - bz;
@@ -1089,7 +1101,8 @@ static void SpawnGhost(GameState& gs, int owner, float x, float z,
     }
 }
 
-static void SpawnPuddle(GameState& gs, int owner, float x, float z)
+static void SpawnPuddle(GameState& gs, int owner, float x, float z,
+                        float lifeMul = 1.0f, float dpsMul = 1.0f)
 {
     for (PuddleState& pu : gs.puddles)
     {
@@ -1100,13 +1113,103 @@ static void SpawnPuddle(GameState& gs, int owner, float x, float z)
         pu.owner = uint8_t(owner);
         pu.x = std::clamp(x, -ArenaHalf + 0.5f, ArenaHalf - 0.5f);
         pu.z = std::clamp(z, -ArenaHalf + 0.5f, ArenaHalf - 0.5f);
-        pu.life = o.stats[int(Stat::AcidDuration)];
+        pu.life = o.stats[int(Stat::AcidDuration)] * lifeMul;
         pu.dps = o.stats[int(Stat::AcidDps)];
         // BONE PLATOON: acid bites with an equal blend of the two families
         if (HasUpgrade(o, UpgradeId::BonePlatoon))
             pu.dps = (o.stats[int(Stat::AcidDps)]
                       + o.stats[int(Stat::SoldierDamage)]) * 0.5f;
+        pu.dps *= dpsMul;
         return;
+    }
+}
+
+// ACID HOUND: the hunting blob a skull burst releases. Hops on the ground
+// (the hop is theatre; the chase is the mechanic), steering toward the
+// nearest enemy by bending its velocity with a constant-magnitude force --
+// real inertia, so it overshoots corners and swings wide like a mad dog.
+static void SpawnAcidBall(GameState& gs, int owner, float x, float z)
+{
+    for (AcidBallState& ab : gs.acidBalls)
+    {
+        if (ab.active)
+            continue;
+        ab = AcidBallState{};
+        ab.active = true;
+        ab.owner = uint8_t(owner);
+        ab.x = std::clamp(x, -ArenaHalf + 0.6f, ArenaHalf - 0.6f);
+        ab.z = std::clamp(z, -ArenaHalf + 0.6f, ArenaHalf - 0.6f);
+        int tgt = NearestEnemyTank(gs, owner, x, z);
+        if (tgt >= 0)
+        {
+            float dx = gs.players[tgt].x - x, dz = gs.players[tgt].z - z;
+            float d = sqrtf(dx * dx + dz * dz);
+            if (d > 1e-3f)
+            {
+                ab.vx = dx / d * AcidBallSpeed * 0.6f;
+                ab.vz = dz / d * AcidBallSpeed * 0.6f;
+            }
+        }
+        return;
+    }
+}
+
+void TickAcidBall(GameState& gs, AcidBallState& ab)
+{
+    // steering: force vector toward the enemy, applied to the velocity
+    int tgt = NearestEnemyTank(gs, ab.owner, ab.x, ab.z);
+    if (tgt >= 0)
+    {
+        float dx = gs.players[tgt].x - ab.x, dz = gs.players[tgt].z - ab.z;
+        float d = sqrtf(dx * dx + dz * dz);
+        if (d > 1e-3f)
+        {
+            ab.vx += dx / d * AcidBallAccel * TickDt;
+            ab.vz += dz / d * AcidBallAccel * TickDt;
+        }
+    }
+    float sp = sqrtf(ab.vx * ab.vx + ab.vz * ab.vz);
+    if (sp > AcidBallSpeed)
+    {
+        ab.vx *= AcidBallSpeed / sp;
+        ab.vz *= AcidBallSpeed / sp;
+    }
+    float px = ab.x, pz = ab.z;
+    ab.x += ab.vx * TickDt;
+    ab.z += ab.vz * TickDt;
+    // arena walls and obstacle boxes bounce the blob (not physics-accurate,
+    // just a clean reflection -- the drama is in the chase)
+    if (fabsf(ab.x) > ArenaHalf - 0.6f)
+    {
+        ab.x = std::clamp(ab.x, -ArenaHalf + 0.6f, ArenaHalf - 0.6f);
+        ab.vx = -ab.vx;
+    }
+    if (fabsf(ab.z) > ArenaHalf - 0.6f)
+    {
+        ab.z = std::clamp(ab.z, -ArenaHalf + 0.6f, ArenaHalf - 0.6f);
+        ab.vz = -ab.vz;
+    }
+    if (PointHitsObstacle(ab.x, 0.4f, ab.z, 0.5f))
+    {
+        bool hitX = PointHitsObstacle(ab.x, 0.4f, pz, 0.5f);
+        bool hitZ = PointHitsObstacle(px, 0.4f, ab.z, 0.5f);
+        if (hitX || !hitZ) ab.vx = -ab.vx;
+        if (hitZ || !hitX) ab.vz = -ab.vz;
+        ab.x = px;
+        ab.z = pz;
+    }
+    // the hop: parabolic bob; every landing drips a WEAK puddle (20% life,
+    // 20% dps -- 25x weaker) until the 40 hops are spent
+    ab.hopT += TickDt;
+    float u = std::min(ab.hopT / AcidBallHopTime, 1.0f);
+    ab.y = AcidBallHopHeight * 4.0f * u * (1.0f - u);
+    if (ab.hopT >= AcidBallHopTime)
+    {
+        ab.hopT -= AcidBallHopTime;
+        SpawnPuddle(gs, ab.owner, ab.x, ab.z,
+                    AcidBallPuddleMul, AcidBallPuddleMul);
+        if (++ab.bounces >= AcidBallBounces)
+            ab.active = false;
     }
 }
 
@@ -1172,29 +1275,66 @@ float DrunkenFactor(uint32_t tick, int id)
     return a + (b - a) * u;
 }
 
-static void TickSkull(GameState& gs, SkullState& sk)
+void TickSkull(GameState& gs, SkullState& sk)
 {
     sk.life -= TickDt;
     if (sk.life <= 0.0f)
     {
-        sk.active = false;
+        sk.active = false;   // POLTERGEIST timeouts vanish dry: no puddle
         return;
     }
+    // POLTERGEIST mutation: the skull is a permanent pest. It ricochets off
+    // walls, BITES a tank and retreats to strike again, and NEVER drops
+    // acid on its own -- only an enemy rocket ends it (and THAT drops the
+    // puddle; handled in the projectile loop).
+    bool polter = HasUpgrade(gs.players[sk.owner], UpgradeId::Poltergeist);
+    sk.retreat = std::max(0.0f, sk.retreat - TickDt);
     int target = NearestEnemyTank(gs, sk.owner, sk.x, sk.z);
-    if (target >= 0)
+    if (target >= 0 && !(polter && sk.retreat > 0.0f))
     {
         const PlayerState& t = gs.players[target];
         sk.yaw = atan2f(t.x - sk.x, t.z - sk.z);
     }
-    sk.x += sinf(sk.yaw) * SkullSpeed * TickDt;
-    sk.z += cosf(sk.yaw) * SkullSpeed * TickDt;
+    float mx = sinf(sk.yaw) * SkullSpeed * TickDt;
+    float mz = cosf(sk.yaw) * SkullSpeed * TickDt;
+    sk.x += mx;
+    sk.z += mz;
 
     bool burst = false;
     if (fabsf(sk.x) > ArenaHalf - SkullRadius
         || fabsf(sk.z) > ArenaHalf - SkullRadius)
-        burst = true;                              // arena wall
+    {
+        if (polter)                               // arena wall: ricochet
+        {
+            float dx = sinf(sk.yaw), dz = cosf(sk.yaw);
+            if (fabsf(sk.x) > ArenaHalf - SkullRadius) dx = -dx;
+            if (fabsf(sk.z) > ArenaHalf - SkullRadius) dz = -dz;
+            sk.x = std::clamp(sk.x, -ArenaHalf + SkullRadius,
+                              ArenaHalf - SkullRadius);
+            sk.z = std::clamp(sk.z, -ArenaHalf + SkullRadius,
+                              ArenaHalf - SkullRadius);
+            sk.yaw = atan2f(dx, dz);
+        }
+        else
+            burst = true;
+    }
     if (!burst && PointHitsObstacle(sk.x, 0.5f, sk.z, SkullRadius))
-        burst = true;                              // obstacle box
+    {
+        if (polter)                               // obstacle box: ricochet
+        {
+            float px = sk.x - mx, pz = sk.z - mz;
+            float dx = sinf(sk.yaw), dz = cosf(sk.yaw);
+            bool hitX = PointHitsObstacle(sk.x, 0.5f, pz, SkullRadius);
+            bool hitZ = PointHitsObstacle(px, 0.5f, sk.z, SkullRadius);
+            if (hitX || !hitZ) dx = -dx;
+            if (hitZ || !hitX) dz = -dz;
+            sk.x = px;
+            sk.z = pz;
+            sk.yaw = atan2f(dx, dz);
+        }
+        else
+            burst = true;
+    }
     if (!burst)
         for (int id = 0; id < MaxPlayers && !burst; ++id)
         {
@@ -1206,13 +1346,23 @@ static void TickSkull(GameState& gs, SkullState& sk)
             if (dx * dx + dz * dz < r * r)         // enemy tank: BITE
             {
                 gs.ApplyDamage(sk.owner, id, int(sk.dmg + 0.5f), 2);
-                burst = true;
+                if (polter)
+                {
+                    // strike, disengage, come around for another pass
+                    float d = std::max(1e-3f, sqrtf(dx * dx + dz * dz));
+                    sk.yaw = atan2f(dx / d, dz / d);
+                    sk.x = p.x + dx / d * (r + 0.15f);
+                    sk.z = p.z + dz / d * (r + 0.15f);
+                    sk.retreat = PoltergeistRetreat;
+                }
+                else
+                    burst = true;
             }
         }
     if (!burst)
         for (SoldierState& s : gs.soldiers)
         {
-            if (!s.active || s.state == SoldierDying || s.owner == sk.owner)
+            if (!s.active || s.state >= SoldierDying || s.owner == sk.owner)
                 continue;
             float dx = sk.x - s.x, dz = sk.z - s.z;
             float r = SoldierRadius + SkullRadius;
@@ -1220,13 +1370,25 @@ static void TickSkull(GameState& gs, SkullState& sk)
             {
                 s.health -= sk.dmg;
                 s.lastHitBy = sk.owner;
-                burst = true;
+                if (polter)
+                {
+                    float d = std::max(1e-3f, sqrtf(dx * dx + dz * dz));
+                    sk.yaw = atan2f(dx / d, dz / d);
+                    sk.retreat = PoltergeistRetreat;
+                }
+                else
+                    burst = true;
                 break;
             }
         }
     if (burst)
     {
-        SpawnPuddle(gs, sk.owner, sk.x, sk.z);
+        // ACID HOUND mutation: the burst releases the hunting blob instead
+        // of dropping its acid on the spot
+        if (HasUpgrade(gs.players[sk.owner], UpgradeId::AcidHound))
+            SpawnAcidBall(gs, sk.owner, sk.x, sk.z);
+        else
+            SpawnPuddle(gs, sk.owner, sk.x, sk.z);
         sk.active = false;
     }
 }
@@ -1259,7 +1421,7 @@ static void TickPuddle(GameState& gs, PuddleState& pu)
     }
     for (SoldierState& s : gs.soldiers)
     {
-        if (!s.active || s.state == SoldierDying || s.owner == pu.owner)
+        if (!s.active || s.state >= SoldierDying || s.owner == pu.owner)
             continue;
         float dx = s.x - pu.x, dz = s.z - pu.z;
         float r = PuddleRadius + SoldierRadius;
@@ -1361,45 +1523,12 @@ int RadarTreeLayout(float rootR, int extra, float yaw,
     return n;
 }
 
-// One lock decides (the root circle contains every child, so it always
-// charges first); a full charge detonates the ENTIRE tree. Victims take
-// radarDamage * (1/2)^depth for every circle that contains them.
-static void TickRadar(GameState& gs, Projectile& pr)
+// Detonate the ENTIRE ring tree at the rocket's position. Victims take
+// (rocket damage + PAYLOAD) * (1/2)^depth for every circle that contains
+// them. Called on a full lock charge -- and on DIRECT BODY HITS, so the
+// class needs less precision: the rocket connecting means the ranges blow.
+void DetonateRadar(GameState& gs, Projectile& pr)
 {
-    bool inside = false;
-    float rootRR = pr.radarRange + TankRadius * 0.5f;
-    for (int id = 0; id < MaxPlayers && !inside; ++id)
-    {
-        const PlayerState& p = gs.players[id];
-        if (!p.active || p.health <= 0 || id == pr.owner)
-            continue;
-        float dx = p.x - pr.x, dz = p.z - pr.z;
-        inside = dx * dx + dz * dz < rootRR * rootRR;
-    }
-    for (const SoldierState& s : gs.soldiers)
-    {
-        if (inside)
-            break;
-        if (!s.active || s.state == SoldierDying || s.owner == pr.owner)
-            continue;
-        float dx = s.x - pr.x, dz = s.z - pr.z;
-        float rr = pr.radarRange + SoldierRadius;
-        inside = dx * dx + dz * dz < rr * rr;
-    }
-    if (!inside)
-    {
-        pr.radarLock = 0.0f;
-        pr.radarLockFrac = 0.0f;
-        return;
-    }
-    pr.radarLock += TickDt;
-    pr.radarLockFrac =
-        std::clamp(pr.radarLock / std::max(0.05f, pr.radarLockNeed), 0.0f, 1.0f);
-    if (pr.radarLock < pr.radarLockNeed)
-        return;
-
-    // the root circle hits like the rocket itself; PAYLOAD adds on top,
-    // and every tree level below halves the value
     float rootDmg = float(pr.damage) + pr.radarDamage;
     float ox[MaxRadarNodes], oz[MaxRadarNodes], rad[MaxRadarNodes];
     int dep[MaxRadarNodes];
@@ -1423,7 +1552,7 @@ static void TickRadar(GameState& gs, Projectile& pr)
     }
     for (SoldierState& s : gs.soldiers)
     {
-        if (!s.active || s.state == SoldierDying || s.owner == pr.owner)
+        if (!s.active || s.state >= SoldierDying || s.owner == pr.owner)
             continue;
         float sum = 0.0f;
         for (int k = 0; k < n; ++k)
@@ -1439,7 +1568,77 @@ static void TickRadar(GameState& gs, Projectile& pr)
             s.lastHitBy = pr.owner;
         }
     }
+    // POLTERGEIST skulls caught in any ring are shot down by the blast --
+    // the radar answer to the pest (and THAT drops their puddle)
+    for (SkullState& sk : gs.skulls)
+    {
+        if (!sk.active || sk.owner == pr.owner
+            || !HasUpgrade(gs.players[sk.owner], UpgradeId::Poltergeist))
+            continue;
+        for (int k = 0; k < n; ++k)
+        {
+            float dx = sk.x - (pr.x + ox[k]), dz = sk.z - (pr.z + oz[k]);
+            float rr = rad[k] + SkullRadius;
+            if (dx * dx + dz * dz < rr * rr)
+            {
+                SpawnPuddle(gs, sk.owner, sk.x, sk.z);
+                sk.active = false;
+                break;
+            }
+        }
+    }
     pr.active = false;   // the detonation consumes the rocket
+}
+
+// One lock decides (the root circle contains every child, so it always
+// charges first); a full charge detonates the ENTIRE tree.
+void TickRadar(GameState& gs, Projectile& pr)
+{
+    bool inside = false;
+    float rootRR = pr.radarRange + TankRadius * 0.5f;
+    for (int id = 0; id < MaxPlayers && !inside; ++id)
+    {
+        const PlayerState& p = gs.players[id];
+        if (!p.active || p.health <= 0 || id == pr.owner)
+            continue;
+        float dx = p.x - pr.x, dz = p.z - pr.z;
+        inside = dx * dx + dz * dz < rootRR * rootRR;
+    }
+    for (const SoldierState& s : gs.soldiers)
+    {
+        if (inside)
+            break;
+        if (!s.active || s.state >= SoldierDying || s.owner == pr.owner)
+            continue;
+        float dx = s.x - pr.x, dz = s.z - pr.z;
+        float rr = pr.radarRange + SoldierRadius;
+        inside = dx * dx + dz * dz < rr * rr;
+    }
+    // POLTERGEIST skulls count as radar contacts too (they can be killed,
+    // so the rings are allowed to see them)
+    for (const SkullState& sk : gs.skulls)
+    {
+        if (inside)
+            break;
+        if (!sk.active || sk.owner == pr.owner
+            || !HasUpgrade(gs.players[sk.owner], UpgradeId::Poltergeist))
+            continue;
+        float dx = sk.x - pr.x, dz = sk.z - pr.z;
+        float rr = pr.radarRange + SkullRadius;
+        inside = dx * dx + dz * dz < rr * rr;
+    }
+    if (!inside)
+    {
+        pr.radarLock = 0.0f;
+        pr.radarLockFrac = 0.0f;
+        return;
+    }
+    pr.radarLock += TickDt;
+    pr.radarLockFrac =
+        std::clamp(pr.radarLock / std::max(0.05f, pr.radarLockNeed), 0.0f, 1.0f);
+    if (pr.radarLock < pr.radarLockNeed)
+        return;
+    DetonateRadar(gs, pr);
 }
 
 // Candidate hiding spots: points floated off every obstacle face (three per
@@ -1609,6 +1808,36 @@ bool ShieldDeflectStep(GameState& gs, Projectile& pr)
         return true;
     }
     return false;
+}
+
+bool GameState::SpawnSoldierAt(int ownerId, float x, float z)
+{
+    x = std::clamp(x, -ArenaHalf + SoldierRadius + 0.2f,
+                   ArenaHalf - SoldierRadius - 0.2f);
+    z = std::clamp(z, -ArenaHalf + SoldierRadius + 0.2f,
+                   ArenaHalf - SoldierRadius - 0.2f);
+    if (PointHitsObstacle(x, 0.1f, z, SoldierRadius))
+        return SpawnSoldier(ownerId);      // blocked ricochet: draft at home
+    SoldierState* slot = nullptr;
+    for (SoldierState& s : soldiers)
+        if (!s.active) { slot = &s; break; }
+    if (!slot)
+        return false;
+    const PlayerState& own = players[ownerId];
+    *slot = SoldierState{};
+    slot->active = true;
+    slot->owner = uint8_t(ownerId);
+    slot->state = SoldierGuard;
+    slot->x = x;
+    slot->z = z;
+    slot->yaw = own.hullYaw;
+    slot->health = own.stats[int(Stat::SoldierHealth)];
+    slot->speed = own.stats[int(Stat::SoldierSpeed)];
+    slot->damage = own.stats[int(Stat::SoldierDamage)];
+    slot->fireRate = own.stats[int(Stat::SoldierFireRate)];
+    slot->grenades = int(own.stats[int(Stat::GrenadeCount)] + 0.5f);
+    slot->grenadeWait = 1.5f;
+    return true;
 }
 
 bool GameState::SpawnSoldier(int ownerId)
@@ -1921,6 +2150,9 @@ static void SoldierTryGrenade(GameState& gs, SoldierState& s)
 {
     if (s.grenades <= 0 || s.grenadeWait > 0.0f || s.targetId >= MaxPlayers)
         return;
+    // MARTYRDOM traded the grenades away: the payload ships on death now
+    if (HasUpgrade(gs.players[s.owner], UpgradeId::Martyrdom))
+        return;
     const PlayerState& t = gs.players[s.targetId];
     if (!t.active || t.health <= 0)
         return;
@@ -1967,7 +2199,7 @@ static void GrenadeExplode(GameState& gs, GrenadeState& gr)
     }
     for (SoldierState& s : gs.soldiers)
     {
-        if (!s.active || s.state == SoldierDying || s.owner == gr.owner)
+        if (!s.active || s.state >= SoldierDying || s.owner == gr.owner)
             continue;
         float dx = s.x - gr.x, dz = s.z - gr.z;
         float rr = GrenadeBlastRadius + SoldierRadius;
@@ -2071,6 +2303,64 @@ void GameState::TickSoldier(SoldierState& s)
     s.muzzleFlash = std::max(0.0f, s.muzzleFlash - TickDt);
     s.hitFlash = std::max(0.0f, s.hitFlash - TickDt);
 
+    if (s.state == SoldierKamikaze)
+    {
+        // MARTYRDOM: a dead man hopping. Cartoon velocity straight at the
+        // nearest enemy tank (the hop/flash/swell is client-side theatre),
+        // then a grenade-count-scaled blast when the fuse runs out.
+        s.deathTimer -= TickDt;
+        int tgt = NearestEnemyTank(*this, s.owner, s.x, s.z);
+        if (tgt >= 0)
+        {
+            const PlayerState& t = players[tgt];
+            float dx = t.x - s.x, dz = t.z - s.z;
+            float d = sqrtf(dx * dx + dz * dz);
+            if (d > 1e-3f)
+            {
+                s.yaw = atan2f(dx, dz);
+                s.x += dx / d * KamikazeSpeed * TickDt;
+                s.z += dz / d * KamikazeSpeed * TickDt;
+            }
+        }
+        s.x = std::clamp(s.x, -ArenaHalf + SoldierRadius,
+                         ArenaHalf - SoldierRadius);
+        s.z = std::clamp(s.z, -ArenaHalf + SoldierRadius,
+                         ArenaHalf - SoldierRadius);
+        CollideCircleObstacles(s.x, s.z, SoldierRadius);
+        if (s.deathTimer <= 0.0f)
+        {
+            const PlayerState& own = players[s.owner];
+            float count = own.stats[int(Stat::GrenadeCount)];
+            float radius = KamikazeBaseRadius + 1.0f * count;
+            int dmg = int(own.stats[int(Stat::SoldierDamage)]
+                          * (1.0f + KamikazeDmgPerCount * count) + 0.5f);
+            for (int id = 0; id < MaxPlayers; ++id)
+            {
+                const PlayerState& t = players[id];
+                if (!t.active || t.health <= 0 || id == s.owner)
+                    continue;
+                float dx = t.x - s.x, dz = t.z - s.z;
+                float rr = radius + TankRadius;
+                if (dx * dx + dz * dz < rr * rr)
+                    ApplyDamage(s.owner, id, dmg, 2);
+            }
+            for (SoldierState& e : soldiers)
+            {
+                if (!e.active || e.state >= SoldierDying
+                    || e.owner == s.owner)
+                    continue;
+                float dx = e.x - s.x, dz = e.z - s.z;
+                float rr = radius + SoldierRadius;
+                if (dx * dx + dz * dz < rr * rr)
+                {
+                    e.health -= float(dmg);
+                    e.lastHitBy = s.owner;
+                }
+            }
+            s.active = false;
+        }
+        return;
+    }
     if (s.state == SoldierDying)
     {
         s.deathTimer -= TickDt;
@@ -2091,6 +2381,15 @@ void GameState::TickSoldier(SoldierState& s)
         if (s.health <= 0.0f && players[s.owner].active
             && HasUpgrade(players[s.owner], UpgradeId::HauntedSquad))
             SpawnGhost(*this, s.owner, s.x, s.z, true);
+        // MARTYRDOM mutation: a KILLED soldier goes kamikaze instead of
+        // playing dead (owner-gone despawns still die quietly)
+        if (s.health <= 0.0f && players[s.owner].active
+            && HasUpgrade(players[s.owner], UpgradeId::Martyrdom))
+        {
+            s.state = SoldierKamikaze;
+            s.deathTimer = KamikazeFuse;
+            return;
+        }
         s.state = SoldierDying;
         s.deathTimer = SoldierDeathTime;
         return;
@@ -2646,7 +2945,8 @@ void GameState::Tick(const InputCmd* inputs)
                     sk.x = p.x;
                     sk.z = p.z;
                     sk.yaw = p.turretYaw;
-                    sk.life = 8.0f;
+                    sk.life = HasUpgrade(p, UpgradeId::Poltergeist)
+                        ? PoltergeistLife : 8.0f;
                     sk.dmg = p.stats[int(Stat::SkullDamage)];
                     p.skullWait = p.stats[int(Stat::SkullRate)];
                     break;
@@ -2663,9 +2963,11 @@ void GameState::Tick(const InputCmd* inputs)
             for (const SoldierState& s : soldiers)
                 if (s.active && s.owner == id)
                     ++mine;
-            if (p.soldierSpawnWait <= 0.0f
-                && mine < int(p.stats[int(Stat::SoldierMax)] + 0.5f)
-                && SpawnSoldier(id))
+            // RICOCHET DRAFT: the tank itself fields ONE soldier only --
+            // the rest of the army has to be drafted by ricochets
+            int cap = HasUpgrade(p, UpgradeId::RicochetDraft)
+                ? 1 : int(p.stats[int(Stat::SoldierMax)] + 0.5f);
+            if (p.soldierSpawnWait <= 0.0f && mine < cap && SpawnSoldier(id))
                 p.soldierSpawnWait = p.stats[int(Stat::SoldierCooldown)];
         }
 
@@ -2761,6 +3063,25 @@ void GameState::Tick(const InputCmd* inputs)
         // bounce; the spawned twins are always sterile. Chance above 100%
         // spills into a chance for a SECOND twin on the same bounce
         // (120% = twin + 20% for another; 200% = always two twins).
+        // RICOCHET DRAFT: every wall bounce of the tank's rockets has a 2%
+        // chance to draft a soldier AT the ricochet (up to the 32 cap).
+        // Deterministic hash, separate bits from the fission roll below.
+        if (pr.bounces < bouncesBefore
+            && HasUpgrade(players[pr.owner], UpgradeId::RicochetDraft))
+        {
+            int slot = int(&pr - &projectiles[0]);
+            uint32_t dh = tick * 2246822519u ^ uint32_t(slot * 131 + 71);
+            dh ^= dh << 13; dh ^= dh >> 17; dh ^= dh << 5;
+            if (float(dh & 0xFFFF) / 65535.0f < RicochetDraftChance)
+            {
+                int mine = 0;
+                for (const SoldierState& s : soldiers)
+                    if (s.active && s.owner == pr.owner)
+                        ++mine;
+                if (mine < RicochetDraftCap)
+                    SpawnSoldierAt(pr.owner, pr.x, pr.z);
+            }
+        }
         if (pr.bounces < bouncesBefore && pr.splitChance > 0.0f)
         {
             int slot = int(&pr - &projectiles[0]);
@@ -2799,6 +3120,26 @@ void GameState::Tick(const InputCmd* inputs)
                 continue;
         }
         ShieldDeflectStep(*this, pr);
+        // POLTERGEIST skulls are shot down like drones -- and THAT is the
+        // moment their acid finally lands. Any shell not fighting for the
+        // skull's owner counts (deflected orange ones included).
+        for (SkullState& sk : skulls)
+        {
+            if (!sk.active || sk.owner == pr.owner
+                || !HasUpgrade(players[sk.owner], UpgradeId::Poltergeist))
+                continue;
+            float dx = sk.x - pr.x, dz = sk.z - pr.z;
+            float r = SkullRadius + ProjectileRadius;
+            if (dx * dx + dz * dz < r * r)
+            {
+                SpawnPuddle(*this, sk.owner, sk.x, sk.z);
+                sk.active = false;
+                pr.active = false;   // the shell is spent on the kill
+                break;
+            }
+        }
+        if (!pr.active)
+            continue;
         bool spent = false;
         for (int id = 0; id < MaxPlayers && !spent; ++id)
         {
@@ -2808,8 +3149,18 @@ void GameState::Tick(const InputCmd* inputs)
             float dx = pr.x - t.x, dz = pr.z - t.z;
             if (dx * dx + dz * dz < TankRadius * TankRadius && pr.y < 2.2f)
             {
-                ApplyDamage(pr.owner, id, pr.damage, 5);
-                pr.active = false;
+                // RADAR rockets: a direct hit detonates the RANGES, not the
+                // bare rocket -- the whole tree blows at the impact point
+                // (the victim sits in the root circle, so it takes at least
+                // the full rocket damage + PAYLOAD; anyone else in the
+                // rings shares the pain). Less precision required.
+                if (pr.radarRange > 0.0f)
+                    DetonateRadar(*this, pr);
+                else
+                {
+                    ApplyDamage(pr.owner, id, pr.damage, 5);
+                    pr.active = false;
+                }
                 spent = true;
             }
         }
@@ -2819,12 +3170,18 @@ void GameState::Tick(const InputCmd* inputs)
         {
             if (spent)
                 break;
-            if (!s.active || s.state == SoldierDying || s.owner == pr.owner)
+            if (!s.active || s.state >= SoldierDying || s.owner == pr.owner)
                 continue;
             float dx = pr.x - s.x, dz = pr.z - s.z;
             float r = SoldierRadius + ProjectileRadius;
             if (dx * dx + dz * dz < r * r && pr.y < 2.2f)
             {
+                if (pr.radarRange > 0.0f)
+                {
+                    DetonateRadar(*this, pr);
+                    spent = true;
+                    break;
+                }
                 s.health -= float(pr.damage);
                 s.lastHitBy = pr.owner;
                 s.hitFlash = 0.3f;
@@ -2847,6 +3204,9 @@ void GameState::Tick(const InputCmd* inputs)
     for (SkullState& sk : skulls)
         if (sk.active)
             TickSkull(*this, sk);
+    for (AcidBallState& ab : acidBalls)
+        if (ab.active)
+            TickAcidBall(*this, ab);
     for (PuddleState& pu : puddles)
         if (pu.active)
             TickPuddle(*this, pu);

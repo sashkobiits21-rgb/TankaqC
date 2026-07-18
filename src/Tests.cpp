@@ -995,6 +995,153 @@ int RunClassTest()
               "PURE ARSENAL burns classes and their mutations");
     }
 
+    // ---- POLTERGEIST / ACID HOUND / MARTYRDOM / radar buffs ----
+    {
+        // POLTERGEIST: bites don't burst, walls don't burst, rockets do
+        GameState gp{};
+        gp.SpawnPlayer(0);
+        gp.SpawnPlayer(1);
+        gp.phase = PhasePlaying;
+        gp.matchEndTick = gp.tick + 100000000u;
+        PlayerState& nb = gp.players[0];
+        nb.owned.push_back(uint8_t(UpgradeId::NecroClass));
+        nb.owned.push_back(uint8_t(UpgradeId::BouncyClass));
+        nb.owned.push_back(uint8_t(UpgradeId::Poltergeist));
+        gp.RecalcStats(0);
+        gp.players[1].x = 20; gp.players[1].z = -20;
+        gp.players[1].health = 100;
+        SkullState& sk = gp.skulls[0];
+        sk = SkullState{};
+        sk.active = true; sk.owner = 0; sk.life = 40.0f; sk.dmg = 5.0f;
+        sk.x = 20; sk.z = -20 + TankRadius + SkullRadius + 0.1f;
+        sk.yaw = XM_PI;                    // straight at the enemy
+        TickSkull(gp, sk);
+        check(sk.active && gp.players[1].health < 100,
+              "a poltergeist skull BITES and lives to bite again");
+        check(sk.retreat > 0.0f, "after the bite it disengages");
+        int noPuddles = 0;
+        for (const PuddleState& pu : gp.puddles) noPuddles += pu.active;
+        check(noPuddles == 0, "no acid from a poltergeist bite");
+        sk.x = ArenaHalf - SkullRadius - 0.05f; sk.z = 0;
+        sk.yaw = XM_PI * 0.5f;             // into the east wall
+        sk.retreat = 1.0f;                 // retreating: homing stays off
+        TickSkull(gp, sk);
+        check(sk.active, "walls ricochet a poltergeist skull, no burst");
+        // an enemy rocket ends it -- and THAT drops the puddle
+        sk.x = 0; sk.z = -20;
+        Projectile& shot = gp.projectiles[0];
+        shot = Projectile{};
+        shot.active = true; shot.owner = 1;
+        shot.x = 0; shot.z = -20; shot.y = 0.5f;
+        shot.yaw = 0; shot.speed = 0.01f; shot.damage = 10;
+        shot.life = 5.0f;
+        InputCmd idle[MaxPlayers]{};
+        gp.Tick(idle);
+        bool puddleNow = false;
+        for (const PuddleState& pu : gp.puddles) puddleNow |= pu.active;
+        check(!sk.active && puddleNow,
+              "shooting the poltergeist skull finally spills the acid");
+
+        // ACID HOUND: the burst releases the blob; hops drip weak puddles
+        GameState gh2{};
+        gh2.SpawnPlayer(0);
+        gh2.SpawnPlayer(1);
+        gh2.phase = PhasePlaying;
+        gh2.matchEndTick = gh2.tick + 100000000u;
+        PlayerState& ah = gh2.players[0];
+        ah.owned.push_back(uint8_t(UpgradeId::NecroClass));
+        ah.owned.push_back(uint8_t(UpgradeId::BouncyClass));
+        ah.owned.push_back(uint8_t(UpgradeId::AcidHound));
+        gh2.RecalcStats(0);
+        gh2.players[1].x = 20; gh2.players[1].z = 20;
+        SkullState& hs = gh2.skulls[0];
+        hs = SkullState{};
+        hs.active = true; hs.owner = 0; hs.life = 8.0f; hs.dmg = 5.0f;
+        hs.x = ArenaHalf + 0.2f; hs.z = 0; // already past the wall line:
+        hs.yaw = XM_PI * 0.5f;             // homing can't save it -- burst
+        TickSkull(gh2, hs);
+        check(!hs.active && gh2.acidBalls[0].active,
+              "an acid hound burst releases the blob, not a puddle");
+        int hops = int(AcidBallHopTime / TickDt) + 2;
+        for (int t = 0; t < hops; ++t)
+            TickAcidBall(gh2, gh2.acidBalls[0]);
+        const PlayerState& o0 = gh2.players[0];
+        bool weakPuddle = false;
+        for (const PuddleState& pu : gh2.puddles)
+            if (pu.active
+                && fabsf(pu.dps - o0.stats[int(Stat::AcidDps)] * 0.2f) < 0.01f
+                && pu.life <= o0.stats[int(Stat::AcidDuration)] * 0.2f + 0.01f)
+                weakPuddle = true;
+        check(weakPuddle && gh2.acidBalls[0].bounces >= 1,
+              "every hop drips a 20%%/20%% puddle");
+
+        // MARTYRDOM: a killed soldier turns kamikaze and blows on schedule
+        GameState gk{};
+        gk.SpawnPlayer(0);
+        gk.SpawnPlayer(1);
+        gk.phase = PhasePlaying;
+        gk.matchEndTick = gk.tick + 100000000u;
+        PlayerState& mk = gk.players[0];
+        mk.owned.push_back(uint8_t(UpgradeId::SoldierClass));
+        mk.owned.push_back(uint8_t(UpgradeId::BouncyClass));
+        mk.owned.push_back(uint8_t(UpgradeId::Martyrdom));
+        gk.RecalcStats(0);
+        gk.players[1].x = 0; gk.players[1].z = -18;
+        gk.players[1].health = 100;
+        SoldierState& kz = gk.soldiers[0];
+        kz = SoldierState{};
+        kz.active = true; kz.owner = 0; kz.state = SoldierGuard;
+        kz.x = 0; kz.z = -17; kz.health = 0;   // killed in action
+        kz.damage = gk.players[0].stats[int(Stat::SoldierDamage)];
+        gk.TickSoldier(kz);
+        check(kz.active && kz.state == SoldierKamikaze,
+              "a martyr's soldier dies into a kamikaze charge");
+        for (int t = 0; t < int(KamikazeFuse / TickDt) + 3 && kz.active; ++t)
+            gk.TickSoldier(kz);
+        check(!kz.active && gk.players[1].health < 100,
+              "the kamikaze fuse detonates on the enemy's doorstep");
+
+        // RADAR: a direct body hit detonates the RANGES, not the rocket
+        GameState gr{};
+        gr.SpawnPlayer(0);
+        gr.SpawnPlayer(1);
+        gr.phase = PhasePlaying;
+        gr.matchEndTick = gr.tick + 100000000u;
+        gr.players[1].x = 10; gr.players[1].z = 10;
+        gr.players[1].health = 100;
+        Projectile rr{};
+        rr.active = true; rr.owner = 0;
+        rr.x = 10; rr.z = 10; rr.y = 0.5f;
+        rr.damage = 10; rr.radarRange = 3.0f; rr.radarDamage = 6.0f;
+        DetonateRadar(gr, rr);
+        check(!rr.active && gr.players[1].health == 84,
+              "a direct radar hit blows the tree: rocket + payload land");
+        // and the rings SEE poltergeist skulls (lock charges on them)
+        GameState gl{};
+        gl.SpawnPlayer(0);
+        gl.SpawnPlayer(1);
+        gl.phase = PhasePlaying;
+        gl.matchEndTick = gl.tick + 100000000u;
+        gl.players[1].owned.push_back(uint8_t(UpgradeId::NecroClass));
+        gl.players[1].owned.push_back(uint8_t(UpgradeId::BouncyClass));
+        gl.players[1].owned.push_back(uint8_t(UpgradeId::Poltergeist));
+        gl.RecalcStats(1);
+        gl.players[0].x = -20; gl.players[0].z = -20;
+        gl.players[1].x = 20; gl.players[1].z = 20;
+        SkullState& ls = gl.skulls[0];
+        ls = SkullState{};
+        ls.active = true; ls.owner = 1; ls.life = 40.0f;
+        ls.x = 0; ls.z = 0;
+        Projectile lp{};
+        lp.active = true; lp.owner = 0;
+        lp.x = 1; lp.z = 0; lp.y = 0.5f;
+        lp.damage = 10; lp.radarRange = 3.0f; lp.radarLockNeed = 1.0f;
+        float lockBefore = lp.radarLock;
+        for (int t = 0; t < 3; ++t) TickRadar(gl, lp);
+        check(lp.radarLock > lockBefore,
+              "radar rings recognize a poltergeist skull as prey");
+    }
+
     Log("classtest done: %d failure(s)", fails);
     return fails;
 }

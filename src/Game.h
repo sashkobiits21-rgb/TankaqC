@@ -221,6 +221,10 @@ enum class UpgradeId : uint8_t
     SpatialArmor,
     HauntedSquad,
     BonePlatoon,
+    Poltergeist,
+    AcidHound,
+    RicochetDraft,
+    Martyrdom,
     Count
 };
 constexpr int UpgradeCount = int(UpgradeId::Count);
@@ -263,6 +267,10 @@ inline constexpr MutationPair kMutations[] = {
     { UpgradeId::SpatialArmor, ClassShield,  ClassRadar  },
     { UpgradeId::HauntedSquad, ClassSoldier, ClassNecro  },
     { UpgradeId::BonePlatoon,  ClassSoldier, ClassNecro  },
+    { UpgradeId::Poltergeist,  ClassNecro,   ClassBouncy },
+    { UpgradeId::AcidHound,    ClassNecro,   ClassBouncy },
+    { UpgradeId::RicochetDraft, ClassSoldier, ClassBouncy },
+    { UpgradeId::Martyrdom,    ClassSoldier, ClassBouncy },
 };
 inline bool IsMutation(UpgradeId id)
 { return UpgradeDef(id).rarity == RarityMutation; }
@@ -392,6 +400,16 @@ struct Projectile
 // rocket, radii and tree depth per node; returns the node count.
 int RadarTreeLayout(float rootR, int extra, float yaw,
                     float* ox, float* oz, float* radius, int* depth, int cap);
+// Blow the whole ring tree at the rocket's position (full lock OR direct
+// body hit -- the ranges explode, not the bare rocket).
+struct GameState;
+struct SkullState;
+struct AcidBallState;
+void DetonateRadar(GameState& gs, Projectile& pr);
+// Exposed for --classtest (host-side fire-and-forget entity ticks).
+void TickSkull(GameState& gs, SkullState& sk);
+void TickAcidBall(GameState& gs, AcidBallState& ab);
+void TickRadar(GameState& gs, Projectile& pr);
 
 struct Obstacle
 {
@@ -409,7 +427,8 @@ extern const Obstacle kObstacles[NumObstacles];
 // shooting at enemy tanks, and kites (keeps running + firing) when no spot
 // blocks line of sight to every enemy. Visuals are fire-and-forget: clients
 // drive animation locally from the replicated state, never corrected.
-constexpr int   MaxSoldiers = 12;          // across all players
+constexpr int   MaxSoldiers = 32;          // across all players (RICOCHET
+                                           // DRAFT can flood the field)
 constexpr float SoldierRadius = 0.55f;
 constexpr float SoldierFireRange = 15.0f;
 constexpr float SoldierGunY = 1.05f;       // launcher muzzle height
@@ -425,6 +444,8 @@ enum : uint8_t
     SoldierKite,        // no full cover exists: keep running + firing
     SoldierPeek,        // stepping OUT to a sight-line point for one shot
     SoldierDying,       // death animation playing, despawns after
+    SoldierKamikaze,    // MARTYRDOM: dead man hopping at the enemy, 3s fuse
+                        // (keep >= SoldierDying: "gone" checks use >=)
 };
 
 struct SoldierState
@@ -510,6 +531,48 @@ struct SkullState
     float yaw = 0;
     float life = 0;
     float dmg = 0;   // direct contact damage, baked from the owner
+    float retreat = 0;   // POLTERGEIST: fleeing after a bite (host-only)
+};
+
+// NECRO+BOUNCY mutations. POLTERGEIST: skulls ricochet off walls, BITE and
+// retreat off tanks, never drop acid on their own, and die only to enemy
+// rockets -- THAT is when the puddle lands. ACID HOUND: skull bursts skip
+// the puddle and release a ground-hopping acid ball that steers toward the
+// nearest enemy with real inertia (a force vector bending a velocity
+// vector), dripping a weak puddle on every hop. Nothing to do but run.
+constexpr float PoltergeistLife = 45.0f;   // pester until shot (or this)
+constexpr float PoltergeistRetreat = 1.1f; // seconds fleeing after a bite
+constexpr int   MaxAcidBalls = 6;
+constexpr int   AcidBallBounces = 40;      // ground hops before it dies
+constexpr float AcidBallHopTime = 0.34f;   // seconds per hop
+constexpr float AcidBallHopHeight = 1.1f;
+constexpr float AcidBallSpeed = 7.6f;      // xz speed cap (outrunnable)
+constexpr float AcidBallAccel = 11.0f;     // steering force, units/s^2
+constexpr float AcidBallPuddleMul = 0.2f;  // life AND dps per drip (x25
+                                           // weaker in total damage)
+
+// SOLDIER+BOUNCY mutations. RICOCHET DRAFT: the tank itself fields ONE
+// soldier only, but every wall bounce of its rockets has a 2% chance to
+// draft another -- up to a battlefield of 32. MARTYRDOM: soldiers lose
+// their grenades; instead a KILLED soldier turns kamikaze -- hopping at
+// the enemy with cartoon velocity, flashing red and swelling, then
+// exploding after 3 s with range and damage scaled by GRENADE COUNT.
+constexpr float RicochetDraftChance = 0.02f;
+constexpr int   RicochetDraftCap = 32;
+constexpr float KamikazeFuse = 3.0f;
+constexpr float KamikazeSpeed = 7.5f;      // cartoon hops, not physics
+constexpr float KamikazeBaseRadius = 2.0f; // + 1.0 per grenade count
+constexpr float KamikazeDmgPerCount = 1.0f; // damage = SoldierDamage x
+                                            // (1 + count)
+
+struct AcidBallState
+{
+    bool active = false;
+    uint8_t owner = 0;
+    uint8_t bounces = 0;   // hops done (dies at AcidBallBounces)
+    float x = 0, z = 0, y = 0;
+    float vx = 0, vz = 0;  // xz inertia; steering force bends this
+    float hopT = 0;        // time into the current hop
 };
 
 struct PuddleState
@@ -591,6 +654,7 @@ struct GameState
     SkullState skulls[MaxSkulls];
     PuddleState puddles[MaxPuddles];
     GhostState ghosts[MaxGhosts];
+    AcidBallState acidBalls[MaxAcidBalls];
     GrenadeState grenades[MaxGrenades];
     uint32_t tick = 0;
     uint8_t phase = PhaseLobby;
@@ -641,6 +705,9 @@ struct GameState
     // Host: place a fresh soldier for this owner beside their tank; returns
     // false when no slot or no clear spawn spot exists.
     bool SpawnSoldier(int ownerId);
+    // RICOCHET DRAFT: draft a soldier AT a ricochet point (falls back to
+    // the tank-side ring when the point is blocked).
+    bool SpawnSoldierAt(int ownerId, float x, float z);
     // One tick of a soldier's cover-point AI (host authority only).
     void TickSoldier(SoldierState& s);
     // Roll a fresh random offer. Inserts at slot 0 immediately, or queues it

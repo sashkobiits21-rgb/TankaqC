@@ -155,6 +155,8 @@ struct App
     Animator skullAnim[MaxSkulls];             // staggered chomp per slot
     bool prevSkullActive[MaxSkulls]{};         // burst on skull death
     DirectX::XMFLOAT3 prevSkullPos[MaxSkulls]{};
+    bool prevSoldierKami[MaxSoldiers]{};       // MARTYRDOM blast detection
+    DirectX::XMFLOAT3 prevSoldierKamiPos[MaxSoldiers]{};
     bool prevGrenadeActive[MaxGrenades]{};     // boom on grenade fuse-out
     DirectX::XMFLOAT3 prevGrenadePos[MaxGrenades]{};
     int prevPlayerHealth[MaxPlayers]{};        // TERRORIST death detection
