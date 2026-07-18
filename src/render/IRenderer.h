@@ -1,4 +1,6 @@
 #pragma once
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -61,6 +63,87 @@ struct UiBurnQuad
     float maxRadius;             // radius at progress 1 (pixels)
     float u0 = 0, v0 = 0, u1 = 0, v1 = 0;
 };
+
+// ---- frustum culling (shared by both backends) --------------------------
+// Per-mesh bounding spheres are computed at upload; each pass culls against
+// its own frustum (camera for the scene pass, the sun's ortho box for the
+// shadow pass). Objects visible in neither pass never cost a CB slot.
+struct BoundingSphere { DirectX::XMFLOAT3 center{}; float radius = 0; };
+
+struct Frustum { DirectX::XMFLOAT4 planes[6]; };
+
+inline Frustum FrustumFromViewProj(const DirectX::XMFLOAT4X4& m)
+{
+    // Gribb-Hartmann for row-vector matrices (v * M), D3D z in [0,1]
+    Frustum f;
+    auto plane = [&](float a, float b, float c, float d, int i)
+    {
+        float len = sqrtf(a * a + b * b + c * c);
+        if (len < 1e-6f) len = 1.0f;
+        f.planes[i] = DirectX::XMFLOAT4(a / len, b / len, c / len, d / len);
+    };
+    plane(m._14 + m._11, m._24 + m._21, m._34 + m._31, m._44 + m._41, 0);
+    plane(m._14 - m._11, m._24 - m._21, m._34 - m._31, m._44 - m._41, 1);
+    plane(m._14 + m._12, m._24 + m._22, m._34 + m._32, m._44 + m._42, 2);
+    plane(m._14 - m._12, m._24 - m._22, m._34 - m._32, m._44 - m._42, 3);
+    plane(m._13, m._23, m._33, m._43, 4);                       // near
+    plane(m._14 - m._13, m._24 - m._23, m._34 - m._33, m._44 - m._43, 5);
+    return f;
+}
+
+inline bool SphereInFrustum(const Frustum& f, const DirectX::XMFLOAT3& c,
+                            float r)
+{
+    for (const DirectX::XMFLOAT4& p : f.planes)
+        if (p.x * c.x + p.y * c.y + p.z * c.z + p.w < -r)
+            return false;
+    return true;
+}
+
+// World-space sphere of a mesh instance: transform the center, scale the
+// radius by the largest basis-vector length (handles non-uniform scale).
+inline void TransformSphere(const BoundingSphere& bs,
+                            const DirectX::XMFLOAT4X4& world,
+                            DirectX::XMFLOAT3& outC, float& outR)
+{
+    using namespace DirectX;
+    XMMATRIX w = XMLoadFloat4x4(&world);
+    XMVECTOR c = XMVector3TransformCoord(XMLoadFloat3(&bs.center), w);
+    XMStoreFloat3(&outC, c);
+    float sx = XMVectorGetX(XMVector3Length(w.r[0]));
+    float sy = XMVectorGetX(XMVector3Length(w.r[1]));
+    float sz = XMVectorGetX(XMVector3Length(w.r[2]));
+    outR = bs.radius * std::max(sx, std::max(sy, sz));
+}
+
+// Tight sphere at upload time: AABB center + true max distance. Works for
+// Vertex and SkinnedVertex (both start with px/py/pz).
+template <typename V>
+inline BoundingSphere ComputeMeshBounds(const V* v, size_t n)
+{
+    BoundingSphere bs;
+    if (!v || n == 0)
+        return bs;
+    float mn[3] = { v[0].px, v[0].py, v[0].pz };
+    float mx[3] = { v[0].px, v[0].py, v[0].pz };
+    for (size_t i = 1; i < n; ++i)
+    {
+        mn[0] = std::min(mn[0], v[i].px); mx[0] = std::max(mx[0], v[i].px);
+        mn[1] = std::min(mn[1], v[i].py); mx[1] = std::max(mx[1], v[i].py);
+        mn[2] = std::min(mn[2], v[i].pz); mx[2] = std::max(mx[2], v[i].pz);
+    }
+    bs.center = { (mn[0] + mx[0]) * 0.5f, (mn[1] + mx[1]) * 0.5f,
+                  (mn[2] + mx[2]) * 0.5f };
+    float r2 = 0;
+    for (size_t i = 0; i < n; ++i)
+    {
+        float dx = v[i].px - bs.center.x, dy = v[i].py - bs.center.y,
+              dz = v[i].pz - bs.center.z;
+        r2 = std::max(r2, dx * dx + dy * dy + dz * dz);
+    }
+    bs.radius = sqrtf(r2);
+    return bs;
+}
 
 struct RenderObject
 {

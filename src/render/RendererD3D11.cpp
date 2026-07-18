@@ -83,6 +83,7 @@ struct GpuMesh
     UINT indexCount = 0;
     UINT stride = sizeof(Vertex);
     bool skinned = false;
+    BoundingSphere bounds;   // mesh space; culling per pass
 };
 
 struct RenderTexture
@@ -229,6 +230,7 @@ public:
         if (FAILED(m_device->CreateBuffer(&ibd, &isd, &mesh.ib)))
             return -1;
         mesh.indexCount = UINT(indexCount);
+        mesh.bounds = ComputeMeshBounds(verts, vertexCount);
         m_meshes.push_back(std::move(mesh));
         return int(m_meshes.size()) - 1;
     }
@@ -254,6 +256,9 @@ public:
         if (FAILED(m_device->CreateBuffer(&ibd, &isd, &mesh.ib)))
             return -1;
         mesh.indexCount = UINT(indexCount);
+        mesh.bounds = ComputeMeshBounds(verts, vertexCount);
+        // animation reaches beyond the rest pose: inflate generously
+        mesh.bounds.radius = mesh.bounds.radius * 1.6f + 0.5f;
         m_meshes.push_back(std::move(mesh));
         return int(m_meshes.size()) - 1;
     }
@@ -335,6 +340,28 @@ public:
         pf.screen = XMFLOAT4(float(m_width), float(m_height), 1.0f / m_shadowSize,
                              frame.post.shadowsEnabled ? float(1 + frame.post.shadowFilter) : 0.0f);
 
+        // FRUSTUM CULLING: world-space mesh spheres against each pass's
+        // frustum (camera / sun ortho box), computed once per frame
+        {
+            Frustum viewF = FrustumFromViewProj(frame.viewProj);
+            Frustum lightF = FrustumFromViewProj(frame.lightViewProj);
+            m_visFlags.assign(frame.objects.size(), 0);
+            for (size_t i = 0; i < frame.objects.size(); ++i)
+            {
+                const RenderObject& obj = frame.objects[i];
+                if (obj.mesh < 0 || obj.mesh >= int(m_meshes.size()))
+                    continue;
+                XMFLOAT3 wc;
+                float wr;
+                TransformSphere(m_meshes[obj.mesh].bounds, obj.world, wc, wr);
+                uint8_t v = 0;
+                if (SphereInFrustum(viewF, wc, wr)) v |= 1;
+                if (frame.post.shadowsEnabled && !obj.noShadow
+                    && SphereInFrustum(lightF, wc, wr)) v |= 2;
+                m_visFlags[i] = v;
+            }
+        }
+
         // ---------------- shadow pass (depth only, sun's ortho camera) ----------------
         if (frame.post.shadowsEnabled)
         {
@@ -361,12 +388,13 @@ public:
             m_ctx->PSSetConstantBuffers(0, 1, m_cbShadowFrame.GetAddressOf());
             m_ctx->PSSetConstantBuffers(1, 1, m_cbObject.GetAddressOf());
 
-            for (const RenderObject& obj : frame.objects)
+            for (size_t oi = 0; oi < frame.objects.size(); ++oi)
             {
+                const RenderObject& obj = frame.objects[oi];
                 if (obj.mesh < 0 || obj.mesh >= int(m_meshes.size()))
                     continue;
-                if (obj.noShadow)
-                    continue;   // STEALTH: fully hidden = no shadow either
+                if (!(m_visFlags[oi] & 2))
+                    continue;   // culled from the sun's box (or noShadow)
                 PerObjectCB po{};
                 po.world = obj.world;
                 po.tint = obj.tint;
@@ -416,10 +444,13 @@ public:
         m_ctx->PSSetSamplers(0, 2, meshSamplers);
         m_ctx->PSSetShaderResources(1, 1, m_shadowSrv.GetAddressOf());
 
-        for (const RenderObject& obj : frame.objects)
+        for (size_t oi = 0; oi < frame.objects.size(); ++oi)
         {
+            const RenderObject& obj = frame.objects[oi];
             if (obj.mesh < 0 || obj.mesh >= int(m_meshes.size()))
                 continue;
+            if (!(m_visFlags[oi] & 1))
+                continue;       // culled from the camera frustum
             PerObjectCB po{};
             po.world = obj.world;
             po.tint = obj.tint;
@@ -1079,6 +1110,7 @@ private:
     int m_shadowSize = 2048;
     std::vector<GpuMesh> m_meshes;
     std::vector<ComPtr<ID3D11ShaderResourceView>> m_textures;
+    std::vector<uint8_t> m_visFlags;   // per-object: bit0 camera, bit1 sun
 };
 
 } // namespace

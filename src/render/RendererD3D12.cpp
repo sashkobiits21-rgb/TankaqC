@@ -22,7 +22,8 @@ namespace
 constexpr int FrameCount = 3;          // swapchain buffers
 constexpr int FramesInFlight = 2;
 constexpr UINT CbAlign = 256;
-constexpr UINT MaxObjectsPerFrame = 256;
+constexpr UINT MaxObjectsPerFrame = 512;   // culled objects cost no slot;
+                                           // this is the VISIBLE budget
 constexpr UINT MaxSkinnedPerFrame = 40;   // soldiers + skulls + rigtest
 constexpr UINT PaletteBytes = 64 * 64;   // MaxBones float4x4, 256-aligned
 
@@ -127,6 +128,7 @@ struct GpuMesh
     D3D12_INDEX_BUFFER_VIEW ibv{};
     UINT indexCount = 0;
     bool skinned = false;
+    BoundingSphere bounds;   // mesh space; culling per pass
 };
 
 // Offscreen target with tracked resource state.
@@ -348,6 +350,7 @@ public:
         mesh.vbv = { mesh.vb->GetGPUVirtualAddress(), UINT(vbSize), sizeof(Vertex) };
         mesh.ibv = { mesh.ib->GetGPUVirtualAddress(), UINT(ibSize), DXGI_FORMAT_R32_UINT };
         mesh.indexCount = UINT(indexCount);
+        mesh.bounds = ComputeMeshBounds(verts, vertexCount);
         m_meshes.push_back(std::move(mesh));
         return int(m_meshes.size()) - 1;
     }
@@ -368,6 +371,9 @@ public:
                      DXGI_FORMAT_R32_UINT };
         mesh.indexCount = UINT(indexCount);
         mesh.skinned = true;
+        mesh.bounds = ComputeMeshBounds(verts, vertexCount);
+        // animation reaches beyond the rest pose: inflate generously
+        mesh.bounds.radius = mesh.bounds.radius * 1.6f + 0.5f;
         m_meshes.push_back(std::move(mesh));
         return int(m_meshes.size()) - 1;
     }
@@ -547,7 +553,13 @@ public:
         };
 
         // Per-object constants are written once and shared by both passes.
-        struct Drawable { const RenderObject* obj; UINT slot; };
+        // FRUSTUM CULLING: each pass tests the mesh's world-space sphere
+        // against its own frustum; an object visible in neither pass costs
+        // nothing -- not even a CB slot.
+        Frustum viewF = FrustumFromViewProj(frame.viewProj);
+        Frustum lightF = FrustumFromViewProj(frame.lightViewProj);
+        struct Drawable { const RenderObject* obj; UINT slot;
+                          bool inView; bool inLight; };
         std::vector<Drawable> drawables;
         drawables.reserve(frame.objects.size());
         {
@@ -557,6 +569,14 @@ public:
                 if (obj.mesh < 0 || obj.mesh >= int(m_meshes.size())
                     || objIndex >= MaxObjectsPerFrame)
                     continue;
+                XMFLOAT3 wc;
+                float wr;
+                TransformSphere(m_meshes[obj.mesh].bounds, obj.world, wc, wr);
+                bool inView = SphereInFrustum(viewF, wc, wr);
+                bool inLight = frame.post.shadowsEnabled && !obj.noShadow
+                            && SphereInFrustum(lightF, wc, wr);
+                if (!inView && !inLight)
+                    continue;
                 PerObjectCB po{};
                 po.world = obj.world;
                 po.tint = obj.tint;
@@ -565,7 +585,7 @@ public:
                                    obj.deformDist >= 0.0f ? 1.0f : 0.0f);
                 po.misc2 = XMFLOAT4(obj.losClip, 0.0f, 0.0f, 0.0f);
                 memcpy(m_cbMapped[fi] + size_t(objIndex) * CbAlign, &po, sizeof(po));
-                drawables.push_back({ &obj, objIndex });
+                drawables.push_back({ &obj, objIndex, inView, inLight });
                 ++objIndex;
             }
         }
@@ -619,8 +639,8 @@ public:
             bool shSkinned = false;
             for (const auto& d : drawables)
             {
-                if (d.obj->noShadow)
-                    continue;   // STEALTH: fully hidden = no shadow either
+                if (!d.inLight)
+                    continue;   // culled from the sun's box (or noShadow)
                 const GpuMesh& mesh = m_meshes[d.obj->mesh];
                 if (mesh.skinned != shSkinned)
                 {
@@ -681,6 +701,8 @@ public:
         bool sceneSkinned = false;
         for (const auto& d : drawables)
         {
+            if (!d.inView)
+                continue;       // culled from the camera frustum
             const GpuMesh& mesh = m_meshes[d.obj->mesh];
             if (mesh.skinned != sceneSkinned)
             {
