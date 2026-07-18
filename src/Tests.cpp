@@ -776,10 +776,10 @@ int RunClassTest()
         float sz = ob.cz - 0.538f / 0.460f * ob.height * 0.5f;
         check(!InSunlight(sx, sz), "a box shades its shadow volume");
         check(InSunlight(0.0f, -20.0f), "mid-lane ground is sunlit");
-        // TREES: the east-ring canopy at (33.8, 0) throws its long shadow
-        // INTO the arena -- honest vampire cover with no collision
+        // TREES: an inner shade island throws its long shadow across the
+        // arena -- honest vampire cover with no collision
         {
-            const TreeSpot& tt = kTrees[4];
+            const TreeSpot& tt = kTrees[4];   // (22, 15)
             float th = TreeShadeHeight * tt.s;
             float tsx = tt.x - 0.707f / 0.460f * th * 0.6f;
             float tsz = tt.z - 0.538f / 0.460f * th * 0.6f;

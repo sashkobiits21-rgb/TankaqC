@@ -319,10 +319,13 @@ const Obstacle kObstacles[NumObstacles] = {
     {   0.0f,   0.0f, 5.95f, 1.95f, 1.6f }, // temple stairs, E-W strip
     {  14.0f,  10.0f, 3.5f, 0.5f, 3.0f },   // standard walls
     { -14.0f, -10.0f, 3.5f, 0.5f, 3.0f },
-    { -14.0f,  7.345f, 0.8f, 2.345f, 5.4f },   // gate A, south pillar
-    { -14.0f, 16.655f, 0.8f, 2.345f, 5.4f },   // gate A, north pillar
-    {  14.0f, -16.655f, 0.8f, 2.345f, 5.4f },  // gate B, south pillar
-    {  14.0f,  -7.345f, 0.8f, 2.345f, 5.4f },  // gate B, north pillar
+    // gateways at a 12.5u span, 1.0 thick, height squashed to 5.5: gap
+    // half 1.816 -> too tight, so the pillar math uses the 4.1u gap from
+    // inner edge 2.06 (still the authored mesh ratio at the shorter span)
+    { -14.0f,  7.845f, 0.5f, 2.095f, 4.2f },   // gate A, south pillar
+    { -14.0f, 16.155f, 0.5f, 2.095f, 4.2f },   // gate A, north pillar
+    {  14.0f, -16.155f, 0.5f, 2.095f, 4.2f },  // gate B, south pillar
+    {  14.0f,  -7.845f, 0.5f, 2.095f, 4.2f },  // gate B, north pillar
     {  -6.0f, -20.0f, 3.5f, 0.5f, 3.0f },
     {   6.0f,  20.0f, 3.5f, 0.5f, 3.0f },
     {  20.0f,  18.0f, 3.5f, 0.5f, 3.0f },   // NE corner: L, long-X leg

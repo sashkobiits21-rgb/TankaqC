@@ -1122,10 +1122,11 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
         {
             float gx = gi == 0 ? -14.0f : 14.0f;
             float gz = gi == 0 ? 12.0f : -12.0f;
-            float s = 14.0f / g.gateExt.z;
             XMMATRIX w = XMMatrixTranslation(-g.gateCtr.x, -g.gateCtr.y,
                                              -g.gateCtr.z)
-                       * XMMatrixScaling(1.6f / g.gateExt.x, s, s)
+                       * XMMatrixScaling(1.0f / g.gateExt.x,
+                                         5.5f / g.gateExt.y,
+                                         12.5f / g.gateExt.z)
                        * XMMatrixTranslation(gx, 0.0f, gz);
             RenderObject ro{ g.meshGate,
                              g.texGate >= 0 ? g.texGate : g.texWall,
@@ -1179,17 +1180,47 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
             ro.texNormal = g.texTempleNRA[i];
         frame.objects.push_back(ro);
     }
-    for (size_t i = 0; i < g.meshWalls.size(); ++i)
+    if (g.meshGrayWall >= 0)
     {
-        float h = ArenaHalf;
-        XMMATRIX m = (i == 0) ? XMMatrixTranslation(0, 1.2f, h)
-                   : (i == 1) ? XMMatrixTranslation(0, 1.2f, -h)
-                   : (i == 2) ? XMMatrixTranslation(h, 1.2f, 0)
-                              : XMMatrixTranslation(-h, 1.2f, 0);
-        RenderObject ro{ g.meshWalls[i], g.texWall, Store(m), { 1,1,1,0 } };
-        ro.texNormal = g.texWallNRA;
-        frame.objects.push_back(ro);
+        // the map edge wears the gray wall too: nine tiled segments per
+        // side (visual only -- the boundary stays the same sim wall)
+        constexpr int kSegs = 9;
+        const float segLen = (ArenaHalf * 2.0f + 1.2f) / kSegs;
+        for (int side = 0; side < 4; ++side)
+            for (int k = 0; k < kSegs; ++k)
+            {
+                float along = -ArenaHalf - 0.6f + (float(k) + 0.5f) * segLen;
+                bool longX = side < 2;
+                float cx = longX ? along : (side == 2 ? ArenaHalf : -ArenaHalf);
+                float cz = longX ? (side == 0 ? ArenaHalf : -ArenaHalf) : along;
+                XMMATRIX w = XMMatrixTranslation(-g.wallCtr.x, -g.wallCtr.y,
+                                                 -g.wallCtr.z)
+                           * XMMatrixScaling(1.2f / g.wallExt.x,
+                                             2.4f / g.wallExt.y,
+                                             segLen / g.wallExt.z)
+                           * (longX ? XMMatrixRotationY(XM_PI * 0.5f)
+                                    : XMMatrixIdentity())
+                           * XMMatrixTranslation(cx, 0.0f, cz);
+                RenderObject ro{ g.meshGrayWall, g.texGrayWall >= 0
+                                     ? g.texGrayWall : g.texWall,
+                                 Store(w), { 1,1,1,0 } };
+                if (g.texGrayWallNRA >= 0)
+                    ro.texNormal = g.texGrayWallNRA;
+                frame.objects.push_back(ro);
+            }
     }
+    else
+        for (size_t i = 0; i < g.meshWalls.size(); ++i)
+        {
+            float h = ArenaHalf;
+            XMMATRIX m = (i == 0) ? XMMatrixTranslation(0, 1.2f, h)
+                       : (i == 1) ? XMMatrixTranslation(0, 1.2f, -h)
+                       : (i == 2) ? XMMatrixTranslation(h, 1.2f, 0)
+                                  : XMMatrixTranslation(-h, 1.2f, 0);
+            RenderObject ro{ g.meshWalls[i], g.texWall, Store(m), { 1,1,1,0 } };
+            ro.texNormal = g.texWallNRA;
+            frame.objects.push_back(ro);
+        }
 
     // STEALTH occlusion inputs: every static box + the LOCAL tank's eye
     {

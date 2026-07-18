@@ -615,45 +615,14 @@ struct TreeSpot { float x, z, s; };   // s scales height AND canopy radius
 constexpr float TreeShadeHeight = 9.4f;   // world height at s = 1 (1.25x)
 constexpr float TreeShadeRadius = 4.0f;   // canopy half-extent at s = 1
 inline constexpr TreeSpot kTrees[] = {
-    // east ring (shade reaches into the arena)
-    { 33.5f, -28.0f, 1.10f }, { 34.8f, -21.0f, 0.95f },
-    { 33.2f, -14.0f, 1.20f }, { 35.1f,  -7.0f, 1.00f },
-    { 33.8f,   0.0f, 1.15f }, { 34.4f,   7.0f, 0.90f },
-    { 33.1f,  14.0f, 1.05f }, { 35.0f,  21.0f, 1.20f },
-    { 33.6f,  28.0f, 1.00f },
-    // north ring (shade reaches into the arena)
-    { -28.0f, 34.2f, 1.05f }, { -21.0f, 33.4f, 1.20f },
-    { -14.0f, 35.0f, 0.95f }, {  -7.0f, 33.6f, 1.10f },
-    {   0.0f, 34.6f, 1.00f }, {   7.0f, 33.2f, 1.20f },
-    {  14.0f, 34.9f, 0.90f }, {  21.0f, 33.3f, 1.10f },
-    {  28.0f, 34.5f, 1.00f },
-    // west + south rings (pure decor: their shade points away)
-    { -33.9f, -25.0f, 1.10f }, { -34.6f, -15.0f, 0.95f },
-    { -33.2f,  -5.0f, 1.20f }, { -34.9f,   5.0f, 1.00f },
-    { -33.4f,  15.0f, 1.10f }, { -34.2f,  25.0f, 0.90f },
-    { -25.0f, -34.4f, 1.05f }, { -15.0f, -33.5f, 1.20f },
-    {  -5.0f, -34.8f, 0.95f }, {   5.0f, -33.3f, 1.10f },
-    {  15.0f, -34.7f, 1.00f }, {  25.0f, -33.8f, 1.15f },
-    // corners
-    {  33.8f,  33.5f, 1.20f }, { -33.5f,  33.9f, 1.00f },
-    { -34.0f, -33.6f, 1.15f }, {  33.4f, -34.2f, 1.05f },
-    // shade islands inside the arena (clear of every obstacle footprint)
+    // shade islands inside the arena (clear of every obstacle footprint;
+    // the map edge belongs to the gray perimeter walls now)
     { -24.0f,   6.0f, 1.00f }, {  24.0f,  -4.0f, 1.10f },
     {  -8.0f,  16.0f, 0.95f }, {  20.0f,   2.0f, 1.10f },
     {  22.0f,  15.0f, 1.00f }, { -22.0f, -15.0f, 1.15f },
     {  -4.0f,  25.0f, 1.05f }, {   5.0f, -26.0f, 0.95f },
     {  25.0f,  25.0f, 1.10f }, { -25.0f, -25.0f, 1.00f },
     { -26.0f,  18.0f, 0.90f }, {  26.0f, -18.0f, 1.10f },
-    // densified outer rings (midpoints between the originals)
-    {  34.2f, -24.5f, 0.95f }, {  33.4f, -17.5f, 1.10f },
-    {  34.6f, -10.5f, 1.00f }, {  33.0f,  -3.5f, 1.15f },
-    {  34.1f,   3.5f, 0.90f }, {  33.7f,  10.5f, 1.10f },
-    {  34.7f,  17.5f, 1.00f }, {  33.2f,  24.5f, 1.15f },
-    { -24.5f,  34.7f, 1.00f }, { -17.5f,  33.8f, 1.15f },
-    { -10.5f,  34.3f, 0.90f }, {  -3.5f,  33.1f, 1.10f },
-    {   3.5f,  34.8f, 1.00f }, {  10.5f,  33.6f, 0.95f },
-    {  17.5f,  34.2f, 1.10f }, {  24.5f,  33.9f, 1.00f },
-    // extra shade islands (all north of the tested mid-lane shadows)
     { -16.0f,  -2.0f, 1.00f }, {  12.0f,  22.0f, 1.10f },
     { -12.0f,  24.0f, 0.95f }, {  18.0f,   8.0f, 1.05f },
 };

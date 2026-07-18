@@ -67,7 +67,9 @@ namespace tankaq::net
 // v36: map pass -- slim walls composed into L-corners and alley pairs
 // (NumObstacles 19), gates slimmed, trees 1.25x and 66 strong. Obstacle
 // and tree geometry are sim contract.
-constexpr uint8_t ProtocolVersion = 36;
+// v37: gateways shrunk (12.5u span, 1.0 thick, 4.1u gap, pillar boxes
+// moved); edge trees removed (16 inner shade islands remain).
+constexpr uint8_t ProtocolVersion = 37;
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t
