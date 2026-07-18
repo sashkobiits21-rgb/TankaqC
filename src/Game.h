@@ -25,6 +25,9 @@ enum : uint8_t
 // Match length: the host cycles through kMatchMinutes in the lobby.
 constexpr uint8_t kMatchMinutes[] = { 5, 10, 15, 20 };
 constexpr uint8_t DefaultMatchMinutes = 10;
+// Offer cadence: seconds between conveyor arrivals; host picks in the lobby.
+constexpr uint8_t kOfferSeconds[] = { 1, 2, 3 };
+constexpr uint8_t DefaultOfferSeconds = 2;
 constexpr uint32_t EndedReturnTicks = 6 * TickRate;
 constexpr int   SnapshotEveryTicks = 3;      // 20 Hz
 constexpr float ArenaHalf = 60.0f;   // 120x120: twice the old field
@@ -288,7 +291,7 @@ void BubbleCenter(const PlayerState& p, float& cx, float& cz);
 // every 5 seconds at slot 0 and pushes the rest along; overflow burns the
 // tail. Offers carry a rolling id so clients can animate the shifts.
 constexpr int NumOfferSlots = 6;
-constexpr int OfferIntervalTicks = 3 * TickRate;
+// (cadence lives in GameState::offerSeconds -- the host lobby pick)
 
 // Offer lifecycle: 0 = empty, 1 = purchasable, 2 = consumed (purchased, the
 // burn animation is playing; the slot is held and the conveyor must not shift
@@ -727,6 +730,7 @@ struct GameState
     uint8_t winner = 0xFF;
     uint8_t targetPlayers = 0;    // quick-match queue size (0 = no queue)
     uint8_t matchMinutes = DefaultMatchMinutes;   // host lobby choice
+    uint8_t offerSeconds = DefaultOfferSeconds;   // host lobby choice (1/2/3)
     uint8_t testMode = 0;         // TEST match: sandbox, free upgrade picks
     // spawn points: random but PRE-GENERATED once per match; picks favor
     // the point farthest from living enemy tanks

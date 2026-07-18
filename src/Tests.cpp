@@ -913,6 +913,7 @@ int RunClassTest()
         a.tick = 123456u;
         a.phase = PhasePlaying;
         a.matchMinutes = 15;
+        a.offerSeconds = 3;
         a.projectiles[0].active = 1;
         a.projectiles[0].x = 13.37f;
         a.projectiles[0].z = -21.5f;
@@ -940,6 +941,7 @@ int RunClassTest()
         check(net::UnpackSnapshot(buf, n, b),
               "unpack accepts its own packer's output");
         check(b.tick == 123456u && b.matchMinutes == 15
+                  && b.offerSeconds == 3
                   && !b.projectiles[5].active
                   && b.projectiles[MaxProjectiles - 1].active
                   && b.grenades[3].active && b.grenades[3].fuse255 == 120

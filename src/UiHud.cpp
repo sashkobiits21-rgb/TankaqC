@@ -176,6 +176,20 @@ static void BuildLobbyUi(FrameData& frame)
     }
     else
         g.ui.TextCentered(w * 0.5f, 138, 1.6f, { 1, 1, 1, 0.7f }, buf);
+
+    // offer cadence: the host cycles 1/2/3 seconds; everyone sees the pick
+    sprintf_s(buf, "OFFERS: %d S", int(g.game.offerSeconds));
+    if (g.isHost)
+    {
+        UiButton offBtn{ w * 0.5f - 420, h - 196, 260, 56, buf };
+        UiHotRect(UiIdOfferRate, offBtn.x, offBtn.y, offBtn.w, offBtn.h);
+        bool offHov = offBtn.Contains(float(g.mouseX), float(g.mouseY));
+        if (offHov)
+            g.hoverKeyNow = 3005;
+        DrawButton(g.ui, offBtn, offHov);
+    }
+    else
+        g.ui.TextCentered(w * 0.5f, 160, 1.6f, { 1, 1, 1, 0.7f }, buf);
     g.ui.TextCentered(w * 0.5f, h - 62, 1.4f, { 1, 1, 1, 0.5f },
                       "R toggles ready - match starts when everyone is ready");
 }

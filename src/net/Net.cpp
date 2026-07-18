@@ -885,7 +885,8 @@ int PackSnapshot(const MsgSnapshot& s, uint8_t* out)
 {
     uint8_t* p = out;
     W8(p, s.type); W8(p, s.phase); W8(p, s.winner);
-    W8(p, s.targetPlayers); W8(p, s.matchMinutes); W8(p, s.testMode);
+    W8(p, s.targetPlayers); W8(p, s.matchMinutes); W8(p, s.offerSeconds);
+    W8(p, s.testMode);
     W32(p, s.tick); W32(p, s.matchEndTick);
     memcpy(p, s.players, sizeof(s.players)); p += sizeof(s.players);
 
@@ -964,7 +965,7 @@ int PackSnapshot(const MsgSnapshot& s, uint8_t* out)
 
 bool UnpackSnapshot(const uint8_t* data, int size, MsgSnapshot& out)
 {
-    constexpr int kHead = 6 + 8 + int(sizeof(out.players));
+    constexpr int kHead = 7 + 8 + int(sizeof(out.players));
     if (size < kHead + 6)
         return false;
     const uint8_t* p = data;
@@ -972,6 +973,7 @@ bool UnpackSnapshot(const uint8_t* data, int size, MsgSnapshot& out)
     out = MsgSnapshot{};
     out.type = R8(p); out.phase = R8(p); out.winner = R8(p);
     out.targetPlayers = R8(p); out.matchMinutes = R8(p);
+    out.offerSeconds = R8(p);
     out.testMode = R8(p);
     out.tick = R32(p); out.matchEndTick = R32(p);
     memcpy(out.players, p, sizeof(out.players)); p += sizeof(out.players);

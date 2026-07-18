@@ -77,6 +77,7 @@ enum : int
     UiIdOwnedArrow,   // owned-strip collapse arrow
     UiIdCode,         // click-to-copy game code banner
     UiIdMatchLen,     // host lobby MATCH: N MIN cycle button
+    UiIdOfferRate,    // host lobby OFFERS: N S cycle button
 };
 
 struct App

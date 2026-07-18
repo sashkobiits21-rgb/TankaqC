@@ -76,7 +76,8 @@ namespace tankaq::net
 // relative frame (prev-center tracking); sim behavior change.
 // v40: RADAR MINES is a MUTATION card now (radar+bouncy pair; pool grew)
 // and TEST mode gained TestRevoke (-1 owned copy, OwnedSync resync).
-constexpr uint8_t ProtocolVersion = 40;
+// v41: offer cadence is a host lobby pick (offerSeconds snapshot byte).
+constexpr uint8_t ProtocolVersion = 41;
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t
@@ -308,6 +309,7 @@ struct MsgSnapshot
     uint8_t winner = 0xFF;
     uint8_t targetPlayers = 0;    // gathering queue size (0 = no queue)
     uint8_t matchMinutes = 10;    // host lobby pick (5/10/15/20)
+    uint8_t offerSeconds = 2;     // host lobby pick (1/2/3)
     uint8_t testMode = 0;         // TEST match: free grants, no stakes
     uint32_t tick = 0;
     uint32_t matchEndTick = 0;

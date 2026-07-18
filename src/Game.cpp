@@ -3188,11 +3188,11 @@ void GameState::Tick(const InputCmd* inputs)
         if (tick % StatRecalcTicks == 0)
             RecalcStats(id);
 
-        // conveyor: a fresh random offer every 5 seconds
+        // conveyor: a fresh random offer at the host-picked cadence
         if (tick >= p.nextOfferTick)
         {
             GenerateOffer(id);
-            p.nextOfferTick = tick + OfferIntervalTicks;
+            p.nextOfferTick = tick + uint32_t(offerSeconds) * TickRate;
         }
 
         // expire finished burns and compact their slots

@@ -196,6 +196,7 @@ void ApplySnapshot(const net::MsgSnapshot& s)
     g.game.winner = s.winner;
     g.game.targetPlayers = s.targetPlayers;
     g.game.matchMinutes = s.matchMinutes;
+    g.game.offerSeconds = s.offerSeconds;
     g.game.testMode = s.testMode;
     g.game.matchEndTick = s.matchEndTick;
     for (int i = 0; i < MaxPlayers; ++i)
@@ -418,6 +419,7 @@ net::MsgSnapshot BuildSnapshot()
     s.winner = g.game.winner;
     s.targetPlayers = g.game.targetPlayers;
     s.matchMinutes = g.game.matchMinutes;
+    s.offerSeconds = g.game.offerSeconds;
     s.testMode = g.game.testMode;
     s.matchEndTick = g.game.matchEndTick;
     for (int i = 0; i < MaxPlayers; ++i)
@@ -4094,6 +4096,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                         if (kMatchMinutes[k] == g.game.matchMinutes)
                             cur = k;
                     g.game.matchMinutes = kMatchMinutes[(cur + 1) % n];
+                }
+                break;
+            case UiIdOfferRate:
+                // host cycles the offer cadence: 1 -> 2 -> 3 -> 1 seconds
+                if (g.isHost && g.game.phase == PhaseLobby)
+                {
+                    snd::Play(snd::Sfx::Click, 0.5f, SndJitter(0.06f));
+                    constexpr int n = int(sizeof(kOfferSeconds));
+                    int cur = 0;
+                    for (int k = 0; k < n; ++k)
+                        if (kOfferSeconds[k] == g.game.offerSeconds)
+                            cur = k;
+                    g.game.offerSeconds = kOfferSeconds[(cur + 1) % n];
                 }
                 break;
             case UiIdOwnedArrow:
