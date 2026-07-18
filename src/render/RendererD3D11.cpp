@@ -400,7 +400,8 @@ public:
                 PerObjectCB po{};
                 po.world = obj.world;
                 po.tint = obj.tint;
-                po.misc2 = XMFLOAT4(obj.losClip, obj.dissolve, 0.0f, 0.0f);
+                po.misc2 = XMFLOAT4(obj.losClip, obj.dissolve,
+                                obj.uvJumble, 0.0f);
                 UpdateCB(m_cbObject.Get(), &po, sizeof(po));
                 const GpuMesh& mesh = m_meshes[obj.mesh];
                 BindMeshVs(mesh, obj, frame);   // static or skinned VS/layout
@@ -459,7 +460,8 @@ public:
             po.misc = XMFLOAT4(obj.isDynamic ? 1.0f : 0.0f,
                                obj.deformDist, obj.deformAge,
                                obj.deformDist >= 0.0f ? 1.0f : 0.0f);
-            po.misc2 = XMFLOAT4(obj.losClip, obj.dissolve, 0.0f, 0.0f);
+            po.misc2 = XMFLOAT4(obj.losClip, obj.dissolve,
+                                obj.uvJumble, 0.0f);
             UpdateCB(m_cbObject.Get(), &po, sizeof(po));
 
             const GpuMesh& mesh = m_meshes[obj.mesh];

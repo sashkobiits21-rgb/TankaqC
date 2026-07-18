@@ -1108,6 +1108,7 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
         RenderObject ro{ g.meshGround, g.texGround, Store(XMMatrixIdentity()),
                          { 1,1,1,0 } };
         ro.texNormal = g.texGroundNRA;
+        ro.uvJumble = 1.0f;   // hashed per-cell rotation hides the tiling
         frame.objects.push_back(ro);
     }
     for (size_t i = 0; i < g.meshObstacles.size(); ++i)
@@ -2651,7 +2652,7 @@ bool CreateAssets()
                                  g.tank.turret.indices.data(), g.tank.turret.indices.size());
 
     // 2x the arena so the straight-down camera never sees past the floor edge
-    MeshData ground = MakeGroundPlane(ArenaHalf * 2.0f, 60.0f);
+    MeshData ground = MakeGroundPlane(ArenaHalf * 2.0f, 240.0f);
     g.meshGround = r->CreateMesh(ground.verts.data(), ground.verts.size(),
                                  ground.indices.data(), ground.indices.size());
     MeshData proj = MakeRocket();

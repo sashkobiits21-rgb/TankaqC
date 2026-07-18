@@ -585,7 +585,8 @@ public:
                 po.misc = XMFLOAT4(obj.isDynamic ? 1.0f : 0.0f,
                                    obj.deformDist, obj.deformAge,
                                    obj.deformDist >= 0.0f ? 1.0f : 0.0f);
-                po.misc2 = XMFLOAT4(obj.losClip, obj.dissolve, 0.0f, 0.0f);
+                po.misc2 = XMFLOAT4(obj.losClip, obj.dissolve,
+                                    obj.uvJumble, 0.0f);
                 memcpy(m_cbMapped[fi] + size_t(objIndex) * CbAlign, &po, sizeof(po));
                 drawables.push_back({ &obj, objIndex, inView, inLight });
                 ++objIndex;

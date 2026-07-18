@@ -275,10 +275,25 @@ PsOut PSMesh(VsOut i)
         }
     }
     float3 ng = normalize(i.wnrm);           // geometric normal
-    float3 albedo = gAlbedo.Sample(gSampler, i.uv).rgb * gTint.rgb;
+    // STOCHASTIC TILING (gMisc2.z): each integer UV cell samples the tile
+    // rotated by a hashed 0/90/180/270 + a wrapping offset, which breaks
+    // the repeating-pattern read on big tiled surfaces (the ground). Seams
+    // between differently-rotated cells vanish into the noisy texture.
+    float2 suv = i.uv;
+    if (gMisc2.z > 0.5)
+    {
+        float2 cell = floor(suv);
+        float h = frac(sin(dot(cell, float2(41.13, 289.97))) * 23421.63);
+        float rot = floor(h * 4.0) * 1.57079633;
+        float cs = cos(rot), sn = sin(rot);
+        float2 f = frac(suv) - 0.5;
+        suv = float2(cs * f.x - sn * f.y, sn * f.x + cs * f.y) + 0.5
+            + floor(h * 16.0) * 0.25;
+    }
+    float3 albedo = gAlbedo.Sample(gSampler, suv).rgb * gTint.rgb;
 
     // NRA material map: tangent-space normal in rgb, roughness in a
-    float4 nra = gNra.Sample(gSampler, i.uv);
+    float4 nra = gNra.Sample(gSampler, suv);
     float rough = max(nra.a, 0.045);
     float3 tn = nra.rgb * 2.0 - 1.0;
     float3 T = i.wtan.xyz - ng * dot(ng, i.wtan.xyz);   // re-orthogonalize

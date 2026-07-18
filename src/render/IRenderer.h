@@ -163,6 +163,8 @@ struct RenderObject
     float losClip = 0.0f;
     // smoke-style noise dissolve, 0 = solid .. 1 = fully eaten (puddles)
     float dissolve = 0.0f;
+    // stochastic per-cell UV rotation to hide tiling (the ground plane)
+    float uvJumble = 0.0f;
     // STEALTH: fully hidden right now -> also cast no shadow this frame
     bool noShadow = false;
 };

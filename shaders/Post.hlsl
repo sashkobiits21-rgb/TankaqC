@@ -359,10 +359,10 @@ float4 PSAA(FsOut i) : SV_Target
     for (int sIdx = 0; sIdx < int(gShockMeta.x); ++sIdx)
     {
         float4 sw = gShock[sIdx];
-        float4 cp = mul(float4(sw.x, 0.1, sw.y, 1.0), gViewProj);
+        float4 cp = mul(gViewProj, float4(sw.x, 0.1, sw.y, 1.0));
         if (cp.w <= 0.01) continue;
         float2 css = cp.xy / cp.w * float2(0.5, -0.5) + 0.5;
-        float4 rp = mul(float4(sw.x + sw.z, 0.1, sw.y, 1.0), gViewProj);
+        float4 rp = mul(gViewProj, float4(sw.x + sw.z, 0.1, sw.y, 1.0));
         float2 rss = rp.xy / rp.w * float2(0.5, -0.5) + 0.5;
         float radSS = length((rss - css) * float2(aspect, 1.0));
         float2 d = (uv - css) * float2(aspect, 1.0);
