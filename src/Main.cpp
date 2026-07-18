@@ -175,6 +175,22 @@ void ApplySnapshot(const net::MsgSnapshot& s)
     g.haveTwoSnaps = g.haveSnap;
     g.haveSnap = true;
 
+    // BUBBLE continuous collision, client half: freeze each dome's center
+    // from the OLD state before this snapshot overwrites positions/aim --
+    // provisional rockets and the predicted trap then test the swept span
+    for (int i = 0; i < MaxPlayers; ++i)
+    {
+        PlayerState& p = g.game.players[i];
+        if (p.active && p.health > 0 && p.shieldTimer > 0.0f
+            && HasUpgrade(p, UpgradeId::Bubble))
+        {
+            BubbleCenter(p, p.bubblePrevCx, p.bubblePrevCz);
+            p.bubblePrevValid = 1;
+        }
+        else
+            p.bubblePrevValid = 0;
+    }
+
     g.game.tick = s.tick;
     g.game.phase = s.phase;
     g.game.winner = s.winner;

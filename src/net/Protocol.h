@@ -72,7 +72,9 @@ namespace tankaq::net
 // v38: the 120x120 map -- ArenaHalf 60, 55 obstacles in 20 composed wall
 // groups (20/40/20/20 singles/doubles/triples/quads), midline gateways,
 // 24 respread trees. All sim contract.
-constexpr uint8_t ProtocolVersion = 38;
+// v39: BUBBLE continuous collision -- crossing tests moved into the dome's
+// relative frame (prev-center tracking); sim behavior change.
+constexpr uint8_t ProtocolVersion = 39;
 constexpr uint16_t DefaultPort = 27500;
 
 enum class MsgType : uint8_t

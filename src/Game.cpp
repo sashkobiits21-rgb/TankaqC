@@ -1850,6 +1850,25 @@ static int GatherCoverSpots(CoverSpot* out, int cap)
 // FRESHEST aim (not the jitter-lagged turret), and the test is the tick's
 // SEGMENT against the face plane -- fast shells cannot tunnel between two
 // positions, and the shell's own radius counts at the edges.
+// Raycast a movement segment (bubble-relative frame) against the dome wall:
+// first t in [0,1] where |P0 + t*(P1-P0)| reaches radius r going OUT. The
+// exit root also catches a full pass-through in one tick (enter + exit).
+static bool SegmentExitsCircle(float p0x, float p0z, float p1x, float p1z,
+                               float r, float& t)
+{
+    float dx = p1x - p0x, dz = p1z - p0z;
+    float a = dx * dx + dz * dz;
+    if (a < 1e-8f)
+        return false;
+    float b = 2.0f * (p0x * dx + p0z * dz);
+    float c = p0x * p0x + p0z * p0z - r * r;
+    float disc = b * b - 4.0f * a * c;
+    if (disc < 0.0f)
+        return false;
+    t = (-b + sqrtf(disc)) / (2.0f * a);   // the OUTBOUND crossing
+    return t >= 0.0f && t <= 1.0f;
+}
+
 float BubbleRadiusFor(const PlayerState& p)
 {
     return BubbleRadius * p.stats[int(Stat::ShieldWidth)]
@@ -1878,24 +1897,38 @@ bool ShieldDeflectStep(GameState& gs, Projectile& pr)
         {
             float bcx, bcz;
             BubbleCenter(sp, bcx, bcz);
+            // continuous collision vs the MOVING dome: compare the rocket's
+            // previous position against the dome's PREVIOUS center and the
+            // current against the current -- crossings register even when a
+            // boosting owner drags the wall several units in one tick
+            float pcx = sp.bubblePrevValid ? sp.bubblePrevCx : bcx;
+            float pcz = sp.bubblePrevValid ? sp.bubblePrevCz : bcz;
             float R = BubbleRadiusFor(sp);
             float step = pr.speed * TickDt;
             float vx = sinf(pr.yaw) * step, vz = cosf(pr.yaw) * step;
-            float pxPrev = pr.x - vx, pzPrev = pr.z - vz;
-            float dPrev = sqrtf((pxPrev - bcx) * (pxPrev - bcx)
-                              + (pzPrev - bcz) * (pzPrev - bcz));
-            float dNow = sqrtf((pr.x - bcx) * (pr.x - bcx)
-                             + (pr.z - bcz) * (pr.z - bcz));
+            float relPX = (pr.x - vx) - pcx, relPZ = (pr.z - vz) - pcz;
+            float relNX = pr.x - bcx, relNZ = pr.z - bcz;
             float wall = R - ProjectileRadius;
-            if (dPrev >= wall || dNow < wall || dNow < 1e-4f)
-                continue;                 // outside, or not crossing out
-            float nx = (pr.x - bcx) / dNow, nz = (pr.z - bcz) / dNow;
-            float rvx = sinf(pr.yaw), rvz = cosf(pr.yaw);
-            float rn = rvx * nx + rvz * nz;
-            rvx -= 2.0f * rn * nx;
-            rvz -= 2.0f * rn * nz;
-            pr.yaw = atan2f(rvx, rvz);
-            pr.x = bcx + nx * (wall - 0.05f);   // back inside the wall
+            float tHit;
+            if (!SegmentExitsCircle(relPX, relPZ, relNX, relNZ, wall, tHit))
+                continue;                 // no outbound wall crossing
+            // the RAYCAST HIT POINT (bubble frame) is both the reflection
+            // anchor and where the rocket lands on xz
+            float hx = relPX + (relNX - relPX) * tHit;
+            float hz = relPZ + (relNZ - relPZ) * tHit;
+            float hl = std::max(1e-4f, sqrtf(hx * hx + hz * hz));
+            float nx = hx / hl, nz = hz / hl;
+            // reflect the RELATIVE motion direction (bubble frame), so the
+            // bounce is sound regardless of the dome's own velocity
+            float rdx = relNX - relPX, rdz = relNZ - relPZ;
+            float rl = sqrtf(rdx * rdx + rdz * rdz);
+            if (rl < 1e-5f) { rdx = nx; rdz = nz; rl = 1.0f; }
+            rdx /= rl; rdz /= rl;
+            float rn = rdx * nx + rdz * nz;
+            rdx -= 2.0f * rn * nx;
+            rdz -= 2.0f * rn * nz;
+            pr.yaw = atan2f(rdx, rdz);
+            pr.x = bcx + nx * (wall - 0.05f);   // at the hit point, inside
             pr.z = bcz + nz * (wall - 0.05f);
             pr.bounces += BubbleBounceGain;
             if (pr.owner != id)
@@ -2980,18 +3013,38 @@ void GameState::AdvanceMovement(int id, const InputCmd& inRaw)
             continue;
         float bcx, bcz;
         BubbleCenter(bp, bcx, bcz);
+        // continuous containment: "was inside" is judged against the dome's
+        // PREVIOUS center -- a lunging owner drags prisoners along instead
+        // of teleporting the wall past them
+        float pcx = bp.bubblePrevValid ? bp.bubblePrevCx : bcx;
+        float pcz = bp.bubblePrevValid ? bp.bubblePrevCz : bcz;
         float inR = BubbleRadiusFor(bp) - TankRadius;
         if (inR <= 0.2f)
             continue;
-        float pdx = bubblePrevX - bcx, pdz = bubblePrevZ - bcz;
+        float pdx = bubblePrevX - pcx, pdz = bubblePrevZ - pcz;
         if (pdx * pdx + pdz * pdz > (inR + 0.10f) * (inR + 0.10f))
             continue;                     // was not fully inside: free
-        float dx = p.x - bcx, dz = p.z - bcz;
-        float d = sqrtf(dx * dx + dz * dz);
-        if (d > inR && d > 1e-4f)
+        // RAYCAST the tick's movement (bubble frame) against the wall and
+        // park the tank AT the hit point on xz -- no wall passes at any
+        // speed, the owner's or the prisoner's
+        float ndx = p.x - bcx, ndz = p.z - bcz;
+        float tHit;
+        if (SegmentExitsCircle(pdx, pdz, ndx, ndz, inR, tHit))
         {
-            p.x = bcx + dx / d * inR;     // no way out until it pops
-            p.z = bcz + dz / d * inR;
+            float hx = pdx + (ndx - pdx) * tHit;
+            float hz = pdz + (ndz - pdz) * tHit;
+            float hl = std::max(1e-4f, sqrtf(hx * hx + hz * hz));
+            p.x = bcx + hx / hl * (inR - 0.02f);
+            p.z = bcz + hz / hl * (inR - 0.02f);
+        }
+        else
+        {
+            float d = sqrtf(ndx * ndx + ndz * ndz);
+            if (d > inR && d > 1e-4f)     // numeric edge: radial fallback
+            {
+                p.x = bcx + ndx / d * inR;
+                p.z = bcz + ndz / d * inR;
+            }
         }
     }
 
@@ -3082,6 +3135,23 @@ void GameState::Tick(const InputCmd* inputs)
             endedTick = tick;
             return;
         }
+    }
+
+    // BUBBLE continuous collision: freeze every dome's center BEFORE any
+    // movement this tick -- crossing tests then run prev-vs-prev /
+    // now-vs-now (the bubble's relative frame), so a boosting owner cannot
+    // drag the wall past rockets or slip trapped tanks out the back.
+    for (int id = 0; id < MaxPlayers; ++id)
+    {
+        PlayerState& p = players[id];
+        if (p.active && p.health > 0 && p.shieldTimer > 0.0f
+            && HasUpgrade(p, UpgradeId::Bubble))
+        {
+            BubbleCenter(p, p.bubblePrevCx, p.bubblePrevCz);
+            p.bubblePrevValid = 1;
+        }
+        else
+            p.bubblePrevValid = 0;
     }
 
     for (int id = 0; id < MaxPlayers; ++id)

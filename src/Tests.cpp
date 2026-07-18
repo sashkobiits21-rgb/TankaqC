@@ -1001,6 +1001,32 @@ int RunClassTest()
         in.speed = 15.0f;
         check(!ShieldDeflectStep(gm, in), "outside shells enter freely");
 
+        // BUBBLE continuous collision: the owner LUNGES (center jumps 6u in
+        // one tick) -- a rocket left behind must bounce off the receding
+        // back wall instead of tunneling out (prev-vs-prev, now-vs-now)
+        {
+            float R2 = BubbleRadiusFor(mu);
+            mu.bubblePrevCx = bcx;
+            mu.bubblePrevCz = bcz - 6.0f;    // dome was 6u behind last tick
+            mu.bubblePrevValid = 1;
+            Projectile fast{};
+            fast.active = true;
+            fast.owner = 1;
+            fast.yaw = XM_PI;                 // drifting -z, slowly
+            fast.speed = 2.0f;
+            fast.damage = 10;
+            // now-position: outside the CURRENT dome (owner lunged past it)
+            // but its previous position was INSIDE the PREVIOUS dome
+            fast.x = bcx;
+            fast.z = (bcz - 6.0f) + 1.0f - 2.0f * TickDt;
+            check(ShieldDeflectStep(gm, fast),
+                  "a lunging dome still catches the rocket it left behind");
+            float fd = sqrtf((fast.x - bcx) * (fast.x - bcx)
+                           + (fast.z - bcz) * (fast.z - bcz));
+            check(fd < R2, "the caught rocket re-enters the CURRENT dome");
+            mu.bubblePrevValid = 0;
+        }
+
         // BUBBLE: a tank that began fully inside cannot leave
         PlayerState& trapped = gm.players[1];
         trapped.x = bcx; trapped.z = bcz;

@@ -350,6 +350,12 @@ struct PlayerState
     float shieldTimer = 0;        // barrier remaining (input-driven, predicted)
     float shieldWait = 0;         // ability cooldown remaining
     float shieldAimYaw = 0;       // host: freshest aim, drives the deflector
+    // BUBBLE continuous collision: the dome's center LAST tick (host: tick
+    // start; client: snapshot apply). Crossing tests run in the bubble's
+    // relative frame so a fast owner cannot drag the wall past rockets or
+    // trapped tanks between ticks. Local bookkeeping, never on the wire.
+    float bubblePrevCx = 0, bubblePrevCz = 0;
+    uint8_t bubblePrevValid = 0;
     float sunAccum = 0;           // VAMPIRE: fractional sun burn carry
     float possessDps = 0;         // host-only, baked from the ghost's owner
     uint8_t possessedBy = 0xFF;   // host-only, damage attribution
