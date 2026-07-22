@@ -1,6 +1,7 @@
 # Asset Credits
 
-- **Tank** — CC0 (public domain).
+- **Tank (current model + textures)** — project-original (user-authored).
+- **Tank (legacy fallback)** — CC0 (public domain).
 - **SWAT soldier** — Quaternius (https://quaternius.com), CC0. Via Poly Pizza.
 - **"RPG Launcher"** — austincford, **CC BY 3.0**
   (https://creativecommons.org/licenses/by/3.0/). Via Poly Pizza

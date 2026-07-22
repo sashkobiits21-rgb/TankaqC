@@ -890,8 +890,10 @@ void UpdateVfxFromSim()
 void ResetNetSimState()
 {
     g.game = GameState{};
-    g.game.turretPivot = g.tank.turretPivot;
-    g.game.muzzleOffset = g.tank.muzzle;
+    // the authored tank derives its own pivot/muzzle from geometry
+    g.game.turretPivot = g.tank2Valid ? XMFLOAT3(0, 0, 0)
+                                      : g.tank.turretPivot;
+    g.game.muzzleOffset = g.tank2Valid ? g.tank2Muzzle : g.tank.muzzle;
     g.game.rngState = uint32_t(GetTickCount64() | 1);
     g.prevTick = GameState{};
     g.haveSnap = g.haveTwoSnaps = false;
@@ -1320,6 +1322,41 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
                     i, frame.losViewer.x, frame.losViewer.y, rx, rz,
                     hidden ? 1 : 0);
         }
+        if (g.tank2Valid)
+        {
+            // the authored tank: body under the hull yaw, all six turret
+            // pieces under the aim yaw about their shared origin
+            XMMATRIX sc = XMMatrixScaling(g.tank2Scale, g.tank2Scale,
+                                          g.tank2Scale);
+            XMMATRIX hullM = sc * XMMatrixRotationY(rHull)
+                           * XMMatrixTranslation(rx, sink, rz);
+            RenderObject rb{ g.meshTank2Body,
+                             g.texTank2Body >= 0 ? g.texTank2Body
+                                                 : g.texWhite,
+                             Store(hullM), tint, true };
+            if (g.texTank2BodyNRA >= 0)
+                rb.texNormal = g.texTank2BodyNRA;
+            rb.losClip = clip;
+            rb.noShadow = hidden;
+            frame.objects.push_back(rb);
+            XMMATRIX turM = sc * XMMatrixRotationY(rTurret)
+                          * XMMatrixTranslation(rx, sink, rz);
+            for (size_t tp = 0; tp < g.meshTank2Turret.size(); ++tp)
+            {
+                RenderObject rt{ g.meshTank2Turret[tp],
+                                 g.texTank2Turret[tp].first >= 0
+                                     ? g.texTank2Turret[tp].first
+                                     : g.texWhite,
+                                 Store(turM), tint, true };
+                if (g.texTank2Turret[tp].second >= 0)
+                    rt.texNormal = g.texTank2Turret[tp].second;
+                rt.losClip = clip;
+                rt.noShadow = hidden;
+                frame.objects.push_back(rt);
+            }
+        }
+        else
+        {
         XMMATRIX hull = XMMatrixRotationY(rHull)
                       * XMMatrixTranslation(rx, sink, rz);
         {
@@ -1343,6 +1380,7 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
             ro.losClip = clip;
             ro.noShadow = hidden;
             frame.objects.push_back(ro);
+        }
         }
 
         // SHIELD barrier: a pale energy lattice riding the turret facing.
@@ -2798,6 +2836,76 @@ bool CreateAssets()
             }
             Log("Deco: tree %zu + leaves %zu verts, scale %.3f",
                 trunk.verts.size(), leaves.verts.size(), g.treeBaseScale);
+        }
+    }
+
+    // the user-authored TANK (assets/Tank2): one body + six turret pieces
+    // sharing one origin. Sim muzzle/pivot are DERIVED from the geometry so
+    // shots leave the visible barrel tip on every peer identically.
+    {
+        auto bindSet2 = [&](const std::string& dir, int& tex, int& nra)
+        {
+            ImageData col = LoadImageFile(dir + "DefaultMaterial_Base_color.png");
+            if (col.width > 0)
+                tex = r->CreateTexture(col.rgba.data(), col.width, col.height);
+            ImageData nrm = LoadImageFile(dir + "DefaultMaterial_Normal_OpenGL.png");
+            ImageData rgh = LoadImageFile(dir + "DefaultMaterial_Specular_roughness.png");
+            ImageData na = MakeNraFromMaps(nrm, rgh);
+            if (na.width > 0)
+                nra = r->CreateTexture(na.rgba.data(), na.width, na.height);
+        };
+        MeshData body = LoadStaticGLB("assets/Tank2/TankBody.glb");
+        if (!body.verts.empty())
+        {
+            float mnz = 1e9f, mxz = -1e9f;
+            for (const Vertex& v : body.verts)
+            {
+                mnz = std::min(mnz, v.pz);
+                mxz = std::max(mxz, v.pz);
+            }
+            g.tank2Scale = 4.0f / std::max(0.1f, mxz - mnz);
+            g.meshTank2Body = r->CreateMesh(body.verts.data(),
+                                            body.verts.size(),
+                                            body.indices.data(),
+                                            body.indices.size());
+            bindSet2("assets/Tank2/TankBody/", g.texTank2Body,
+                     g.texTank2BodyNRA);
+            static const char* kParts[6] = { "TankTurretBody",
+                                             "TankTurretEnd", "TankC",
+                                             "TankCylinder", "TankS",
+                                             "TankSC" };
+            float muzzZ = 0.0f, muzzY = 1.2f;
+            g.meshTank2Turret.clear();
+            g.texTank2Turret.clear();
+            for (int k = 0; k < 6; ++k)
+            {
+                MeshData part = LoadStaticGLB(
+                    std::string("assets/Tank2/") + kParts[k] + ".glb");
+                if (part.verts.empty())
+                    continue;
+                if (k == 1)   // TankTurretEnd IS the barrel: find the tip
+                    for (const Vertex& v : part.verts)
+                        if (v.pz > muzzZ) { muzzZ = v.pz; muzzY = v.py; }
+                g.meshTank2Turret.push_back(
+                    r->CreateMesh(part.verts.data(), part.verts.size(),
+                                  part.indices.data(), part.indices.size()));
+                int tc = -1, tn = -1;
+                bindSet2(std::string("assets/Tank2/") + kParts[k] + "/",
+                         tc, tn);
+                g.texTank2Turret.push_back({ tc, tn });
+            }
+            g.tank2Muzzle = XMFLOAT3(0.0f, muzzY * g.tank2Scale,
+                                     muzzZ * g.tank2Scale);
+            g.tank2Valid = !g.meshTank2Turret.empty();
+            if (g.tank2Valid)
+            {
+                g.game.turretPivot = XMFLOAT3(0, 0, 0);
+                g.game.muzzleOffset = g.tank2Muzzle;
+            }
+            Log("Tank2: body %zu verts, %zu turret parts, scale %.3f, "
+                "muzzle y %.2f z %.2f", body.verts.size(),
+                g.meshTank2Turret.size(), g.tank2Scale, g.tank2Muzzle.y,
+                g.tank2Muzzle.z);
         }
     }
 
