@@ -891,8 +891,7 @@ void ResetNetSimState()
 {
     g.game = GameState{};
     // the authored tank derives its own pivot/muzzle from geometry
-    g.game.turretPivot = g.tank2Valid ? XMFLOAT3(0, 0, 0)
-                                      : g.tank.turretPivot;
+    g.game.turretPivot = g.tank2Valid ? g.tank2Pivot : g.tank.turretPivot;
     g.game.muzzleOffset = g.tank2Valid ? g.tank2Muzzle : g.tank.muzzle;
     g.game.rngState = uint32_t(GetTickCount64() | 1);
     g.prevTick = GameState{};
@@ -1324,9 +1323,11 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
         }
         if (g.tank2Valid)
         {
-            // the authored tank: body under the hull yaw, all six turret
-            // pieces under the aim yaw about their shared origin
-            XMMATRIX sc = XMMatrixScaling(g.tank2Scale, g.tank2Scale,
+            // the authored tank: body under the hull yaw; all six turret
+            // pieces rotate about the AUTHORED origin (pivot.txt), which
+            // rides the hull like the old model's pivot did
+            XMMATRIX sc = XMMatrixScaling(g.tank2Scale,
+                                          g.tank2Scale * App::kTank2YMul,
                                           g.tank2Scale);
             XMMATRIX hullM = sc * XMMatrixRotationY(rHull)
                            * XMMatrixTranslation(rx, sink, rz);
@@ -1339,8 +1340,13 @@ void BuildScene(FrameData& frame, const XMMATRIX& view, const XMMATRIX& proj)
             rb.losClip = clip;
             rb.noShadow = hidden;
             frame.objects.push_back(rb);
+            float sh2 = sinf(rHull), ch2 = cosf(rHull);
+            const XMFLOAT3& pv = g.tank2Pivot;
+            XMFLOAT3 pw{ rx + pv.x * ch2 + pv.z * sh2,
+                         pv.y + sink,
+                         rz + pv.z * ch2 - pv.x * sh2 };
             XMMATRIX turM = sc * XMMatrixRotationY(rTurret)
-                          * XMMatrixTranslation(rx, sink, rz);
+                          * XMMatrixTranslation(pw.x, pw.y, pw.z);
             for (size_t tp = 0; tp < g.meshTank2Turret.size(); ++tp)
             {
                 RenderObject rt{ g.meshTank2Turret[tp],
@@ -2894,18 +2900,31 @@ bool CreateAssets()
                          tc, tn);
                 g.texTank2Turret.push_back({ tc, tn });
             }
-            g.tank2Muzzle = XMFLOAT3(0.0f, muzzY * g.tank2Scale,
-                                     muzzZ * g.tank2Scale);
+            // the authored turret origin (pivot.txt, written by the FBX
+            // conversion): turret verts are REBASED onto it, so rotation
+            // happens about the origin the model was authored around
+            float px = 0, py = 0, pz = 0;
+            if (FILE* pf = fopen("assets/Tank2/pivot.txt", "r"))
+            {
+                fscanf(pf, "%f %f %f", &px, &py, &pz);
+                fclose(pf);
+            }
+            float s2 = g.tank2Scale;
+            g.tank2Pivot = XMFLOAT3(px * s2, py * s2 * App::kTank2YMul,
+                                    pz * s2);
+            g.tank2Muzzle = XMFLOAT3(0.0f, muzzY * s2 * App::kTank2YMul,
+                                     muzzZ * s2);
             g.tank2Valid = !g.meshTank2Turret.empty();
             if (g.tank2Valid)
             {
-                g.game.turretPivot = XMFLOAT3(0, 0, 0);
+                g.game.turretPivot = g.tank2Pivot;
                 g.game.muzzleOffset = g.tank2Muzzle;
             }
             Log("Tank2: body %zu verts, %zu turret parts, scale %.3f, "
-                "muzzle y %.2f z %.2f", body.verts.size(),
-                g.meshTank2Turret.size(), g.tank2Scale, g.tank2Muzzle.y,
-                g.tank2Muzzle.z);
+                "pivot(%.2f %.2f %.2f) muzzle y %.2f z %.2f",
+                body.verts.size(), g.meshTank2Turret.size(), g.tank2Scale,
+                g.tank2Pivot.x, g.tank2Pivot.y, g.tank2Pivot.z,
+                g.tank2Muzzle.y, g.tank2Muzzle.z);
         }
     }
 

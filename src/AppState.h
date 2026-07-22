@@ -141,7 +141,9 @@ struct App
     int texTempleNRA[3]{ -1, -1, -1 };         // normal+roughness per part
 
     // the user-authored TANK (assets/Tank2): one body + six turret pieces
-    // sharing one origin (the pivot); falls back to the old baked tank
+    // sharing one origin (the pivot); falls back to the old baked tank.
+    // The authored hull reads thin at game proportions: Y gets a beef-up.
+    static constexpr float kTank2YMul = 1.3f;
     bool tank2Valid = false;
     int meshTank2Body = -1;
     int texTank2Body = -1, texTank2BodyNRA = -1;
@@ -149,6 +151,7 @@ struct App
     std::vector<std::pair<int, int>> texTank2Turret;   // color, NRA
     float tank2Scale = 1.0f;
     DirectX::XMFLOAT3 tank2Muzzle{};   // derived from the barrel tip
+    DirectX::XMFLOAT3 tank2Pivot{};    // authored turret origin (scaled)
 
     // GRAY WALL model dressing the plain obstacle boxes (collision
     // unchanged) + the arched ENTRANCE dressing the gateway pillar pairs
